@@ -12,8 +12,8 @@
 import readline from 'node:readline';
 import chalk from 'chalk';
 import {
-  theme, blue, sky, deep, dim, boxTop, boxBottom, boxRow,
-  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, today, asLabel, padVis,
+  theme, blue, sky, dim, boxTop, boxBottom, boxRow,
+  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen,
 } from './theme.js';
 import { renderer, render } from './markdown.js';
 
@@ -86,49 +86,57 @@ export class Plain {
   header({ cwd, model, used, limit, title }) {
     this.stopSpinner();
     this.model = model || this.model;
+    this.percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
 
     const width = this.width();
-    const percent = limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0;
     const room = Math.max(8, width - BANNER_WIDTH - 8);
 
     const facts = [
       ['dir', shortenPath(cwd, room - 9)],
-      ['date', today()],
-      ['session', `${percent}%  ${clip(title ?? 'new', 24)}`],
+      ['session', clip(title ?? 'new', room - 9)],
       ['keys', '/help'],
+      ['', ''],
       ['', ''],
       ['', 'made with ❤️ by om dixit'],
     ];
 
-    this.write('');
-    if (width >= BANNER_WIDTH + 30) {
-      this.write(boxTop(width));
-      BANNER.forEach((art, i) => {
-        const [label, value] = facts[i] ?? ['', ''];
-        const right = label
-          ? `${dim(label.padEnd(9))}${chalk.white(clip(value, room - 9))}`
-          : (value ? dim(value) : '');
-        this.write(boxRow(`  ${blue(art)}   ${right}`, width));
-      });
-      this.write(boxBottom(width));
-    } else {
-      this.write(boxTop(width));
-      this.write(boxRow(`  ${blue.bold('U C O D E')}  ${dim('terminal coding agent')}`, width));
-      for (const [label, value] of facts) {
-        if (label) this.write(boxRow(`  ${dim(label.padEnd(9))}${chalk.white(clip(value, width - 16))}`, width));
-      }
-      this.write(boxBottom(width));
-    }
+    // There is no input box to hang the status off here, so it goes on the
+    // last row inside the header box — still framed, still the same three
+    // facts, just attached to the only box this interface has.
+    const rows = width >= BANNER_WIDTH + 30
+      ? BANNER.map((art, i) => {
+          const [label, value] = facts[i] ?? ['', ''];
+          const right = label
+            ? `${dim(label.padEnd(9))}${chalk.white(clip(value, room - 9))}`
+            : (value ? dim(value) : '');
+          return `  ${blue(art)}   ${right}`;
+        })
+      : [
+          `  ${blue.bold('U C O D E')}  ${dim('terminal coding agent')}`,
+          ...facts
+            .filter(([label]) => label)
+            .map(([label, value]) => `  ${dim(label.padEnd(9))}${chalk.white(clip(value, width - 16))}`),
+        ];
 
-    this.write(this.statusLine());
+    this.write('');
+    this.write(boxTop(width));
+    for (const row of rows) this.write(boxRow(row, width));
+    this.write(boxRow(this.statusRow(), width));
+    this.write(boxBottom(width));
     this.write('');
   }
 
   setFacts() { /* nothing to repaint without a frame */ }
 
-  statusLine() {
-    return `  ${this.mode === 'plan' ? `${sky('◇')} ${sky('Plan')}` : `${blue('◆')} ${blue('Build')}`} ` +
-      `${dim('·')} ${chalk.white(this.model || '—')} ${deep('OpenRouter')}`;
+  /** The same three facts the full screen shows, on the row under the header. */
+  statusRow() {
+    const inner = this.width() - 2;
+    const chip = this.mode === 'plan' ? `${sky('◇')} ${sky('Plan')}` : `${blue('◆')} ${blue('Build')}`;
+    const left = ` ${chip} ${dim('·')} ${chalk.white(this.model || '—')}`;
+    const percent = Math.round(this.percent ?? 0);
+    const right = `${percent >= 75 ? theme.warn(`${percent}%`) : dim(`${percent}%`)} `;
+    const pad = Math.max(1, inner - visLen(left) - visLen(right));
+    return padVis(left + ' '.repeat(pad) + right, inner);
   }
 
   toolCall(label) {

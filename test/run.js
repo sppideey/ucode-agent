@@ -13,8 +13,8 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { visLen, padVis, clip, wrapAnsi, asLabel, BANNER, boxRow } from '../src/ui/theme.js';
-import { splitKeys, isLabel } from '../src/ui/screen.js';
+import { visLen, bare, padVis, clip, wrapAnsi, asLabel, BANNER, boxRow } from '../src/ui/theme.js';
+import { splitKeys, isLabel, Screen } from '../src/ui/screen.js';
 import {
   globToRegExp, toLines, changedRegion, renderDiff, renderNewFile, cap,
   setRoot, setConfirm, resolveIn, bytes,
@@ -137,6 +137,110 @@ await test('the wordmark rows are all the same width', () => {
 await test('a box row is exactly as wide as the box', () => {
   eq(visLen(boxRow('hello', 20)), 20);
   eq(visLen(boxRow('a very long line that will not fit at all', 20)), 20);
+});
+
+section('the status row');
+
+/** A Screen wired to a fake terminal of a given size. */
+function fakeScreen(cols = 100, rows = 30) {
+  const written = [];
+  const output = { columns: cols, rows, isTTY: true, write: (s) => written.push(s), on() {}, off() {} };
+  const input = { setRawMode() {}, resume() {}, pause() {}, setEncoding() {}, on() {} };
+  const s = new Screen({ cwd: 'C:/projects/app', input, output });
+  s.cols = cols;
+  s.rows = rows;
+  s.setFacts({ cwd: 'C:/projects/app', model: 'Nemotron 3 Ultra (free)', title: 'A session', percent: 4 });
+  return { screen: s, written };
+}
+
+await test('it carries the mode, the model and the percentage — and nothing else', () => {
+  const { screen } = fakeScreen();
+  const row = bare(screen.statusRow());
+  ok(row.includes('Build'), `no mode in "${row}"`);
+  ok(row.includes('Nemotron 3 Ultra (free)'), `no model in "${row}"`);
+  ok(/\b4%/.test(row), `no percentage in "${row}"`);
+  ok(!/OpenRouter/i.test(row), 'the provider name should be gone');
+  ok(!/\d{1,2} \w{3} \d{4}/.test(row), 'no date down here');
+});
+
+await test('the percentage is pinned to the right edge', () => {
+  const { screen } = fakeScreen(100);
+  const row = bare(screen.statusRow());
+  eq(row.trimEnd().endsWith('4%'), true, `"${row}" should end with the percentage`);
+  eq(visLen(screen.statusRow()), 98, 'the row fills the width between the borders');
+});
+
+await test('the mode switches the chip', () => {
+  const { screen } = fakeScreen();
+  screen.mode = 'plan';
+  const row = bare(screen.statusRow());
+  ok(row.includes('Plan'));
+  ok(!row.includes('Build'));
+});
+
+await test('a busy turn borrows the middle and gives the percentage back', () => {
+  const { screen } = fakeScreen(110);
+  screen.status = { busy: true, text: 'Writing src/App.jsx', frame: 0, since: Date.now() - 7000 };
+  const row = bare(screen.statusRow());
+  ok(row.includes('Writing src/App.jsx'), `spinner text missing from "${row}"`);
+  ok(row.includes('esc to stop'));
+  ok(row.trimEnd().endsWith('4%'), 'the percentage keeps its place while working');
+  ok(row.includes('Build'), 'the mode keeps its place too');
+  ok(/\s{2,}4% $/.test(row), `the number needs a gap in front of it: "${row.slice(-30)}"`);
+});
+
+await test('a narrow terminal drops the spinner text before it collides', () => {
+  const { screen } = fakeScreen(52);
+  screen.status = { busy: true, text: 'Writing a file with a very long name.jsx', frame: 0, since: Date.now() - 3000 };
+  const row = screen.statusRow();
+  eq(visLen(row), 50, 'still exactly the inner width');
+  ok(bare(row).trimEnd().endsWith('4%'), 'the percentage survives at any width');
+});
+
+await test('it lives inside the input box, on the row above the bottom border', () => {
+  const { screen } = fakeScreen(100, 30);
+  const box = screen.inputBox();
+  eq(box.length, 4, 'top border, one input row, the status, bottom border');
+  ok(bare(box[0]).startsWith('╭'));
+  ok(bare(box[1]).includes('›'), 'the typed line');
+  ok(bare(box[2]).includes('Build'), 'the status row');
+  ok(bare(box[2]).startsWith('│') && bare(box[2]).endsWith('│'), 'framed on both sides');
+  ok(bare(box[3]).startsWith('╰'));
+});
+
+await test('the frame is still exactly as tall as the terminal', () => {
+  for (const [cols, rows] of [[100, 30], [80, 24], [60, 20], [140, 45]]) {
+    const { screen, written } = fakeScreen(cols, rows);
+    for (let i = 0; i < 6; i++) screen.add(`line ${i}`);
+    written.length = 0;
+    screen.render();
+    const painted = written.join('')
+      .replace(/\x1b\[\?25[lh]|\x1b\[H|\x1b\[K|\x1b\[\d+;\d+H/g, '')
+      .split('\n');
+    eq(painted.length, rows, `${cols}x${rows} painted the wrong number of rows`);
+    for (const line of painted) eq(visLen(line), cols, `${cols}x${rows} has a row of the wrong width`);
+  }
+});
+
+await test('the caret sits on the typed line, not on the status row', () => {
+  const { screen } = fakeScreen(100, 30);
+  screen.buffer = 'hello';
+  screen.cursor = 5;
+  const [row, col] = screen.caret();
+  // Bottom border is row 30 and the status row 29, so the one input row is 28.
+  eq(row, 28);
+  // Column 1 is the border, 2 is the padding, 3 is the caret glyph, 4 a space,
+  // 5-9 is "hello" — so the cursor waits at 10.
+  eq(col, 10);
+});
+
+await test('the header no longer carries the date or the percentage', () => {
+  const { screen } = fakeScreen(110, 30);
+  const header = screen.headerLines().map(bare).join('\n');
+  ok(!/\d{1,2} \w{3,4} \d{4}/.test(header), `a date is still in the header:\n${header}`);
+  ok(!/\d+%/.test(header), `a percentage is still in the header:\n${header}`);
+  ok(header.includes('dir'), 'the directory should stay');
+  ok(header.includes('A session'), 'the session title should stay');
 });
 
 section('keys');

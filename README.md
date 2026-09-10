@@ -7,9 +7,9 @@ Cohere models through OpenRouter, all of them free.
 ```
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │  ██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗   dir      ~/projects/notes-app  │
-│  ██║   ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝   date     10 Sept 2026          │
-│  ██║   ██║██║     ██║   ██║██║  ██║█████╗     session  4%  Notes dashboard   │
-│  ██║   ██║██║     ██║   ██║██║  ██║██╔══╝     keys     /help · esc interrupts│
+│  ██║   ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝   session  Notes dashboard       │
+│  ██║   ██║██║     ██║   ██║██║  ██║█████╗     keys     /help · esc interrupts│
+│  ██║   ██║██║     ██║   ██║██║  ██║██╔══╝                                    │
 │  ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗                                  │
 │   ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝   made with ❤️ by om dixit       │
 ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -25,9 +25,16 @@ Cohere models through OpenRouter, all of them free.
 
 ╭──────────────────────────────────────────────────────────────────────────────╮
 │ › now add a dark mode toggle                                                 │
+│ ◆ Build · Nemotron 3 Ultra (free)                                         4% │
 ╰──────────────────────────────────────────────────────────────────────────────╯
-  ◆ Build · Nemotron 3 Ultra (free) OpenRouter
 ```
+
+The status sits inside the input box because it describes the thing you are
+typing into. Three facts, no more: the live mode, the answering model, and how
+full the context window is. The percentage turns amber at 75%, which is where
+older turns start being folded into a summary. While a turn is running the
+middle of that row carries the spinner and the way out of it, and hands the
+space straight back when it finishes.
 
 ## Install
 
@@ -95,7 +102,7 @@ as it does it, named after the file or command rather than the tool.
 
 **Two modes.** Build edits and runs. Plan reads and researches with the writing
 tools withheld, which is stronger than asking a model nicely. `ctrl+b` swaps
-them; the chip at the bottom left says which is live.
+them; the chip inside the input box says which is live.
 
 **Sessions.** Everything is on disk under `~/.ucode/sessions`, saved after every
 step. `/resume` lists them with what each one was actually about, the ones from

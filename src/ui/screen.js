@@ -7,21 +7,24 @@
  * The layout, top to bottom:
  *
  *   ╭──────────────────────────────────────────────────╮
- *   │  UCODE wordmark        dir / date / session      │
+ *   │  UCODE wordmark            dir / session / keys  │
  *   ╰──────────────────────────────────────────────────╯
  *
  *    the conversation, scrolling with the wheel or PgUp
  *
  *   ╭──────────────────────────────────────────────────╮
  *   │ › what you are typing, growing downward as it     │
+ *   │ ◆ Build · Nemotron 3 Ultra (free)             4% │
  *   ╰──────────────────────────────────────────────────╯
- *    ◆ Build · Nemotron 3 Ultra (free) OpenRouter
  *
  * Both boxes are drawn rather than ruled off, because a box says "this is a
  * thing you use" where a horizontal rule only says "something changes here".
- * The status line under the input carries two facts and no more: which mode
- * is live, and which model is answering. Anything else down there competes
- * with the thing the user is actually looking at, which is what they typed.
+ *
+ * The status sits inside the input box rather than under it: it describes the
+ * thing you are typing into, so it belongs within the same border. It carries
+ * three facts and no more — which mode is live, which model is answering, and
+ * how full the window is. Anything else down there competes with what the user
+ * is actually looking at, which is what they just typed.
  *
  * The transcript is a buffer of pre-rendered lines and the whole frame is
  * repainted whenever anything changes. At terminal sizes that is cheap, and
@@ -33,9 +36,9 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import {
-  theme, blue, sky, deep, dim, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
+  theme, blue, sky, dim, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, today, asLabel,
+  shortenPath, asLabel,
 } from './theme.js';
 import { renderer, render, polish } from './markdown.js';
 
@@ -458,18 +461,20 @@ export class Screen {
       const rows = [
         `  ${blue.bold('U C O D E')}  ${dim('terminal coding agent')}`,
         `  ${dim('dir'.padEnd(8))}${chalk.white(clip(shortenPath(this.facts.cwd ?? this.cwd, inner - 12), inner - 12))}`,
-        `  ${dim('session'.padEnd(8))}${chalk.white(clip(`${this.facts.percent ?? 0}%  ${this.facts.title ?? ''}`, inner - 12))}`,
+        `  ${dim('session'.padEnd(8))}${chalk.white(clip(this.facts.title ?? '', inner - 12))}`,
       ];
       return [boxTop(width), ...rows.map((r) => boxRow(r, width)), boxBottom(width)];
     }
 
     // Two spaces of padding, the wordmark, a gap, then the facts column.
+    // How full the window is lives on the status row now, next to the model it
+    // belongs to, so it is not repeated up here.
     const room = Math.max(8, inner - BANNER_WIDTH - 6);
     const facts = [
       ['dir', shortenPath(this.facts.cwd ?? this.cwd, room - 9)],
-      ['date', today()],
-      ['session', `${this.facts.percent ?? 0}%  ${clip(this.facts.title ?? 'new', 24)}`],
+      ['session', clip(this.facts.title ?? 'new', room - 9)],
       ['keys', '/help · esc interrupts'],
+      ['', ''],
       ['', ''],
       ['', 'made with ❤️ by om dixit'],
     ];
@@ -507,6 +512,15 @@ export class Screen {
     );
   }
 
+  /**
+   * The input box: what you are typing, and directly under it, inside the same
+   * border, the three things worth knowing while you type.
+   *
+   * The status used to sit outside the box on the last row of the screen,
+   * which made it a separate object floating under the input. Inside the
+   * border it reads as part of the thing you are using — the box says "this is
+   * where you work", and the row underneath says what you are working with.
+   */
   inputBox() {
     const width = this.width();
     const { rows } = this.inputLines();
@@ -515,52 +529,81 @@ export class Screen {
         ? boxRow(` ${blue('›')}${row.slice(1)}`, width)      // the caret, coloured
         : boxRow(` ${row}`, width)
     );
-    return [boxTop(width), ...painted, boxBottom(width)];
+    return [boxTop(width), ...painted, boxRow(this.statusRow(), width), boxBottom(width)];
   }
 
-  // -- status line ---------------------------------------------------------
+  // -- status row ----------------------------------------------------------
 
-  /**
-   * Which mode is live and which model is answering. That is the whole line.
-   *
-   * The right-hand side is borrowed while something is running, for the
-   * spinner and the way out of it, and handed back the moment it finishes.
-   */
   modeChip() {
     return this.mode === 'plan' ? `${sky('◇')} ${sky('Plan')}` : `${blue('◆')} ${blue('Build')}`;
   }
 
-  statusLine() {
-    const width = this.width();
-    const chip = this.modeChip();
-    const left = `  ${chip} ${dim('·')} ${chalk.white(this.model || '—')} ${deep('OpenRouter')}`;
+  /**
+   * How full the context window is, as a bare number.
+   *
+   * It turns amber at 75% because that is where turns start being folded away
+   * into a summary — the one moment the number predicts something you would
+   * want to know before it happens.
+   */
+  percentChip() {
+    const percent = Math.round(this.facts.percent ?? 0);
+    return percent >= 75 ? theme.warn(`${percent}%`) : dim(`${percent}%`);
+  }
 
-    // Where a click still counts as hitting the chip.
+  /**
+   * Which mode is live, which model is answering, and how full the window is.
+   *
+   * Nothing else earns a place. The provider name was there and was cut: it is
+   * the same on every line of every session, so it was decoration that had to
+   * be read past to reach the two things that do change.
+   *
+   * The middle is borrowed while something is running, for the spinner and the
+   * way out of it, and handed straight back when it finishes.
+   */
+  statusRow() {
+    const inner = this.width() - 2;      // the space between the two borders
+    const chip = this.modeChip();
+    const left = ` ${chip} ${dim('·')} ${chalk.white(this.model || '—')}`;
+    const right = `${this.percentChip()} `;
+
+    // Where a click on the bottom row still counts as hitting the mode chip.
     this.chipTo = 2 + visLen(chip);
 
-    let right = '';
+    const between = Math.max(1, inner - visLen(left) - visLen(right));
+
+    let middle = '';
     if (this.flashText) {
-      right = dim(clip(this.flashText, Math.max(0, width - visLen(left) - 4)));
+      middle = dim(clip(this.flashText, between - 2));
     } else if (this.status.busy) {
       const frame = blue(SPINNER[this.status.frame]);
       const secs = Math.round((Date.now() - (this.status.since || Date.now())) / 1000);
       const elapsed = secs >= 2 ? dim(` ${secs}s`) : '';
-      const room = Math.max(0, width - visLen(left) - 24);
-      right = `${frame} ${dim(clip(this.status.text, room))}${elapsed}  ${dim('esc to stop')}`;
+      const room = between - 20;
+      middle = room > 8
+        ? `${frame} ${dim(clip(this.status.text, room))}${elapsed}  ${dim('esc to stop')}`
+        : `${frame}${elapsed}`;
     }
 
-    if (!right) return padVis(left, width);
-    const gap = Math.max(1, width - visLen(left) - visLen(right) - 2);
-    return padVis(left + ' '.repeat(gap) + right, width);
+    // The percentage is pinned to the right border whatever is in the middle,
+    // with a gap kept in front of it so a long spinner label cannot run into
+    // the number and read as part of it.
+    const tail = middle ? `${middle}   ` : '';
+    const pad = Math.max(1, inner - visLen(left) - visLen(tail) - visLen(right));
+    return padVis(left + ' '.repeat(pad) + tail + right, inner);
   }
 
-  /** Repaint only the status row, leaving the caret where the user left it. */
+  /**
+   * Repaint only the status row, leaving the caret where the user left it.
+   *
+   * It is the second row from the bottom now — the box's own border is below
+   * it — so the row is written with its borders rather than as a bare line.
+   */
   paintStatus() {
     if (this.closed) return;
     const [row, col] = this.caret();
     this.output.write(
       HIDE +
-      at(this.rows, 1) + CLEAR_LINE + this.statusLine() +
+      at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(), this.width()) +
       at(row, col) + SHOW
     );
   }
@@ -811,7 +854,7 @@ export class Screen {
     }
     if (press !== 'M' || button !== 0) return;
     // The mode chip, at the left of the bottom row.
-    if (row === this.rows && col <= this.chipTo) this.toggleMode();
+    if (row === this.rows - 1 && col >= 2 && col <= this.chipTo) this.toggleMode();
   }
 
   onKey(key) {
@@ -940,7 +983,6 @@ export class Screen {
       '',
       ...window,
       ...this.inputBox(),
-      this.statusLine(),
     ];
 
     // The cursor is hidden for the duration of the paint. Without this it is
