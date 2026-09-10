@@ -7,13 +7,14 @@
  * The layout, top to bottom:
  *
  *   ╭──────────────────────────────────────────────────╮
- *   │  UCODE wordmark            dir / session / keys  │
+ *   │  UCODE wordmark                    dir / keys    │
  *   ╰──────────────────────────────────────────────────╯
  *
  *    the conversation, scrolling with the wheel or PgUp
  *
  *   ╭──────────────────────────────────────────────────╮
  *   │ › what you are typing, growing downward as it     │
+ *   │                                                  │
  *   │ ◆ Build · Nemotron 3 Ultra (free)             4% │
  *   ╰──────────────────────────────────────────────────╯
  *
@@ -90,8 +91,11 @@ const CLEAR_LINE = `${ESC}[K`;
 const at = (row, col) => `${ESC}[${row};${col}H`;
 const title = (t) => `${ESC}]0;${t}\x07`;
 
-/** Fixed rows below the header: the gap under it, both input borders, status. */
-const CHROME_BELOW = 4;
+/**
+ * Fixed rows below the header: the gap under it, the input box's two borders,
+ * the blank row inside it, and the status row.
+ */
+const CHROME_BELOW = 5;
 
 /** The wordmark only earns its place with room for the facts column beside it. */
 const WORDMARK_NEEDS = BANNER_WIDTH + 30;
@@ -461,19 +465,22 @@ export class Screen {
       const rows = [
         `  ${blue.bold('U C O D E')}  ${dim('terminal coding agent')}`,
         `  ${dim('dir'.padEnd(8))}${chalk.white(clip(shortenPath(this.facts.cwd ?? this.cwd, inner - 12), inner - 12))}`,
-        `  ${dim('session'.padEnd(8))}${chalk.white(clip(this.facts.title ?? '', inner - 12))}`,
       ];
       return [boxTop(width), ...rows.map((r) => boxRow(r, width)), boxBottom(width)];
     }
 
     // Two spaces of padding, the wordmark, a gap, then the facts column.
-    // How full the window is lives on the status row now, next to the model it
-    // belongs to, so it is not repeated up here.
+    //
+    // Only what you cannot work out by looking: where you are, and how to get
+    // help. How full the window is belongs on the status row next to the model
+    // it describes, and the session title is already the terminal's own window
+    // title — repeating either here is a second place to keep in sync for no
+    // reader who needed it.
     const room = Math.max(8, inner - BANNER_WIDTH - 6);
     const facts = [
       ['dir', shortenPath(this.facts.cwd ?? this.cwd, room - 9)],
-      ['session', clip(this.facts.title ?? 'new', room - 9)],
       ['keys', '/help · esc interrupts'],
+      ['', ''],
       ['', ''],
       ['', ''],
       ['', 'made with ❤️ by om dixit'],
@@ -529,7 +536,16 @@ export class Screen {
         ? boxRow(` ${blue('›')}${row.slice(1)}`, width)      // the caret, coloured
         : boxRow(` ${row}`, width)
     );
-    return [boxTop(width), ...painted, boxRow(this.statusRow(), width), boxBottom(width)];
+    return [
+      boxTop(width),
+      ...painted,
+      // A blank row between the two. Sitting directly under the caret, the
+      // status read as a second line of the thing being typed; one row of air
+      // separates what you are writing from what you are writing it with.
+      boxRow('', width),
+      boxRow(this.statusRow(), width),
+      boxBottom(width),
+    ];
   }
 
   // -- status row ----------------------------------------------------------
@@ -1009,8 +1025,9 @@ export class Screen {
     const index = prefix.length + this.cursor;
     const row = Math.min(Math.floor(index / width), rows.length - 1);
     const col = 3 + (index % width);
-    // The input block sits above the status line, under its own top border.
-    const firstRow = this.rows - 1 - rows.length;
+    // Counting up from the bottom: the box border is the last row, the status
+    // row is above it, then the blank row, then the typed lines.
+    const firstRow = this.rows - 2 - rows.length;
     return [firstRow + row, col];
   }
 }

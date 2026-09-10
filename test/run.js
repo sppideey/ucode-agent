@@ -197,15 +197,16 @@ await test('a narrow terminal drops the spinner text before it collides', () => 
   ok(bare(row).trimEnd().endsWith('4%'), 'the percentage survives at any width');
 });
 
-await test('it lives inside the input box, on the row above the bottom border', () => {
+await test('it lives inside the input box, with a blank row above it', () => {
   const { screen } = fakeScreen(100, 30);
   const box = screen.inputBox();
-  eq(box.length, 4, 'top border, one input row, the status, bottom border');
+  eq(box.length, 5, 'top border, the typed line, a blank row, the status, bottom border');
   ok(bare(box[0]).startsWith('╭'));
   ok(bare(box[1]).includes('›'), 'the typed line');
-  ok(bare(box[2]).includes('Build'), 'the status row');
-  ok(bare(box[2]).startsWith('│') && bare(box[2]).endsWith('│'), 'framed on both sides');
-  ok(bare(box[3]).startsWith('╰'));
+  ok(/^│\s+│$/.test(bare(box[2])), 'a blank row separating the two');
+  ok(bare(box[3]).includes('Build'), 'the status row');
+  ok(bare(box[3]).startsWith('│') && bare(box[3]).endsWith('│'), 'framed on both sides');
+  ok(bare(box[4]).startsWith('╰'));
 });
 
 await test('the frame is still exactly as tall as the terminal', () => {
@@ -227,20 +228,33 @@ await test('the caret sits on the typed line, not on the status row', () => {
   screen.buffer = 'hello';
   screen.cursor = 5;
   const [row, col] = screen.caret();
-  // Bottom border is row 30 and the status row 29, so the one input row is 28.
-  eq(row, 28);
+  // Counting up from the bottom: border 30, status 29, blank 28, typed line 27.
+  eq(row, 27);
   // Column 1 is the border, 2 is the padding, 3 is the caret glyph, 4 a space,
   // 5-9 is "hello" — so the cursor waits at 10.
   eq(col, 10);
 });
 
-await test('the header no longer carries the date or the percentage', () => {
+await test('the caret follows a wrapped line down', () => {
+  const { screen } = fakeScreen(40, 30);
+  screen.buffer = 'x'.repeat(80);         // more than one row's worth
+  screen.cursor = screen.buffer.length;
+  const { rows } = screen.inputLines();
+  ok(rows.length > 1, 'should have wrapped onto more rows');
+  const [row] = screen.caret();
+  // Still two rows clear of the bottom border, whatever the input grew to.
+  eq(row, 30 - 2 - rows.length + (rows.length - 1));
+});
+
+await test('the header carries only where you are and how to get help', () => {
   const { screen } = fakeScreen(110, 30);
   const header = screen.headerLines().map(bare).join('\n');
   ok(!/\d{1,2} \w{3,4} \d{4}/.test(header), `a date is still in the header:\n${header}`);
   ok(!/\d+%/.test(header), `a percentage is still in the header:\n${header}`);
+  ok(!/session/i.test(header), `the session row is still in the header:\n${header}`);
+  ok(!header.includes('A session'), 'the session title should be gone');
   ok(header.includes('dir'), 'the directory should stay');
-  ok(header.includes('A session'), 'the session title should stay');
+  ok(header.includes('/help'), 'the keys should stay');
 });
 
 section('keys');

@@ -93,7 +93,6 @@ export class Plain {
 
     const facts = [
       ['dir', shortenPath(cwd, room - 9)],
-      ['session', clip(title ?? 'new', room - 9)],
       ['keys', '/help'],
       ['', ''],
       ['', ''],
