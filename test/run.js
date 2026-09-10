@@ -1,0 +1,853 @@
+/**
+ * run.js — the test suite.
+ *
+ * No framework: a handful of assertions and a runner, so `npm test` works on a
+ * clean checkout with nothing installed but the runtime dependencies.
+ *
+ * Everything that touches disk works inside a temp directory and cleans up
+ * after itself. Nothing here makes a network call.
+ */
+
+import { promises as fs } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { pathToFileURL } from 'node:url';
+
+import { visLen, padVis, clip, wrapAnsi, asLabel, BANNER, boxRow } from '../src/ui/theme.js';
+import { splitKeys, isLabel } from '../src/ui/screen.js';
+import {
+  globToRegExp, toLines, changedRegion, renderDiff, renderNewFile, cap,
+  setRoot, setConfirm, resolveIn, bytes,
+} from '../src/tools/shared.js';
+import { readFile, writeFile, editFile, multiEdit, batchWrite } from '../src/tools/files.js';
+import { listDir, glob, grep } from '../src/tools/search.js';
+import { runCommand } from '../src/tools/shell.js';
+import { tools, runTool, describe, PARALLEL_SAFE, WRITES } from '../src/tools/index.js';
+import { parseSkill, autoLoadFor, catalogue, findSkill } from '../src/core/skills.js';
+import { titleFrom, newSession, save, load, list, removeAll } from '../src/core/history.js';
+import { usage, tooBig, fold, forSummary } from '../src/core/window.js';
+import {
+  MODELS, DEFAULT_MODEL, setModel, model, modelName, modelList,
+  estimateTokens, estimateConversation, contextLimit, explain,
+} from '../src/core/provider.js';
+import { Failure, ToolFailure, Declined, isFailure } from '../src/core/failure.js';
+
+// ---------------------------------------------------------------------------
+
+let passed = 0;
+const failures = [];
+let group = '';
+
+function section(name) {
+  group = name;
+}
+
+function test(name, fn) {
+  try {
+    const out = fn();
+    if (out instanceof Promise) {
+      return out.then(
+        () => { passed++; },
+        (err) => { failures.push([`${group} › ${name}`, err]); }
+      );
+    }
+    passed++;
+  } catch (err) {
+    failures.push([`${group} › ${name}`, err]);
+  }
+  return Promise.resolve();
+}
+
+function ok(value, why = 'expected a truthy value') {
+  if (!value) throw new Error(why);
+}
+
+function eq(actual, expected, why = '') {
+  const a = JSON.stringify(actual);
+  const b = JSON.stringify(expected);
+  if (a !== b) throw new Error(`${why}\n     got: ${a}\n  wanted: ${b}`);
+}
+
+async function throws(fn, kind) {
+  try {
+    await fn();
+  } catch (err) {
+    if (kind && err.kind !== kind) {
+      throw new Error(`threw "${err.kind}" rather than "${kind}": ${err.message}`);
+    }
+    return err;
+  }
+  throw new Error(`expected it to throw${kind ? ` "${kind}"` : ''}, but it did not`);
+}
+
+// ---------------------------------------------------------------------------
+
+const tmp = await fs.mkdtemp(path.join(os.tmpdir(), 'ucode-test-'));
+const sandbox = path.join(tmp, 'project');
+const fakeHome = path.join(tmp, 'home');
+await fs.mkdir(sandbox, { recursive: true });
+await fs.mkdir(fakeHome, { recursive: true });
+
+setRoot(sandbox);
+setConfirm(async () => false); // nothing in the tests may reach outside the root
+
+const write = (rel, text) => fs.writeFile(path.join(sandbox, rel), text, 'utf8');
+const read = (rel) => fs.readFile(path.join(sandbox, rel), 'utf8');
+
+// ---------------------------------------------------------------------------
+
+section('theme');
+
+await test('visible length ignores colour codes', () => {
+  eq(visLen('\x1b[31mred\x1b[0m'), 3);
+  eq(visLen('plain'), 5);
+});
+
+await test('padVis pads and cuts to an exact width', () => {
+  eq(visLen(padVis('ab', 5)), 5);
+  eq(visLen(padVis('abcdefgh', 4)), 4);
+  eq(visLen(padVis('\x1b[31mabcdefgh\x1b[0m', 4)), 4);
+});
+
+await test('clip adds an ellipsis only when it has to', () => {
+  eq(clip('short', 20), 'short');
+  eq(clip('abcdefghij', 5), 'abcd…');
+});
+
+await test('wrapAnsi breaks on words and keeps the colour open', () => {
+  const lines = wrapAnsi('the quick brown fox jumps over', 12);
+  ok(lines.length > 1, 'should have wrapped');
+  for (const line of lines) ok(visLen(line) <= 12, `"${line}" is wider than 12`);
+});
+
+await test('asLabel strips the trailing full stop', () => {
+  eq(asLabel('Listing src.'), 'Listing src');
+  eq(asLabel('  Reading  tui.js  '), 'Reading tui.js');
+  eq(asLabel('Running npm test...'), 'Running npm test');
+  eq(asLabel('file.js'), 'file.js', 'a dot inside the text must survive');
+  eq(asLabel('Listing .'), 'Listing .', 'a dot that is the argument must survive');
+  eq(asLabel('Reading ./a.js'), 'Reading ./a.js');
+});
+
+await test('the wordmark rows are all the same width', () => {
+  const widths = new Set(BANNER.map((row) => row.length));
+  eq(widths.size, 1, `rows differ: ${[...widths].join(', ')}`);
+});
+
+await test('a box row is exactly as wide as the box', () => {
+  eq(visLen(boxRow('hello', 20)), 20);
+  eq(visLen(boxRow('a very long line that will not fit at all', 20)), 20);
+});
+
+section('keys');
+
+await test('escape sequences stay whole', () => {
+  eq(splitKeys('ab'), ['a', 'b']);
+  eq(splitKeys('\x1b[A'), ['\x1b[A']);
+  eq(splitKeys('x\x1b[Dy'), ['x', '\x1b[D', 'y']);
+});
+
+await test('application cursor mode is normalised', () => {
+  eq(splitKeys('\x1bOA'), ['\x1b[A'], 'ESC O A should become ESC [ A');
+});
+
+await test('a status line is one short line', () => {
+  ok(isLabel('Reading tui.js'));
+  ok(!isLabel('line one\nline two'));
+  ok(!isLabel('x'.repeat(200)));
+});
+
+section('globs');
+
+await test('star does not cross a directory boundary', () => {
+  ok(globToRegExp('*.js').test('a.js'));
+  ok(!globToRegExp('*.js').test('src/a.js'));
+});
+
+await test('double star does', () => {
+  ok(globToRegExp('**/*.js').test('src/deep/a.js'));
+  ok(globToRegExp('**/*.js').test('a.js'), 'zero directories counts too');
+});
+
+await test('braces alternate', () => {
+  const re = globToRegExp('src/**/*.{ts,tsx}');
+  ok(re.test('src/a.ts'));
+  ok(re.test('src/x/b.tsx'));
+  ok(!re.test('src/a.js'));
+});
+
+section('diffs');
+
+await test('lines are counted the way a person counts them', () => {
+  eq(toLines('a\nb\n'), ['a', 'b']);
+  eq(toLines('a\nb'), ['a', 'b']);
+  eq(toLines(''), ['']);
+});
+
+await test('only the changed region comes back', () => {
+  const { removed, added } = changedRegion('a\nb\nc\nd\n', 'a\nB\nc\nd\n');
+  eq(removed, [{ n: 2, text: 'b' }]);
+  eq(added, [{ n: 2, text: 'B' }]);
+});
+
+await test('the numbers are the real line numbers on both sides', () => {
+  // One line becomes three: the removal is line 2, the additions are 2, 3, 4.
+  const { removed, added } = changedRegion('a\nb\nz\n', 'a\nx\ny\nz\n');
+  eq(removed.map((r) => r.n), [2]);
+  eq(added.map((r) => r.n), [2, 3]);
+});
+
+await test('every rendered diff row carries its number', () => {
+  const rows = renderDiff(changedRegion('a\nb\n', 'a\nB\n'));
+  eq(rows, ['-2| b', '+2| B']);
+  for (const row of rows) ok(/^[-+]\d+\| /.test(row), `"${row}" has no line number`);
+});
+
+await test('an offset shifts the numbers to where the edit landed', () => {
+  const rows = renderDiff(changedRegion('old', 'new'), { offset: 40 });
+  eq(rows, ['-41| old', '+41| new']);
+});
+
+await test('a long diff is capped with a note that is not a code line', () => {
+  const before = Array.from({ length: 50 }, (_, i) => `line ${i}`).join('\n');
+  const rows = renderDiff(changedRegion(before, 'one line'), { max: 6 });
+  const notes = rows.filter((r) => !/^[-+]\d+\|/.test(r));
+  eq(notes.length, 1);
+  ok(notes[0].includes('more removed'));
+});
+
+await test('a new file is shown from its first line', () => {
+  eq(renderNewFile('a\nb\n'), ['+1| a', '+2| b']);
+});
+
+await test('output is capped with a note saying how much was cut', () => {
+  const out = cap('x'.repeat(100), 10);
+  ok(out.length < 100);
+  ok(out.includes('90 more characters'));
+});
+
+section('paths');
+
+await test('a path inside the root is shown short', () => {
+  const t = resolveIn('src/app.js', 'read_file');
+  ok(t.inside);
+  eq(t.show, 'src/app.js');
+});
+
+await test('a path outside the root is flagged and spelled out', () => {
+  const t = resolveIn('../../etc/passwd', 'read_file');
+  ok(!t.inside);
+  ok(path.isAbsolute(t.show));
+});
+
+await test('a missing path argument is a bad_args failure', async () => {
+  await throws(() => readFile({}), 'bad_args');
+});
+
+await test('reaching outside the root needs a yes, and no means no', async () => {
+  await throws(() => readFile({ path: '../secrets.txt' }), 'declined');
+});
+
+section('files');
+
+await test('write then read comes back with a numbered gutter', async () => {
+  const out = await writeFile({ path: 'a.txt', content: 'one\ntwo\n' });
+  ok(out.summary.includes('created'));
+  eq(out.diff, ['+1| one', '+2| two']);
+
+  const back = await readFile({ path: 'a.txt' });
+  ok(back.content.includes('1 | one'));
+  ok(back.content.includes('2 | two'));
+  eq(back.summary, '2 lines');
+});
+
+await test('overwriting shows a real diff rather than the whole file', async () => {
+  await write('b.txt', 'keep\nchange me\nkeep\n');
+  const out = await writeFile({ path: 'b.txt', content: 'keep\nchanged\nkeep\n' });
+  ok(out.summary.includes('overwrote'));
+  eq(out.diff, ['-2| change me', '+2| changed']);
+});
+
+await test('a long file is paged and says how to continue', async () => {
+  await write('long.txt', Array.from({ length: 900 }, (_, i) => `line ${i + 1}`).join('\n'));
+  const out = await readFile({ path: 'long.txt' });
+  ok(out.content.includes('offset=601'), 'should say where to pick up');
+  eq(out.summary, 'lines 1-600 of 900');
+});
+
+await test('reading past the end explains the range', async () => {
+  const err = await throws(() => readFile({ path: 'a.txt', offset: 99 }), 'bad_args');
+  ok(err.fix.includes('between 1 and 2'));
+});
+
+await test('a missing file says what to do about it', async () => {
+  const err = await throws(() => readFile({ path: 'nope.txt' }), 'not_found');
+  ok(err.fix.includes('list_dir'));
+});
+
+await test('a directory is not a file', async () => {
+  await fs.mkdir(path.join(sandbox, 'adir'), { recursive: true });
+  await throws(() => readFile({ path: 'adir' }), 'is_directory');
+});
+
+await test('binary is refused rather than mangled', async () => {
+  await fs.writeFile(path.join(sandbox, 'bin.dat'), Buffer.from([0, 1, 2, 0, 3]));
+  await throws(() => readFile({ path: 'bin.dat' }), 'binary');
+});
+
+await test('an edit replaces exactly one occurrence', async () => {
+  await write('c.js', 'const a = 1;\nconst b = 2;\n');
+  const out = await editFile({ path: 'c.js', old_string: 'const b = 2;', new_string: 'const b = 3;' });
+  eq(await read('c.js'), 'const a = 1;\nconst b = 3;\n');
+  eq(out.diff, ['-2| const b = 2;', '+2| const b = 3;']);
+  ok(out.summary.includes('line 2'));
+});
+
+await test('an ambiguous edit is refused, not guessed', async () => {
+  await write('d.js', 'x();\nx();\n');
+  const err = await throws(() => editFile({ path: 'd.js', old_string: 'x();', new_string: 'y();' }), 'ambiguous');
+  eq(err.detail.hits, 2);
+  eq(await read('d.js'), 'x();\nx();\n', 'nothing should have been written');
+});
+
+await test('a miss explains itself when only the whitespace differs', async () => {
+  await write('e.js', 'function a() {\n\treturn 1;\n}\n');
+  const err = await throws(
+    () => editFile({ path: 'e.js', old_string: '    return 1;', new_string: '    return 2;' }),
+    'no_match'
+  );
+  ok(/whitespace/i.test(err.failed), `unhelpful message: ${err.failed}`);
+});
+
+await test('a miss points at where the first line does appear', async () => {
+  await write('f.js', 'const config = {\n  debug: false,\n};\n');
+  const err = await throws(
+    () => editFile({ path: 'f.js', old_string: 'const config = {\n  debug: true,\n};', new_string: 'x' }),
+    'no_match'
+  );
+  ok(err.failed.includes('line 1'), `should name the line: ${err.failed}`);
+});
+
+await test('an edit that changes nothing is refused', async () => {
+  await throws(() => editFile({ path: 'c.js', old_string: 'same', new_string: 'same' }), 'bad_args');
+});
+
+await test('multi_edit applies in order', async () => {
+  await write('g.js', 'let a = 1;\nlet b = 2;\nlet c = 3;\n');
+  const out = await multiEdit({
+    path: 'g.js',
+    edits: [
+      { old_string: 'let a = 1;', new_string: 'let a = 10;' },
+      { old_string: 'let c = 3;', new_string: 'let c = 30;' },
+    ],
+  });
+  eq(await read('g.js'), 'let a = 10;\nlet b = 2;\nlet c = 30;\n');
+  ok(out.diff.some((r) => r.startsWith('+1|')));
+  ok(out.diff.some((r) => r.startsWith('+3|')));
+});
+
+await test('one bad edit in a set writes none of them', async () => {
+  await write('h.js', 'alpha\nbeta\n');
+  await throws(() => multiEdit({
+    path: 'h.js',
+    edits: [
+      { old_string: 'alpha', new_string: 'ALPHA' },
+      { old_string: 'not here', new_string: 'x' },
+    ],
+  }), 'no_match');
+  eq(await read('h.js'), 'alpha\nbeta\n', 'the file must be untouched');
+});
+
+await test('batch_write creates parent directories', async () => {
+  const out = await batchWrite({
+    files: [
+      { path: 'deep/nested/one.txt', content: 'one\n' },
+      { path: 'deep/nested/two.txt', content: 'two\n' },
+    ],
+  });
+  eq(await read('deep/nested/two.txt'), 'two\n');
+  ok(out.summary.includes('2 files'));
+  ok(out.diff.some((r) => r.startsWith('~deep/nested/one.txt')));
+});
+
+section('search');
+
+await test('list_dir separates directories from files', async () => {
+  const out = await listDir({ path: '.' });
+  ok(out.content.includes('deep/'));
+  ok(out.content.includes('a.txt'));
+  ok(/\d+ dirs?, \d+ files?/.test(out.summary));
+});
+
+await test('glob finds files and reports the count', async () => {
+  const out = await glob({ pattern: '**/*.txt' });
+  ok(out.content.includes('deep/nested/one.txt'));
+  ok(out.summary.includes('match'));
+});
+
+await test('glob with no match says where it looked', async () => {
+  const out = await glob({ pattern: '**/*.nothing' });
+  eq(out.summary, 'no matches');
+  ok(out.content.includes('Looked at'));
+});
+
+await test('grep returns file:line: text', async () => {
+  await write('i.js', 'function hello() {}\nfunction world() {}\n');
+  const out = await grep({ pattern: 'function (\\w+)', glob: '**/*.js' });
+  ok(out.content.includes('i.js:1:'));
+  ok(out.summary.includes('match'));
+});
+
+await test('a broken regex is explained, not thrown', async () => {
+  const err = await throws(() => grep({ pattern: '([' }), 'bad_args');
+  ok(err.fix.includes('Escape'));
+});
+
+section('shell');
+
+await test('a command comes back with its exit code and output', async () => {
+  const out = await runCommand({ command: 'echo hello-from-ucode' });
+  ok(out.content.includes('hello-from-ucode'));
+  eq(out.exitCode, 0);
+});
+
+await test('a non-zero exit is reported rather than thrown', async () => {
+  const out = await runCommand({ command: 'exit 3' });
+  eq(out.exitCode, 3);
+  ok(out.summary.includes('exit 3'));
+});
+
+await test('a timeout kills it and says so', async () => {
+  const out = await runCommand({
+    command: process.platform === 'win32' ? 'ping -n 20 127.0.0.1 > nul' : 'sleep 20',
+    timeout_ms: 1200,
+  });
+  ok(out.summary.includes('timed out'), `got: ${out.summary}`);
+});
+
+await test('a command that would kill the agent is refused', async () => {
+  for (const command of [
+    'taskkill /IM node.exe /F',
+    'killall node',
+    'pkill -f node',
+  ]) {
+    const err = await throws(() => runCommand({ command }), 'suicidal_command');
+    ok(err.fix.includes('PID'), 'should point at the narrow alternative');
+  }
+});
+
+await test('an ordinary kill is still allowed', async () => {
+  const out = await runCommand({
+    command: process.platform === 'win32' ? 'echo taskkill /pid 1234' : 'echo kill 1234',
+  });
+  eq(out.exitCode, 0);
+});
+
+section('tool registry');
+
+await test('every schema has an implementation and vice versa', async () => {
+  for (const t of tools) {
+    ok(t.description.length > 40, `${t.name} needs a real description`);
+    ok(t.parameters.type === 'object', `${t.name} takes an object`);
+  }
+  await throws(() => runTool('no_such_tool', {}), 'no_such_tool');
+});
+
+await test('unknown arguments are rejected with the accepted list', async () => {
+  const err = await throws(() => runTool('read_file', { path: 'a.txt', nonsense: 1 }), 'bad_args');
+  ok(err.failed.includes('nonsense'));
+});
+
+await test('a numeric string is accepted where a number is wanted', async () => {
+  const out = await runTool('read_file', { path: 'a.txt', offset: '2' });
+  ok(out.content.includes('two'));
+});
+
+await test('the wrong type is rejected', async () => {
+  await throws(() => runTool('read_file', { path: 42 }), 'bad_args');
+});
+
+await test('the live label never ends in a full stop', () => {
+  const calls = [
+    ['read_file', { path: 'src/app.js' }],
+    ['write_file', { path: 'index.html' }],
+    ['batch_write', { files: [{ path: 'a' }, { path: 'b' }] }],
+    ['edit_file', { path: 'a.js' }],
+    ['multi_edit', { path: 'a.js', edits: [{}] }],
+    ['list_dir', { path: 'src' }],
+    ['glob', { pattern: '**/*.js' }],
+    ['grep', { pattern: 'x' }],
+    ['run_command', { command: 'npm test' }],
+    ['run_commands', { commands: [{}] }],
+    ['web_search', { query: 'x' }],
+    ['load_skill', { name: 'ui-ux' }],
+  ];
+  for (const [name, args] of calls) {
+    const label = describe(name, args);
+    ok(label.length > 0, `${name} has no label`);
+    ok(!label.endsWith('.'), `"${label}" ends in a full stop`);
+    ok(/^[A-Z]/.test(label), `"${label}" should start with a capital`);
+  }
+});
+
+await test('the label names the thing being worked on', () => {
+  eq(describe('list_dir', { path: 'src' }), 'Listing src');
+  eq(describe('list_dir', {}), 'Listing the project root');
+  eq(describe('list_dir', { path: '.' }), 'Listing the project root');
+  eq(describe('read_file', { path: 'a.js' }), 'Reading a.js');
+  eq(describe('batch_write', { files: [{ path: 'only.js' }] }), 'Writing only.js');
+});
+
+await test('reads are parallel-safe and writes are not', () => {
+  for (const name of ['read_file', 'list_dir', 'glob', 'grep']) ok(PARALLEL_SAFE.has(name));
+  for (const name of ['write_file', 'edit_file', 'run_command']) {
+    ok(!PARALLEL_SAFE.has(name), `${name} must not run in parallel`);
+    ok(WRITES.has(name), `${name} must be withheld in plan mode`);
+  }
+});
+
+section('skills');
+
+await test('frontmatter is parsed and the body kept', () => {
+  const { skill } = parseSkill('---\nname: x\ndescription: does x\n---\n\nbody here\n', 'test');
+  eq(skill.name, 'x');
+  eq(skill.description, 'does x');
+  eq(skill.body, 'body here');
+  eq(skill.triggers, []);
+});
+
+await test('a file with no frontmatter is a problem, not a crash', () => {
+  const { error, skill } = parseSkill('just text', 'test');
+  ok(error);
+  ok(!skill);
+});
+
+await test('a missing name is reported', () => {
+  const { error } = parseSkill('---\ndescription: d\n---\nbody', 'test');
+  ok(error.includes('name'));
+});
+
+await test('auto triggers are parsed into a list', () => {
+  const { skill } = parseSkill('---\nname: x\ndescription: d\nauto: app, landing page\n---\nbody', 'test');
+  eq(skill.triggers, ['app', 'landing page']);
+});
+
+await test('a trigger fires on a word and not inside one', () => {
+  const skills = [
+    { name: 'ui-ux', triggers: ['app', 'landing page', 'ui'], body: '', description: '' },
+    { name: 'other', triggers: ['database'], body: '', description: '' },
+  ];
+  eq(autoLoadFor(skills, 'build me an app for notes').map((s) => s.name), ['ui-ux']);
+  eq(autoLoadFor(skills, 'design a landing page').map((s) => s.name), ['ui-ux']);
+  eq(autoLoadFor(skills, 'make the UI nicer').map((s) => s.name), ['ui-ux']);
+  eq(autoLoadFor(skills, 'that made me happy').map((s) => s.name), [], 'must not fire inside "happy"');
+  eq(autoLoadFor(skills, '').map((s) => s.name), []);
+});
+
+await test('the shipped ui-ux skill loads itself for interface work', async () => {
+  const { loadSkills } = await import('../src/core/skills.js');
+  const skills = await loadSkills({ cwd: sandbox });
+  const uiux = findSkill(skills, 'ui-ux');
+  ok(uiux, 'the ui-ux skill should be shipped');
+  ok(uiux.triggers.length > 5, 'it should carry trigger words');
+  ok(uiux.body.length > 2000, 'it should have a real body');
+
+  for (const request of [
+    'build me a dashboard for sales',
+    'make a landing page for the launch',
+    'the UI is ugly, fix it',
+    'add dark mode to the app',
+  ]) {
+    ok(
+      autoLoadFor(skills, request).some((s) => s.name === 'ui-ux'),
+      `"${request}" should pull in ui-ux`
+    );
+  }
+
+  ok(catalogue(skills).includes('ui-ux'), 'it belongs in the prompt catalogue');
+  ok(!catalogue(skills).includes(uiux.body), 'bodies must stay out of the prompt');
+});
+
+section('sessions');
+
+await test('a title is taken from the first real line', () => {
+  eq(titleFrom('fix the parser\nand the lexer'), 'Fix the parser');
+  eq(titleFrom('/help'), 'Help');
+  eq(titleFrom(''), 'Untitled');
+  eq(titleFrom('x'.repeat(80)).length, 60);
+});
+
+await test('a session round-trips through disk', async () => {
+  const session = newSession(sandbox, DEFAULT_MODEL);
+  session.messages.push({ role: 'user', content: 'make a dashboard' });
+  session.messages.push({ role: 'assistant', content: 'done' });
+  await save(session, { home: fakeHome });
+
+  const back = await load(session.id, { home: fakeHome });
+  eq(back.messages.length, 2);
+  eq(back.title, 'Make a dashboard', 'the title is filled in on save');
+});
+
+await test('the listing carries what each conversation was about', async () => {
+  const all = await list({ home: fakeHome, cwd: sandbox });
+  eq(all.length, 1);
+  eq(all[0].preview, 'make a dashboard');
+  eq(all[0].lastReply, 'done');
+  eq(all[0].turns, 1);
+  ok(all[0].mine, 'a session started here belongs to this folder');
+});
+
+await test('conversations from this folder come first', async () => {
+  const elsewhere = newSession(path.join(tmp, 'somewhere-else'), DEFAULT_MODEL);
+  elsewhere.messages.push({ role: 'user', content: 'unrelated work' });
+  await save(elsewhere, { home: fakeHome });
+
+  const all = await list({ home: fakeHome, cwd: sandbox });
+  eq(all.length, 2);
+  ok(all[0].mine, 'the local one should sort to the top');
+  ok(!all[1].mine);
+});
+
+await test('a corrupt file is reported without breaking the listing', async () => {
+  await fs.writeFile(path.join(fakeHome, 'sessions', 'broken.json'), '{ not json', 'utf8');
+  const all = await list({ home: fakeHome, cwd: sandbox });
+  eq(all.length, 2, 'the good ones still list');
+  eq(all.unreadable, ['broken.json']);
+});
+
+await test('resuming something that is not there says so', async () => {
+  await throws(() => load('does-not-exist', { home: fakeHome }), 'no_such_session');
+});
+
+section('context window');
+
+await test('usage is reported as a percentage of the window', () => {
+  const stats = usage([{ role: 'user', content: 'x'.repeat(4000) }], 10_000);
+  ok(stats.used > 900 && stats.used < 1100, `estimate looks wrong: ${stats.used}`);
+  ok(stats.percent > 9 && stats.percent < 11);
+});
+
+await test('a small conversation is left alone', async () => {
+  const messages = [{ role: 'user', content: 'hello' }];
+  ok(!tooBig(messages, 100_000));
+  const out = await fold(messages, { limit: 100_000, summarize: async () => 'nope' });
+  ok(!out.folded);
+  eq(out.messages.length, 1);
+});
+
+await test('a big one is folded into a summary and keeps the tail', async () => {
+  const messages = Array.from({ length: 40 }, (_, i) => ({
+    role: i % 2 ? 'assistant' : 'user',
+    content: `message ${i} `.repeat(200),
+  }));
+  ok(tooBig(messages, 20_000));
+
+  const out = await fold(messages, { limit: 20_000, summarize: async () => 'what happened earlier' });
+  ok(out.folded);
+  eq(out.messages[0].role, 'system');
+  ok(out.messages[0].folded);
+  ok(out.messages[0].content.includes('what happened earlier'));
+  ok(out.messages.length < messages.length);
+  eq(out.messages[out.messages.length - 1], messages[messages.length - 1], 'the last turn survives');
+});
+
+await test('the kept tail never opens on an orphaned tool result', async () => {
+  const messages = [];
+  for (let i = 0; i < 30; i++) {
+    messages.push({ role: 'assistant', content: 'x'.repeat(600), toolCalls: [{ id: `t${i}`, name: 'read_file', args: {} }] });
+    messages.push({ role: 'tool', toolCallId: `t${i}`, name: 'read_file', content: 'y'.repeat(600) });
+  }
+  const out = await fold(messages, { limit: 8000, summarize: async () => 'earlier' });
+  ok(out.folded);
+  const first = out.messages.find((m) => !m.folded);
+  ok(first.role !== 'tool', 'a tool result must not be the first kept message');
+});
+
+await test('tool traffic is trimmed for the summarizer', () => {
+  const text = forSummary([
+    { role: 'user', content: 'do it' },
+    { role: 'assistant', content: '', toolCalls: [{ name: 'read_file', args: { path: 'a.js' } }] },
+    { role: 'tool', name: 'read_file', content: 'z'.repeat(5000) },
+  ]);
+  ok(text.includes('called read_file'));
+  ok(text.length < 1500, 'the tool body should be cut down');
+});
+
+section('models');
+
+await test('exactly the NVIDIA and Cohere models are offered', () => {
+  const ids = Object.keys(MODELS);
+  eq(ids.length, 5);
+  for (const id of ids) {
+    ok(/^(nvidia|cohere)\//.test(id), `${id} is not NVIDIA or Cohere`);
+    ok(id.endsWith(':free'), `${id} is not free`);
+    ok(MODELS[id].name && MODELS[id].note, `${id} needs a name and a note`);
+  }
+});
+
+await test('the default is Nemotron 3 Ultra', () => {
+  eq(DEFAULT_MODEL, 'nvidia/nemotron-3-ultra-550b-a55b:free');
+  eq(modelName(DEFAULT_MODEL), 'Nemotron 3 Ultra (free)');
+});
+
+await test('the list is locked to those five', () => {
+  const before = model();
+  try {
+    setModel('cohere/north-mini-code:free');
+    eq(modelName(), 'North Mini Code (free)');
+    const err = new Error('should have thrown');
+    try {
+      setModel('openai/gpt-4o');
+      throw err;
+    } catch (e) {
+      if (e === err) throw e;
+      eq(e.kind, 'bad_model');
+    }
+    eq(model(), 'cohere/north-mini-code:free', 'a rejected switch must not change anything');
+  } finally {
+    setModel(before);
+  }
+});
+
+await test('exactly one model is marked active', () => {
+  const active = modelList().filter((m) => m.active);
+  eq(active.length, 1);
+  eq(active[0].id, model());
+});
+
+await test('the context limit follows the model', () => {
+  const before = model();
+  try {
+    setModel('nvidia/nemotron-3-ultra-550b-a55b:free');
+    eq(contextLimit(), 1_000_000);
+    setModel('cohere/north-mini-code:free');
+    eq(contextLimit(), 256_000);
+  } finally {
+    setModel(before);
+  }
+});
+
+await test('token estimates scale with the text', () => {
+  eq(estimateTokens(''), 0);
+  eq(estimateTokens('abcd'), 1);
+  const small = estimateConversation([{ role: 'user', content: 'hi' }]);
+  const large = estimateConversation([{ role: 'user', content: 'hi'.repeat(1000) }]);
+  ok(large > small * 10);
+});
+
+section('the command itself');
+
+await test('running it prints the version, importing it does nothing', async () => {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const run = promisify(execFile);
+  const entry = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1')), '..', 'ucode.js');
+
+  // Launched: the CLI runs. This is the guard that npm link used to break —
+  // argv[1] arrives through a symlink, so comparing it to import.meta.url
+  // fails and the command exits 0 having silently done nothing.
+  const { stdout } = await run(process.execPath, [entry, '--version']);
+  ok(/^\d+\.\d+\.\d+/.test(stdout.trim()), `expected a version, got: ${stdout.trim()}`);
+
+  // Imported: no session, no output, and it must return.
+  const imported = await run(process.execPath, [
+    '-e',
+    `import(${JSON.stringify(pathToFileURL(entry).href)}).then(() => process.stdout.write('inert'))`,
+  ]);
+  eq(imported.stdout, 'inert', 'importing must not start a session');
+});
+
+section('provider errors');
+
+await test('a dropped socket is a retryable network failure, not a mystery', () => {
+  // What undici actually throws when a response is cut off mid-flight: a bare
+  // TypeError whose real reason is only on the cause.
+  const err = new TypeError('terminated');
+  err.cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' });
+  const f = explain(err, DEFAULT_MODEL);
+  eq(f.kind, 'network');
+  ok(f.failed.includes('terminated') || f.failed.includes('other side closed'));
+});
+
+await test('the usual connection errors land in the same place', () => {
+  for (const message of ['fetch failed', 'socket hang up', 'ECONNRESET', 'getaddrinfo EAI_AGAIN']) {
+    eq(explain(new Error(message), DEFAULT_MODEL).kind, 'network', `for "${message}"`);
+  }
+});
+
+await test('a rate limit carries how long to wait', () => {
+  const err = Object.assign(new Error('Rate limit reached, try again in 12s'), { status: 429 });
+  const f = explain(err, DEFAULT_MODEL);
+  eq(f.kind, 'rate_limit');
+  eq(f.detail.retryAfter, 12);
+  ok(!f.detail.daily);
+});
+
+await test('a daily cap is not something to wait out', () => {
+  const err = Object.assign(new Error('Rate limit exceeded: requests per day'), { status: 429 });
+  const f = explain(err, DEFAULT_MODEL);
+  eq(f.kind, 'rate_limit');
+  ok(f.detail.daily);
+  ok(f.fix.includes('/model'));
+});
+
+await test('a 404 on a known model is a busy provider, so it retries', () => {
+  const err = Object.assign(new Error('not found'), { status: 404 });
+  eq(explain(err, DEFAULT_MODEL).kind, 'server');
+});
+
+await test('a bad key says exactly what to check', () => {
+  const err = Object.assign(new Error('invalid api key'), { status: 401 });
+  const f = explain(err, DEFAULT_MODEL);
+  eq(f.kind, 'invalid_api_key');
+  ok(f.fix.includes('openrouter.ai/keys'));
+});
+
+await test('an abort is not reported as a failure of the model', () => {
+  const err = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
+  eq(explain(err, DEFAULT_MODEL).kind, 'aborted');
+});
+
+section('failures');
+
+await test('every failure says what, why and what next', () => {
+  const f = new Failure({ kind: 'k', attempted: 'doing a thing', failed: 'it broke', fix: 'try this' });
+  ok(isFailure(f));
+  ok(f.message.includes('doing a thing'));
+  ok(f.message.includes('it broke'));
+});
+
+await test('a tool failure reads as an instruction to the model', () => {
+  const f = new ToolFailure({ kind: 'no_match', attempted: 'editing a.js', failed: 'no match', fix: 'read it again' });
+  const text = f.forModel();
+  ok(text.includes('ERROR (no_match)'));
+  ok(text.includes('Suggestion: read it again'));
+});
+
+await test('a decline is not a fault and tells the model not to retry', () => {
+  const d = new Declined('running rm -rf /');
+  eq(d.kind, 'declined');
+  ok(d.fix.includes('Do not try it again'));
+});
+
+await test('byte sizes are readable', () => {
+  eq(bytes(512), '512 B');
+  eq(bytes(2048), '2.0 KB');
+  eq(bytes(1024 * 1024 * 3), '3.0 MB');
+});
+
+// ---------------------------------------------------------------------------
+
+await removeAll({ home: fakeHome }).catch(() => {});
+await fs.rm(tmp, { recursive: true, force: true }).catch(() => {});
+
+const total = passed + failures.length;
+if (failures.length) {
+  process.stdout.write(`\n  ${failures.length} of ${total} failed\n\n`);
+  for (const [name, err] of failures) {
+    process.stdout.write(`  ✗ ${name}\n    ${err.message.split('\n').join('\n    ')}\n\n`);
+  }
+  process.exit(1);
+}
+
+process.stdout.write(`\n  ${passed} tests passed\n\n`);

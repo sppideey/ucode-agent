@@ -1,0 +1,54 @@
+{
+  "name": "ucode-agent",
+  "version": "1.0.0",
+  "description": "ucode - a terminal coding agent that reads, edits and runs your code. NVIDIA and Cohere models over OpenRouter.",
+  "type": "module",
+  "main": "ucode.js",
+  "bin": {
+    "ucode": "ucode.js"
+  },
+  "files": [
+    "ucode.js",
+    "src/",
+    "skills/"
+  ],
+  "scripts": {
+    "start": "node ucode.js",
+    "test": "node test/run.js",
+    "prepublishOnly": "node test/run.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/sppideey/ucode-agent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/sppideey/ucode-agent/issues"
+  },
+  "homepage": "https://github.com/sppideey/ucode-agent#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "keywords": [
+    "agent",
+    "cli",
+    "terminal",
+    "coding-agent",
+    "llm",
+    "nvidia",
+    "nemotron",
+    "cohere",
+    "openrouter"
+  ],
+  "author": "om dixit",
+  "license": "ISC",
+  "dependencies": {
+    "chalk": "^6.0.0",
+    "dotenv": "^17.4.2",
+    "marked": "^15.0.12",
+    "marked-terminal": "^7.3.0",
+    "openai": "^7.4.0"
+  }
+}

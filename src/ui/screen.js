@@ -1,0 +1,1003 @@
+/**
+ * screen.js — the full-screen interface.
+ *
+ * Used whenever stdout is a real terminal. Everything else — piped input, CI,
+ * `echo ... | ucode` — falls back to plain.js, which is why both exist.
+ *
+ * The layout, top to bottom:
+ *
+ *   ╭──────────────────────────────────────────────────╮
+ *   │  UCODE wordmark        dir / date / session      │
+ *   ╰──────────────────────────────────────────────────╯
+ *
+ *    the conversation, scrolling with the wheel or PgUp
+ *
+ *   ╭──────────────────────────────────────────────────╮
+ *   │ › what you are typing, growing downward as it     │
+ *   ╰──────────────────────────────────────────────────╯
+ *    ◆ Build · Nemotron 3 Ultra (free) OpenRouter
+ *
+ * Both boxes are drawn rather than ruled off, because a box says "this is a
+ * thing you use" where a horizontal rule only says "something changes here".
+ * The status line under the input carries two facts and no more: which mode
+ * is live, and which model is answering. Anything else down there competes
+ * with the thing the user is actually looking at, which is what they typed.
+ *
+ * The transcript is a buffer of pre-rendered lines and the whole frame is
+ * repainted whenever anything changes. At terminal sizes that is cheap, and
+ * it rules out every partial-update bug at once.
+ */
+
+import { appendFile } from 'node:fs/promises';
+import { homedir } from 'node:os';
+import path from 'node:path';
+import chalk from 'chalk';
+import {
+  theme, blue, sky, deep, dim, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
+  boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
+  shortenPath, today, asLabel,
+} from './theme.js';
+import { renderer, render, polish } from './markdown.js';
+
+/**
+ * One line of narration, in the model's own words: "Reading screen.js".
+ * Anything longer than this is prose, and prose belongs in the answer.
+ */
+export const MAX_LABEL = 120;
+
+export function isLabel(text) {
+  const t = String(text ?? '').trim();
+  return t.length > 0 && t.length <= MAX_LABEL && !t.includes('\n');
+}
+
+export const COMMANDS = [
+  '/help', '/model', '/models', '/session', '/sessions', '/resume',
+  '/new', '/skills', '/clear', '/search', '/copy', '/exit',
+];
+
+// ANSI ----------------------------------------------------------------------
+const ESC = '\x1b';
+const ALT_ON = `${ESC}[?1049h`;
+const ALT_OFF = `${ESC}[?1049l`;
+
+/**
+ * Mouse setup, decided by measurement rather than by documentation.
+ *
+ * 1007 is alternate scroll: inside the alternate screen the terminal turns
+ * wheel events into arrow keys. On Windows that is the only way a wheel ever
+ * reaches the program, because ConPTY forwards no mouse input at all — a probe
+ * that enabled every tracking mode received nothing from a scroll.
+ *
+ * And mouse tracking suppresses alternate scroll. So on Windows tracking is
+ * deliberately not requested: it delivers nothing there, and asking for it
+ * would cost the wheel. Elsewhere tracking works, so the mode chip is
+ * clickable on those platforms.
+ */
+const TRACK = process.platform === 'win32'
+  ? '' : `${ESC}[?1000h${ESC}[?1002h${ESC}[?1015h${ESC}[?1006h`;
+const UNTRACK = process.platform === 'win32'
+  ? '' : `${ESC}[?1006l${ESC}[?1015l${ESC}[?1002l${ESC}[?1000l`;
+
+const MOUSE_ON = `${ESC}[?1007h${TRACK}`;
+const MOUSE_OFF = `${UNTRACK}${ESC}[?1007l`;
+const HIDE = `${ESC}[?25l`;
+const SHOW = `${ESC}[?25h`;
+const HOME = `${ESC}[H`;
+const CLEAR_LINE = `${ESC}[K`;
+const at = (row, col) => `${ESC}[${row};${col}H`;
+const title = (t) => `${ESC}]0;${t}\x07`;
+
+/** Fixed rows below the header: the gap under it, both input borders, status. */
+const CHROME_BELOW = 4;
+
+/** The wordmark only earns its place with room for the facts column beside it. */
+const WORDMARK_NEEDS = BANNER_WIDTH + 30;
+
+export class Screen {
+  constructor({ cwd, input = process.stdin, output = process.stdout } = {}) {
+    this.cwd = cwd;
+    this.input = input;
+    this.output = output;
+
+    this.lines = [];        // the rendered transcript
+    this.scroll = 0;        // rows scrolled up from the bottom
+    this.buffer = '';       // what is being typed
+    this.cursor = 0;
+    this.history = [];
+    this.historyIndex = -1;
+
+    this.status = { busy: false, text: '', frame: 0, since: 0 };
+    this.facts = {};
+    this.model = '';
+
+    this.waiters = [];
+    this.queue = [];
+    this.closed = false;
+
+    // 'build' may edit and run; 'plan' is read-only. Ctrl+B swaps them, and
+    // the chip is clickable wherever the terminal forwards clicks.
+    this.mode = 'build';
+    this.chipTo = 0;
+    this.onInterrupt = null;
+    this.onModeChange = null;
+    this.spinTimer = null;
+    this.pendingPrompt = null;
+
+    this.cols = output.columns || 80;
+    this.rows = output.rows || 24;
+    this.md = renderer(this.width());
+  }
+
+  // -- lifecycle -----------------------------------------------------------
+
+  async start() {
+    this.output.write(ALT_ON + MOUSE_ON + HIDE + title(`ucode — ${path.basename(this.cwd)}`));
+    this.input.setRawMode?.(true);
+    this.input.resume();
+    this.input.setEncoding('utf8');
+    this.input.on('data', (chunk) => this.onData(chunk));
+
+    this.onResize = () => {
+      this.cols = this.output.columns || 80;
+      this.rows = this.output.rows || 24;
+      this.md = renderer(this.width());
+      this.render();
+    };
+    this.output.on('resize', this.onResize);
+
+    this.render();
+  }
+
+  stop() {
+    this.stopSpinner();
+    this.output.off?.('resize', this.onResize);
+    this.input.setRawMode?.(false);
+    this.input.pause();
+    this.output.write(MOUSE_OFF + ALT_OFF + SHOW);
+  }
+
+  close() {
+    if (this.closed) return;
+    this.closed = true;
+    this.stop();
+    while (this.waiters.length) this.waiters.shift()(null);
+  }
+
+  width() {
+    return Math.max(30, this.cols);
+  }
+
+  /** Usable width inside a box: two borders and a space of padding each side. */
+  inner() {
+    return Math.max(8, this.width() - 4);
+  }
+
+  // -- transcript ----------------------------------------------------------
+
+  /**
+   * Append without painting.
+   *
+   * Anything replacing a region of the transcript has to build the whole
+   * region and then render once. Painting between the delete and the re-add
+   * puts a frame on screen with the text missing, and at streaming speed that
+   * reads as flicker.
+   */
+  add(text = '') {
+    const width = this.width();
+    for (const raw of String(text).split('\n')) {
+      if (visLen(raw) <= width) this.lines.push(raw);
+      else for (const wrapped of wrapAnsi(raw, width)) this.lines.push(wrapped);
+    }
+    this.scroll = 0; // new output snaps back to the bottom
+  }
+
+  push(text = '') {
+    this.add(text);
+    this.soon();
+  }
+
+  /**
+   * Collapse a burst of pushes into one frame.
+   *
+   * Printing a list one line at a time repaints the screen per line — a model
+   * list of fifty entries drew a hundred frames back to back, which is visible
+   * as a cascade. A microtask runs before any I/O, so everything pushed in one
+   * synchronous stretch becomes a single render, while a push after an await
+   * still paints immediately.
+   */
+  soon() {
+    if (this.queued) return;
+    this.queued = true;
+    queueMicrotask(() => {
+      this.queued = false;
+      this.render();
+    });
+  }
+
+  write(text = '') { this.push(text); }
+  blank() { this.push(''); }
+  note(text) { this.push(dim(`  ${text}`)); }
+
+  clearScreen() {
+    this.lines = [];
+    this.scroll = 0;
+    this.render();
+  }
+
+  assistant(text) {
+    if (!text?.trim()) return;
+    this.add('');
+    this.add(render(this.md, text));
+    this.add('');
+    this.render();
+  }
+
+  /**
+   * A tool call, as it happens: "● Listing src".
+   *
+   * This lives in the transcript rather than only on the status line. The
+   * status line overwrites itself and is empty by the end of the turn, so work
+   * announced only there scrolls past unseen — and the diff underneath ends up
+   * with nothing above it explaining where it came from.
+   */
+  toolCall(label) {
+    // U+25CF, not U+23FA: the latter carries emoji presentation, which Windows
+    // Terminal draws as a white circle on a blue tile.
+    this.push(`${blue('●')} ${asLabel(label)}`);
+    this.updateSpinner(label);
+  }
+
+  toolResult(summary) {
+    this.push(dim(`  └ ${summary}`));
+  }
+
+  toolFailed(summary) {
+    this.push(`${dim('  └ ')}${theme.error(summary)}`);
+  }
+
+  /**
+   * The change itself, under the result.
+   *
+   * A line-number gutter, then the sign and the code tinted right across the
+   * row. The numbers are the point: a diff you cannot navigate from is a
+   * picture of a change rather than a record of one.
+   */
+  diff(lines) {
+    const gutter = 6;
+    // Two spaces of indent, the gutter, one space, then the tint fills the
+    // rest. One column over and every row wraps, splitting the whole diff.
+    const room = Math.max(12, this.width() - gutter - 3);
+
+    for (const line of lines) {
+      // A file heading in a multi-file write.
+      if (line.startsWith('~')) {
+        this.add(`  ${dim(' '.repeat(gutter))} ${sky(line.slice(1))}`);
+        continue;
+      }
+
+      const added = line.startsWith('+');
+      const rest = line.slice(1);
+      // Tools emit "<line>| <text>". A row with no number is the "12 more
+      // lines" note, which is not part of the change, so it stays dim.
+      const parsed = /^(\d+)\|\s?([\s\S]*)$/.exec(rest);
+      if (!parsed) {
+        this.add(`  ${dim(' '.repeat(gutter))} ${dim(rest)}`);
+        continue;
+      }
+
+      const [, number, body] = parsed;
+      const tint = added ? ADDED : REMOVED;
+      this.add(
+        `  ${dim(number.padStart(gutter))} ` +
+        // Tabs would leave the tint ending short of the row, so they widen.
+        tint(padVis(clip(`${added ? '+' : '-'} ${body.replace(/\t/g, '  ')}`, room), room))
+      );
+    }
+    this.render(); // a sixteen-line diff is one frame, not sixteen
+  }
+
+  /** Captured output under a command, dimmed so it reads as evidence. */
+  commandOutput(lines) {
+    for (const line of lines) this.add(`    ${dim(line)}`);
+    this.render();
+  }
+
+  /**
+   * A running command's output, live — on the status line and nowhere else.
+   *
+   * Only the newest line, gone as soon as the next arrives. Appending each one
+   * instead would mean a test run leaving sixty lines of "ok" in the
+   * conversation permanently, which is noise the moment it scrolls. What
+   * survives a command is decided when it ends: nothing if it worked, the tail
+   * if it did not.
+   */
+  progress(lines) {
+    const last = lines[lines.length - 1]?.trim();
+    if (last) this.updateSpinner(last);
+  }
+
+  /**
+   * The model's own account of the step it is taking, before it takes it.
+   *
+   * Not called status(): `this.status` holds the spinner state, and a method
+   * of the same name would be shadowed by it on every instance.
+   */
+  narrate(text) {
+    const line = asLabel(text);
+    if (!line) return;
+    this.push(dim(`  ⋮ ${clip(line, this.width() - 6)}`));
+    this.updateSpinner(line);
+  }
+
+  // -- streaming -----------------------------------------------------------
+  // Deltas appear as plain text as they arrive, then get replaced in place by
+  // properly rendered markdown once the reply is complete.
+
+  streamBegin() {
+    this.stopSpinner();
+    this.streamAt = this.lines.length;
+    this.streamBuf = '';
+    this.streamPainted = 0;
+  }
+
+  streamDelta(delta) {
+    if (this.streamAt === undefined) this.streamBegin();
+    this.streamBuf += delta;
+    const now = Date.now();
+    if (now - this.streamPainted < 60) return; // about 16fps is plenty
+    this.streamPainted = now;
+    this.repaintStream();
+  }
+
+  /**
+   * Repaint the partial reply.
+   *
+   * polish() runs on the partial text so bold, inline code and bullets are
+   * already styled while it streams. Without it the text arrives raw and then
+   * visibly re-renders at the end, which reads as a glitch.
+   */
+  repaintStream() {
+    this.lines.length = this.streamAt;
+    this.add('');
+    this.add(polish(this.streamBuf));
+    this.render(); // one frame, and never one without the reply in it
+  }
+
+  /**
+   * Finish a streamed reply.
+   *
+   * `asLabel` says the text turned out to be narration ahead of a tool call
+   * rather than an answer, in which case one short line folds down into the
+   * status line it was always meant to be.
+   */
+  streamEnd({ asNarration = false } = {}) {
+    if (this.streamAt === undefined) return '';
+    const text = this.streamBuf;
+    this.lines.length = this.streamAt;
+    this.streamAt = undefined;
+    this.streamBuf = '';
+
+    if (asNarration && isLabel(text)) this.narrate(text);
+    else if (text.trim()) this.assistant(text);
+    else this.render();
+    return text;
+  }
+
+  // -- thinking ------------------------------------------------------------
+  // A reasoning model does all its working before it says anything. None of it
+  // is printed: it is long, repetitive, and guesses drawn from it read worse
+  // than silence. The spinner counts the seconds so the wait is visibly alive,
+  // and the transcript gets one line afterwards saying how long it took.
+
+  thinkingDelta() {
+    if (this.thoughtSince === undefined) this.thoughtSince = Date.now();
+  }
+
+  thinkingEnd() {
+    if (this.thoughtSince === undefined) return;
+    const seconds = Math.round((Date.now() - this.thoughtSince) / 1000);
+    if (seconds >= 2) this.push(dim(`  ⋮ thought for ${seconds}s`));
+    this.thoughtSince = undefined;
+  }
+
+  error(err, { debug = false } = {}) {
+    const known = err && typeof err === 'object' && err.attempted;
+    this.push('');
+    if (known) {
+      this.push(`${theme.error('✗')} ${chalk.white(`Failed while ${err.attempted}.`)}`);
+      this.push(`  ${err.failed}`);
+      if (err.fix) this.push(`  ${blue('→')} ${err.fix}`);
+      if (err.kind) this.push(dim(`  (${err.kind})`));
+    } else {
+      this.push(`${theme.error('✗')} ${chalk.white('Something broke inside ucode.')}`);
+      this.push(`  ${err?.message ?? String(err)}`);
+      this.push(`  ${blue('→')} That is a bug in ucode rather than in your project. Re-run with --debug.`);
+    }
+    if (debug) {
+      const stack = (known && err.cause?.stack) || err?.stack;
+      if (stack) this.push(dim(stack));
+    }
+    this.push('');
+  }
+
+  // -- header --------------------------------------------------------------
+
+  setFacts(facts) {
+    this.facts = { ...this.facts, ...facts };
+    if (facts.model) this.model = facts.model;
+    this.render();
+  }
+
+  /** Same shape as the plain UI's header(), so the loop needs no branch. */
+  header({ cwd, model, used, limit, title: sessionTitle }) {
+    this.setFacts({
+      cwd,
+      model,
+      title: sessionTitle,
+      percent: limit > 0 ? Math.min(100, Math.round((used / limit) * 100)) : 0,
+    });
+  }
+
+  /**
+   * How many rows the header box occupies.
+   *
+   * The frame has to be exactly as tall as the terminal or every row below the
+   * shortfall is off by that much — including the one the caret is parked on.
+   * So this is derived, never assumed.
+   */
+  headerHeight() {
+    return this.width() >= WORDMARK_NEEDS ? BANNER.length + 2 : 5;
+  }
+
+  headerLines() {
+    const width = this.width();
+    const inner = width - 2;              // between the borders
+
+    if (width < WORDMARK_NEEDS) {
+      // Too narrow for the wordmark: stack it rather than wrap it into noise.
+      const rows = [
+        `  ${blue.bold('U C O D E')}  ${dim('terminal coding agent')}`,
+        `  ${dim('dir'.padEnd(8))}${chalk.white(clip(shortenPath(this.facts.cwd ?? this.cwd, inner - 12), inner - 12))}`,
+        `  ${dim('session'.padEnd(8))}${chalk.white(clip(`${this.facts.percent ?? 0}%  ${this.facts.title ?? ''}`, inner - 12))}`,
+      ];
+      return [boxTop(width), ...rows.map((r) => boxRow(r, width)), boxBottom(width)];
+    }
+
+    // Two spaces of padding, the wordmark, a gap, then the facts column.
+    const room = Math.max(8, inner - BANNER_WIDTH - 6);
+    const facts = [
+      ['dir', shortenPath(this.facts.cwd ?? this.cwd, room - 9)],
+      ['date', today()],
+      ['session', `${this.facts.percent ?? 0}%  ${clip(this.facts.title ?? 'new', 24)}`],
+      ['keys', '/help · esc interrupts'],
+      ['', ''],
+      ['', 'made with ❤️ by om dixit'],
+    ];
+
+    const rows = BANNER.map((art, i) => {
+      const [label, value] = facts[i] ?? ['', ''];
+      const right = label
+        ? `${dim(label.padEnd(9))}${chalk.white(clip(value, room - 9))}`
+        : (value ? dim(value) : '');
+      return `  ${blue(art)}   ${right}`;
+    });
+
+    return [boxTop(width), ...rows.map((r) => boxRow(r, width)), boxBottom(width)];
+  }
+
+  // -- input box -----------------------------------------------------------
+
+  /** The typed line, wrapped to the inside of the box. */
+  inputLines() {
+    const width = this.inner();
+    const prefix = this.pendingPrompt ? `${this.pendingPrompt} ` : '› ';
+    const full = prefix + this.buffer;
+
+    const rows = [];
+    for (let i = 0; i < full.length; i += width) rows.push(full.slice(i, i + width));
+    if (rows.length === 0) rows.push(prefix);
+
+    return { rows, prefix, width };
+  }
+
+  viewportHeight() {
+    return Math.max(
+      3,
+      this.rows - this.headerHeight() - CHROME_BELOW - this.inputLines().rows.length
+    );
+  }
+
+  inputBox() {
+    const width = this.width();
+    const { rows } = this.inputLines();
+    const painted = rows.map((row, i) =>
+      i === 0
+        ? boxRow(` ${blue('›')}${row.slice(1)}`, width)      // the caret, coloured
+        : boxRow(` ${row}`, width)
+    );
+    return [boxTop(width), ...painted, boxBottom(width)];
+  }
+
+  // -- status line ---------------------------------------------------------
+
+  /**
+   * Which mode is live and which model is answering. That is the whole line.
+   *
+   * The right-hand side is borrowed while something is running, for the
+   * spinner and the way out of it, and handed back the moment it finishes.
+   */
+  modeChip() {
+    return this.mode === 'plan' ? `${sky('◇')} ${sky('Plan')}` : `${blue('◆')} ${blue('Build')}`;
+  }
+
+  statusLine() {
+    const width = this.width();
+    const chip = this.modeChip();
+    const left = `  ${chip} ${dim('·')} ${chalk.white(this.model || '—')} ${deep('OpenRouter')}`;
+
+    // Where a click still counts as hitting the chip.
+    this.chipTo = 2 + visLen(chip);
+
+    let right = '';
+    if (this.flashText) {
+      right = dim(clip(this.flashText, Math.max(0, width - visLen(left) - 4)));
+    } else if (this.status.busy) {
+      const frame = blue(SPINNER[this.status.frame]);
+      const secs = Math.round((Date.now() - (this.status.since || Date.now())) / 1000);
+      const elapsed = secs >= 2 ? dim(` ${secs}s`) : '';
+      const room = Math.max(0, width - visLen(left) - 24);
+      right = `${frame} ${dim(clip(this.status.text, room))}${elapsed}  ${dim('esc to stop')}`;
+    }
+
+    if (!right) return padVis(left, width);
+    const gap = Math.max(1, width - visLen(left) - visLen(right) - 2);
+    return padVis(left + ' '.repeat(gap) + right, width);
+  }
+
+  /** Repaint only the status row, leaving the caret where the user left it. */
+  paintStatus() {
+    if (this.closed) return;
+    const [row, col] = this.caret();
+    this.output.write(
+      HIDE +
+      at(this.rows, 1) + CLEAR_LINE + this.statusLine() +
+      at(row, col) + SHOW
+    );
+  }
+
+  toggleMode() {
+    this.mode = this.mode === 'plan' ? 'build' : 'plan';
+    this.flash(this.mode === 'plan'
+      ? 'plan mode — reads and researches, changes nothing'
+      : 'build mode — free to edit files and run commands');
+    this.onModeChange?.(this.mode);
+    this.render();
+  }
+
+  /** A message on the status line that fades on its own. */
+  flash(text) {
+    this.flashText = text;
+    clearTimeout(this.flashTimer);
+    this.flashTimer = setTimeout(() => {
+      this.flashText = null;
+      this.paintStatus();
+    }, 2500);
+    this.flashTimer.unref?.();
+    this.paintStatus();
+  }
+
+  // -- spinner -------------------------------------------------------------
+
+  startSpinner(text = 'thinking') {
+    // `since` is what makes a long think legible: the label may not change for
+    // a minute, so the seconds beside it are the proof it is still alive.
+    this.status = { busy: true, text: asLabel(text), frame: 0, since: Date.now() };
+    if (!this.spinTimer) {
+      this.spinTimer = setInterval(() => {
+        this.status.frame = (this.status.frame + 1) % SPINNER.length;
+        this.paintStatus();
+      }, 80);
+      this.spinTimer.unref?.();
+    }
+    this.paintStatus();
+  }
+
+  updateSpinner(text) {
+    if (!this.status.busy) return;
+    this.status.text = asLabel(text);
+    this.paintStatus();
+  }
+
+  stopSpinner() {
+    if (this.spinTimer) {
+      clearInterval(this.spinTimer);
+      this.spinTimer = null;
+    }
+    if (this.status.busy) {
+      this.status = { busy: false, text: '', frame: 0, since: 0 };
+      this.paintStatus();
+    }
+  }
+
+  // -- input ---------------------------------------------------------------
+
+  nextLine() {
+    if (this.queue.length) return Promise.resolve(this.queue.shift());
+    if (this.closed) return Promise.resolve(null);
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  ask() {
+    return this.nextLine();
+  }
+
+  submit(text) {
+    const waiter = this.waiters.shift();
+    if (waiter) waiter(text);
+    else this.queue.push(text);
+  }
+
+  /** y/n, answered on the input line. */
+  confirm({ action, detail, risk }) {
+    this.push('');
+    this.push(`${chalk.inverse(theme.warn(risk === 'command' ? ' shell ' : ' outside project '))} ${chalk.white(action)}`);
+    for (const line of String(detail ?? '').split('\n')) {
+      if (line) this.push(dim(`  ${line}`));
+    }
+
+    this.pendingPrompt = 'go ahead? [y/N]';
+    this.render();
+
+    return this.nextLine().then((answer) => {
+      this.pendingPrompt = null;
+      // End of input counts as no. Never run something nobody approved.
+      const yes = /^(y|yes)$/i.test(String(answer ?? '').trim());
+      this.push(dim(yes ? '  approved' : '  declined'));
+      this.push('');
+      return yes;
+    });
+  }
+
+  /**
+   * A modal list: arrows move, Enter picks, Esc cancels.
+   *
+   * Only while this is open do the arrows stop scrolling the transcript. They
+   * cannot be given up permanently, because under alternate scroll the mouse
+   * wheel arrives as arrow keys.
+   */
+  pick(items, { active = 0, hint = 'enter to choose · esc to cancel' } = {}) {
+    this.picker = {
+      items,
+      index: Math.min(Math.max(0, active), Math.max(0, items.length - 1)),
+      hint,
+    };
+    this.render();
+    return new Promise((resolve) => { this.pickerResolve = resolve; });
+  }
+
+  closePicker(value) {
+    const resolve = this.pickerResolve;
+    this.picker = null;
+    this.pickerResolve = null;
+    this.render();
+    resolve?.(value);
+  }
+
+  /**
+   * Rows for an open picker, windowed so a long list still fits.
+   *
+   * An item may carry a `sub` line — a second, dimmer row underneath it. That
+   * is what lets a list of saved conversations show what each one was actually
+   * about instead of a column of near-identical titles.
+   */
+  pickerLines(height) {
+    const { items, index, hint } = this.picker;
+    const room = Math.max(1, height - 2);
+
+    // Rows per item, so the window can be sized in rows rather than in items.
+    const rowsFor = (item) => (typeof item !== 'string' && item.sub ? 2 : 1);
+    const perItem = items.map(rowsFor);
+
+    // Walk outward from the selection until the window is full. Starting from
+    // the selection guarantees it is on screen however long the list is.
+    let first = index;
+    let last = index;
+    let used = perItem[index] ?? 1;
+    while (used < room && (first > 0 || last < items.length - 1)) {
+      if (first > 0 && used + perItem[first - 1] <= room) { first--; used += perItem[first]; }
+      else if (last < items.length - 1 && used + perItem[last + 1] <= room) { last++; used += perItem[last]; }
+      else break;
+    }
+
+    const out = [];
+    for (let i = first; i <= last; i++) {
+      const item = items[i];
+      const body = typeof item === 'string' ? item : item.label;
+      out.push(i === index ? `${blue('❯')} ${chalk.bold.white(body)}` : `  ${dim(body)}`);
+      if (typeof item !== 'string' && item.sub) out.push(`  ${item.sub}`);
+    }
+
+    out.push('');
+    out.push(dim(`  ${hint}`));
+    return out;
+  }
+
+  /** A numbered list, answered on the input line. */
+  async choose(prompt, items, { allowNone = true } = {}) {
+    items.forEach((item, i) => this.push(`  ${blue(String(i + 1).padStart(2))}. ${item}`));
+    if (allowNone) this.push(dim('   0. none — start fresh'));
+    this.push('');
+
+    this.pendingPrompt = prompt;
+    this.render();
+
+    const answer = await this.nextLine();
+    this.pendingPrompt = null;
+
+    const trimmed = String(answer ?? '').trim();
+    if (trimmed === '' || trimmed === '0') return null;
+
+    const index = Number(trimmed);
+    if (!Number.isInteger(index) || index < 1 || index > items.length) {
+      this.push(theme.warn(`  "${trimmed}" is not one of 1-${items.length}.`));
+      return null;
+    }
+    return index - 1;
+  }
+
+  // -- keyboard and mouse --------------------------------------------------
+
+  /**
+   * Scroll the transcript, clamped at both ends.
+   *
+   * When there is nothing above the fold, say so. Silence is indistinguishable
+   * from broken input, and the difference matters: one means the conversation
+   * simply fits, the other means the terminal is not forwarding keys at all.
+   */
+  scrollBy(delta) {
+    const max = Math.max(0, this.lines.length - this.viewportHeight());
+    if (max === 0) {
+      this.flash('nothing above — it all fits on screen');
+      return;
+    }
+    const before = this.scroll;
+    this.scroll = Math.min(Math.max(0, this.scroll + delta), max);
+    if (this.scroll === before && delta > 0) this.flash('already at the top');
+    this.render();
+  }
+
+  onData(chunk) {
+    // UCODE_DEBUG_KEYS=1 logs every byte the terminal sends to
+    // ~/.ucode/keys.log. Whether mouse reporting works at all depends on the
+    // terminal forwarding it; this is how to find out.
+    if (process.env.UCODE_DEBUG_KEYS) {
+      appendFile(path.join(homedir(), '.ucode', 'keys.log'), `${JSON.stringify(chunk)}\n`).catch(() => {});
+    }
+
+    // Pull mouse reports out of the chunk wherever they sit. Anchoring the
+    // match to the whole chunk meant a wheel event arriving alongside any
+    // other byte was silently treated as typing.
+    let rest = '';
+    let index = 0;
+    // Two encodings: SGR (ESC [ < b ; x ; y M|m), and the legacy form
+    // (ESC [ M then three bytes offset by 32) for terminals that ignore 1006.
+    const mouse = /\x1b\[<(\d+);(\d+);(\d+)([Mm])|\x1b\[M([\s\S])([\s\S])([\s\S])/g;
+    let match;
+
+    while ((match = mouse.exec(chunk)) !== null) {
+      rest += chunk.slice(index, match.index);
+      index = match.index + match[0].length;
+      if (match[1] !== undefined) {
+        this.onMouse(Number(match[1]), Number(match[2]), Number(match[3]), match[4]);
+      } else {
+        this.onMouse(
+          match[5].charCodeAt(0) - 32,
+          match[6].charCodeAt(0) - 32,
+          match[7].charCodeAt(0) - 32,
+          'M'
+        );
+      }
+    }
+    rest += chunk.slice(index);
+
+    for (const key of splitKeys(rest)) this.onKey(key);
+  }
+
+  onMouse(button, col, row, press) {
+    // Wheel reports set bit 6; bit 0 says which way.
+    if (button >= 64) {
+      this.scrollBy(button % 2 === 0 ? 3 : -3);
+      return;
+    }
+    if (press !== 'M' || button !== 0) return;
+    // The mode chip, at the left of the bottom row.
+    if (row === this.rows && col <= this.chipTo) this.toggleMode();
+  }
+
+  onKey(key) {
+    // An open picker owns the keyboard until it closes.
+    if (this.picker) {
+      const last = this.picker.items.length - 1;
+      if (key === `${ESC}[A`) { this.picker.index = Math.max(0, this.picker.index - 1); this.render(); return; }
+      if (key === `${ESC}[B`) { this.picker.index = Math.min(last, this.picker.index + 1); this.render(); return; }
+      if (key === '\r' || key === '\n') { this.closePicker(this.picker.index); return; }
+      if (key === ESC || key === '\x03') { this.closePicker(null); return; }
+      return;
+    }
+
+    switch (key) {
+      case '\r':
+      case '\n': {
+        const text = this.buffer;
+        this.buffer = '';
+        this.cursor = 0;
+        this.historyIndex = -1;
+        if (text.trim()) {
+          this.history.unshift(text);
+          // Echo it so the transcript reads as a conversation rather than as
+          // a series of unprompted answers.
+          this.push('');
+          this.push(`${blue('›')} ${chalk.white(text)}`);
+        }
+        this.render();
+        this.submit(text);
+        return;
+      }
+
+      case '\x7f':  // backspace
+      case '\b':
+        if (this.cursor > 0) {
+          this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
+          this.cursor--;
+        }
+        break;
+
+      case '\x03':  // ctrl+c
+        if (this.status.busy && this.onInterrupt) this.onInterrupt();
+        else { this.buffer = ''; this.cursor = 0; }
+        break;
+
+      case '\x04':  // ctrl+d
+        this.close();
+        return;
+
+      case '\x02':  // ctrl+b — swap plan and build
+        this.toggleMode();
+        return;
+
+      case '\x15':  // ctrl+u — clear the line
+        this.buffer = this.buffer.slice(this.cursor);
+        this.cursor = 0;
+        break;
+
+      case ESC:     // esc — stop the turn in flight
+        if (this.onInterrupt) this.onInterrupt();
+        return;
+
+      case '\t': {
+        const hit = COMMANDS.find((c) => c.startsWith(this.buffer));
+        if (hit) { this.buffer = hit; this.cursor = hit.length; }
+        break;
+      }
+
+      // With an empty line the arrows scroll the conversation; once there is
+      // something typed they walk history. Terminals often swallow PgUp and
+      // PgDn for their own scrollback, so this is the path that always works.
+      case `${ESC}[A`:
+        if (!this.buffer) { this.scrollBy(2); return; }
+        if (this.history.length) {
+          this.historyIndex = Math.min(this.historyIndex + 1, this.history.length - 1);
+          this.buffer = this.history[this.historyIndex] ?? '';
+          this.cursor = this.buffer.length;
+        }
+        break;
+
+      case `${ESC}[B`:
+        if (!this.buffer) { this.scrollBy(-2); return; }
+        this.historyIndex = Math.max(this.historyIndex - 1, -1);
+        this.buffer = this.historyIndex === -1 ? '' : (this.history[this.historyIndex] ?? '');
+        this.cursor = this.buffer.length;
+        break;
+
+      case `${ESC}[1;5A`: this.scrollBy(2); return;   // ctrl+up
+      case `${ESC}[1;5B`: this.scrollBy(-2); return;  // ctrl+down
+      case `${ESC}[5~`: this.scrollBy(this.viewportHeight()); return;
+      case `${ESC}[6~`: this.scrollBy(-this.viewportHeight()); return;
+
+      case `${ESC}[H`: this.scrollBy(this.lines.length); return;
+      case `${ESC}[F`: this.scroll = 0; this.render(); return;
+
+      case `${ESC}[C`: this.cursor = Math.min(this.cursor + 1, this.buffer.length); break;
+      case `${ESC}[D`: this.cursor = Math.max(this.cursor - 1, 0); break;
+
+      default:
+        if (key >= ' ' && !key.startsWith(ESC)) {
+          this.buffer = this.buffer.slice(0, this.cursor) + key + this.buffer.slice(this.cursor);
+          this.cursor += key.length;
+        } else {
+          return;
+        }
+    }
+
+    this.render();
+  }
+
+  // -- painting ------------------------------------------------------------
+
+  render() {
+    if (this.closed) return;
+
+    const width = this.width();
+    const height = this.viewportHeight();
+
+    const end = Math.max(0, this.lines.length - this.scroll);
+    const start = Math.max(0, end - height);
+    const window = this.picker ? this.pickerLines(height) : this.lines.slice(start, end);
+    while (window.length < height) window.push('');
+
+    const frame = [
+      ...this.headerLines(),
+      '',
+      ...window,
+      ...this.inputBox(),
+      this.statusLine(),
+    ];
+
+    // The cursor is hidden for the duration of the paint. Without this it is
+    // dragged through every line as the frame is written, which shows up as a
+    // dot flickering above the input box on every keystroke.
+    const out = [HIDE, HOME];
+    for (let i = 0; i < this.rows; i++) {
+      out.push(CLEAR_LINE + padVis(frame[i] ?? '', width) + (i === this.rows - 1 ? '' : '\n'));
+    }
+
+    const [row, col] = this.caret();
+    out.push(at(row, col) + SHOW);
+    this.output.write(out.join(''));
+  }
+
+  /**
+   * Where the typing caret belongs, 1-based.
+   *
+   * Column three is the first character inside the box: border, a space of
+   * padding, then the text.
+   */
+  caret() {
+    const { rows, prefix, width } = this.inputLines();
+    const index = prefix.length + this.cursor;
+    const row = Math.min(Math.floor(index / width), rows.length - 1);
+    const col = 3 + (index % width);
+    // The input block sits above the status line, under its own top border.
+    const firstRow = this.rows - 1 - rows.length;
+    return [firstRow + row, col];
+  }
+}
+
+/**
+ * Split a raw stdin chunk into keys, keeping escape sequences whole.
+ *
+ * Application cursor key mode (DECCKM) makes a terminal send ESC O A for the
+ * up arrow rather than ESC [ A. Both are normalised to the bracket form here
+ * so the key handler only ever sees one of them.
+ */
+export function splitKeys(chunk) {
+  const keys = [];
+  let i = 0;
+
+  while (i < chunk.length) {
+    const c = chunk[i];
+    if (c !== ESC) { keys.push(c); i++; continue; }
+
+    const rest = chunk.slice(i);
+    const csi = /^\x1b\[[0-9;?]*[A-Za-z~]/.exec(rest);
+    if (csi) { keys.push(csi[0]); i += csi[0].length; continue; }
+
+    const ss3 = /^\x1bO([A-Za-z])/.exec(rest);
+    if (ss3) { keys.push(`${ESC}[${ss3[1]}`); i += ss3[0].length; continue; }
+
+    keys.push(ESC);
+    i++;
+  }
+
+  return keys;
+}
