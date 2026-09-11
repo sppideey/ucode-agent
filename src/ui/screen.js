@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour,
+  shortenPath, asLabel, ensureColour, planLine,
 } from './theme.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -57,7 +57,7 @@ export function isLabel(text) {
 
 export const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
-  '/new', '/skills', '/clear', '/search', '/copy', '/exit',
+  '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
 ];
 
 // ANSI ----------------------------------------------------------------------
@@ -288,6 +288,12 @@ export class Screen {
     // Terminal draws as a white circle on a blue tile.
     this.push(`${blue('●')} ${asLabel(label)}`);
     this.updateSpinner(label);
+  }
+
+  /** The checklist, when the model updates it. One line, wrapped if it must. */
+  plan(items) {
+    const line = planLine(items);
+    if (line) this.push(line);
   }
 
   toolResult(summary) {

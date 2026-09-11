@@ -12,7 +12,7 @@
  */
 
 import path from 'node:path';
-import { readFile } from 'node:fs/promises';
+import { readFile, access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
 import {
@@ -20,8 +20,9 @@ import {
   MODELS, DEFAULT_MODEL, PROVIDER,
 } from './provider.js';
 import {
-  tools, runTool, describe, setRoot, setConfirm, PARALLEL_SAFE, WRITES,
+  tools, runTool, describe, setRoot, setConfirm, PARALLEL_SAFE, WRITES, FILE_WRITES,
 } from '../tools/index.js';
+import { projectMap, loadMemory, remember, MEMORY_FILE } from './context.js';
 import {
   newSession, save, load, list, removeAll, titleFrom,
 } from './history.js';
@@ -52,7 +53,111 @@ const MAX_ARG_RETRIES = 2;
 const MAX_CONTINUATIONS = 3;
 
 /** Read-only tools whose result line adds nothing — the user saw the output. */
-const QUIET = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search']);
+const QUIET = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search', 'update_plan']);
+
+/** Tools that draw their own line, so they get no "● Doing X" line of their own. */
+const SILENT = new Set(['update_plan']);
+
+/** How many rounds of "the type check found errors, fix them" one turn may take. */
+const MAX_FIX_ROUNDS = 3;
+
+/** Files worth checking after they change. */
+const CHECKABLE = /\.(?:[cm]?[jt]sx?|py)$/i;
+
+/** Parallel workers at once, and how many steps each may take. */
+const MAX_WORKERS = 3;
+const WORKER_STEPS = Number(process.env.UCODE_WORKER_STEPS) || 60;
+
+/** Workers build; they do not plan, delegate further, or load skills themselves. */
+const WORKER_EXCLUDED = new Set(['delegate', 'update_plan', 'load_skill']);
+
+const planTool = {
+  name: 'update_plan',
+  description:
+    'Keep a short checklist the user can see, for work with three or more steps. ' +
+    'Send the whole list every time: at most 6 items, a few words each, with done: true ' +
+    'on the finished ones. Update it as items finish. Skip it for small tasks.',
+  parameters: {
+    type: 'object',
+    properties: {
+      items: {
+        type: 'array',
+        description: 'The whole plan, in order. At most 6.',
+        items: {
+          type: 'object',
+          properties: {
+            text: { type: 'string', description: 'A few words: "Build the upload box".' },
+            done: { type: 'boolean', description: 'True once it is finished.' },
+          },
+          required: ['text'],
+        },
+      },
+    },
+    required: ['items'],
+  },
+};
+
+const delegateTool = {
+  name: 'delegate',
+  description:
+    'Build independent parts in parallel. Up to 3 workers run at once, each with the ' +
+    'same tools as you. Use it when the work splits cleanly into parts that touch ' +
+    'different files - e.g. the API route, the upload component and the results view. ' +
+    'A worker sees only its instructions, so make them complete: the files it owns, ' +
+    'what to build, the exact interfaces (props, types, request and response shapes) ' +
+    'it must match, and the design rules. Set up shared files (package.json, design ' +
+    'tokens, shared types) yourself first. You get back each worker\'s summary and ' +
+    'the files it changed; wire the parts together and check the whole afterwards.',
+  parameters: {
+    type: 'object',
+    properties: {
+      tasks: {
+        type: 'array',
+        description: 'Up to 3 independent pieces of work.',
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: 'Two or three words: "api route", "upload ui".' },
+            instructions: { type: 'string', description: 'Everything the worker needs to do its part completely.' },
+          },
+          required: ['name', 'instructions'],
+        },
+      },
+    },
+    required: ['tasks'],
+  },
+};
+
+/** The instructions a parallel worker starts with. */
+function workerPrompt({ cwd, name, memory, skills }) {
+  return [
+    `You are a ucode worker called "${name}" - one of several building parts of the same project at the same time.`,
+    '',
+    `Working directory: ${cwd}`,
+    `Platform: ${process.platform}`,
+    '',
+    '- Do exactly the task you were given. Touch only the files it names, or new files in',
+    '  the area it owns - other workers are editing the rest of the project right now.',
+    '- Read before you edit. read_files for several files, batch_write for several new',
+    '  files, edit_files for changes across files.',
+    '- Nothing has a keyboard: pass non-interactive flags. Do not start dev servers and do',
+    '  not install packages unless the task says to - say what you need instead.',
+    '- Finish what you build: real content, every state handled, no TODOs.',
+    '- When done, reply with two or three sentences: what you built, in which files, and',
+    '  anything the lead has to wire up.',
+    ...(memory ? ['', '## Project memory', '', memory] : []),
+    ...(skills ? ['', '## Instructions in force', '', skills] : []),
+  ].join('\n');
+}
+
+/** The files a writing tool call touches. */
+function pathsOf(call) {
+  const a = call.args ?? {};
+  if (call.name === 'batch_write' || call.name === 'edit_files') return (a.files ?? []).map((f) => f?.path).filter(Boolean);
+  return a.path ? [a.path] : [];
+}
+
+const exists = (p) => access(p).then(() => true, () => false);
 
 /** Skills reach the model as one extra tool, so bodies load only when wanted. */
 const loadSkillTool = {
@@ -68,7 +173,7 @@ const loadSkillTool = {
   },
 };
 
-function systemPrompt({ cwd, skills, mode, check }) {
+function systemPrompt({ cwd, skills, mode, check, map, memory }) {
   const list = catalogue(skills);
 
   return [
@@ -76,6 +181,14 @@ function systemPrompt({ cwd, skills, mode, check }) {
     '',
     `Working directory: ${cwd}`,
     `Platform: ${process.platform}`,
+    ...(memory ? [
+      '',
+      '## Project memory',
+      '',
+      'Standing instructions from the user. They outrank your defaults.',
+      '',
+      memory,
+    ] : []),
     '',
     '## How to work',
     '',
@@ -111,7 +224,16 @@ function systemPrompt({ cwd, skills, mode, check }) {
     '- Put independent calls in the same message — several greps, a glob and a read.',
     '  Read-only calls in one message run at the same time.',
     '- batch_write to lay out several new files at once, multi_edit for several changes',
-    '  to one file.',
+    '  to one file, edit_files for a change that spans several files.',
+    '- For work with three or more steps, keep a short plan with update_plan - at most',
+    '  six items of a few words - and tick items off as they finish. Skip it for small jobs.',
+    '- When a build splits into parts that touch different files (the API route, the',
+    '  upload component, the results view), set up the shared files yourself, then hand',
+    '  the parts to delegate so they are built in parallel.',
+    '- A package.json you write starts installing in the background immediately; keep',
+    '  writing files. Running the install yourself afterwards just waits for that one.',
+    '- When you finish, ucode type-checks what you changed and hands you the errors, so',
+    '  there is no need to run tsc yourself.',
     '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',
     '  would ask a question, or it fails instead of waiting: create-next-app --yes,',
     '  npx shadcn@latest init -d -y, npx shadcn@latest add <names> -y, npm init -y.',
@@ -164,6 +286,13 @@ function systemPrompt({ cwd, skills, mode, check }) {
       '',
       list,
     ] : []),
+    '',
+    '## Project map',
+    '',
+    'Every file in the project at the start of this turn, with the names each code file',
+    'exports. Go straight to the files you need instead of searching for them.',
+    '',
+    map || '(not available)',
   ].join('\n');
 }
 
@@ -211,7 +340,14 @@ export class Agent {
    */
   async bootstrap() {
     setRoot(this.cwd);
-    setConfirm((request) => this.ui.confirm(request));
+    // Parallel workers can ask at the same moment; the questions queue up and
+    // are put to the user one at a time, never on top of each other.
+    let asking = Promise.resolve();
+    setConfirm((request) => {
+      const next = asking.then(() => this.ui.confirm(request));
+      asking = next.catch(() => {});
+      return next;
+    });
     this.skills = await loadSkills({ cwd: this.cwd });
     await this.detectCheck();
   }
@@ -416,6 +552,11 @@ export class Agent {
     }
 
     this.autoLoad(input);
+    // What the model is told about the project, fresh for this turn.
+    [this.map, this.memory] = await Promise.all([
+      projectMap(this.cwd).catch(() => ''),
+      loadMemory(this.cwd).catch(() => ''),
+    ]);
     await this.persist();
 
     this.busy = true;
@@ -437,7 +578,7 @@ export class Agent {
 
   /** The tools the model may see, given the mode. */
   toolsNow() {
-    const all = [...tools, loadSkillTool];
+    const all = [...tools, loadSkillTool, planTool, delegateTool];
     if (this.ui.mode !== 'plan') return all;
     return all.filter((t) => !WRITES.has(t.name));
   }
@@ -449,8 +590,10 @@ export class Agent {
     let continuations = 0;
     let askedToVerify = false;
     let askedToSpeak = false;
+    let fixRounds = 0;
 
     this.touched = new Set();
+    this.sinceCheck = new Set();
     this.ranSomething = false;
 
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -459,6 +602,7 @@ export class Agent {
 
       let reply;
       let streaming = false;
+      this.early = new Map();
 
       try {
         const opts = {
@@ -476,6 +620,14 @@ export class Agent {
             }
             this.ui.streamDelta(delta);
           };
+          // Read-only calls start the moment they are fully written, while the
+          // rest of the reply is still arriving. Nothing that writes or runs is
+          // started early: a reply that fails halfway must leave no side effects.
+          opts.onToolCall = (call) => {
+            if (PARALLEL_SAFE.has(call.name) && !call.parseError && !this.early.has(call.id)) {
+              this.early.set(call.id, this.execute(call));
+            }
+          };
         }
 
         reply = await ask(
@@ -487,6 +639,8 @@ export class Agent {
                 skills: this.skills,
                 mode: this.ui.mode,
                 check: this.check,
+                map: this.map,
+                memory: this.memory,
               }),
             },
             ...this.working,
@@ -547,6 +701,24 @@ export class Agent {
           });
           this.ui.note('hit the output limit — asking for the rest');
           continue;
+        }
+
+        // Type-check what changed and hand back the errors, a few rounds at most.
+        // A turn that ends on a broken build is the most common way an app
+        // gets handed over as done when it is not.
+        if (fixRounds < MAX_FIX_ROUNDS) {
+          const problems = await this.autoCheck();
+          if (problems) {
+            fixRounds++;
+            if (reply.text) this.push({ role: 'assistant', content: reply.text });
+            this.push({
+              role: 'user',
+              content:
+                `ucode checked the files you changed and found errors (round ${fixRounds} of ` +
+                `${MAX_FIX_ROUNDS}). Fix all of them, then finish.\n\n${problems}`,
+            });
+            continue;
+          }
         }
 
         // It changed code and never ran anything. Send it back once.
@@ -656,11 +828,8 @@ export class Agent {
       if (this.abort.signal.aborted) return badArgs;
 
       const noted = (call) => {
-        if (call.name === 'write_file' || call.name === 'edit_file' || call.name === 'multi_edit') {
-          this.touched.add(call.args?.path ?? 'a file');
-        }
-        if (call.name === 'batch_write') {
-          for (const f of call.args?.files ?? []) this.touched.add(f?.path ?? 'a file');
+        if (FILE_WRITES.has(call.name)) {
+          for (const p of pathsOf(call)) { this.touched.add(p); this.sinceCheck.add(p); }
         }
         if (call.name === 'run_command' || call.name === 'run_commands') this.ranSomething = true;
       };
@@ -673,10 +842,7 @@ export class Agent {
         this.ui.startSpinner(`${group.length} lookups at once`);
 
         const settled = await Promise.all(
-          group.map((call) => this.dispatch(call).then(
-            (out) => ({ call, out }),
-            (err) => ({ call, err })
-          ))
+          group.map((call) => (this.early.get(call.id) ?? this.execute(call)).then((r) => ({ call, ...r })))
         );
 
         this.ui.stopSpinner();
@@ -691,18 +857,14 @@ export class Agent {
         if (this.abort.signal.aborted) return badArgs;
 
         const label = describe(call.name, call.args);
-        this.ui.toolCall(label);
+        if (!SILENT.has(call.name)) this.ui.toolCall(label);
         this.ui.startSpinner(label);
         noted(call);
 
-        try {
-          const out = await this.dispatch(call);
-          this.ui.stopSpinner();
-          this.reportResult(call, out);
-        } catch (err) {
-          this.ui.stopSpinner();
-          badArgs = this.reportFailure(call, err) || badArgs;
-        }
+        const { out, err } = await (this.early.get(call.id) ?? this.execute(call));
+        this.ui.stopSpinner();
+        if (err) badArgs = this.reportFailure(call, err) || badArgs;
+        else this.reportResult(call, out);
       }
     }
 
@@ -745,12 +907,180 @@ export class Agent {
     }
 
     if (call.name === 'load_skill') return this.loadSkill(call.args?.name);
+    if (call.name === 'update_plan') return this.updatePlan(call.args?.items);
+    if (call.name === 'delegate') return this.delegate(call.args?.tasks);
 
     // Output reaches the screen as the command produces it, so a slow build is
     // something you watch rather than something you sit out in silence.
     return runTool(call.name, call.args ?? {}, {
       onOutput: (lines) => this.ui.progress(lines),
     });
+  }
+
+  /** Run a call and settle to { out } or { err } — never throws. */
+  execute(call) {
+    return this.dispatch(call).then((out) => ({ out }), (err) => ({ err }));
+  }
+
+  updatePlan(items) {
+    const list = (Array.isArray(items) ? items : [])
+      .filter((i) => i && String(i.text ?? '').trim())
+      .slice(0, 6);
+    this.ui.plan(list);
+    const done = list.filter((i) => i.done).length;
+    return { content: `Plan updated: ${done} of ${list.length} done.`, summary: `${done}/${list.length}` };
+  }
+
+  /** File writes from parallel workers take turns, so two never interleave. */
+  fileLock(fn) {
+    const run = (this.lockChain ?? Promise.resolve()).then(fn, fn);
+    this.lockChain = run.catch(() => {});
+    return run;
+  }
+
+  /**
+   * Several workers at once, each its own small agent loop with its own
+   * conversation, sharing the tools, the project, and whatever skills are
+   * already in force. Their lines in the transcript carry their name.
+   */
+  async delegate(tasks) {
+    const list = (Array.isArray(tasks) ? tasks : [])
+      .filter((t) => t && String(t.instructions ?? '').trim())
+      .slice(0, MAX_WORKERS);
+    if (!list.length) {
+      throw new ToolFailure({
+        kind: 'bad_args',
+        attempted: 'starting workers',
+        failed: 'No tasks with instructions were given.',
+        fix: 'Pass tasks as [{ name, instructions }, ...], up to 3.',
+      });
+    }
+
+    const results = await Promise.all(list.map((task, i) => this.runWorker(task, i).catch((err) => ({
+      name: task.name || `worker ${i + 1}`,
+      summary: `Failed: ${err?.failed ?? err?.message ?? err}`,
+      touched: [],
+    }))));
+
+    for (const r of results) for (const f of r.touched) { this.touched.add(f); this.sinceCheck.add(f); }
+
+    return {
+      content: results
+        .map((r) => `## ${r.name}\n${r.summary}\nFiles changed: ${r.touched.join(', ') || 'none'}`)
+        .join('\n\n'),
+      summary: results.map((r) => `${r.name} · ${r.touched.length} file${r.touched.length === 1 ? '' : 's'}`).join('  '),
+    };
+  }
+
+  async runWorker(task, index) {
+    const name = clip(String(task.name || `worker ${index + 1}`).trim(), 16);
+    const touched = new Set();
+    const skills = this.skills
+      .filter((s) => this.loaded.has(s.name))
+      .map((s) => `--- ${s.name} ---\n${s.body}`)
+      .join('\n\n');
+    const messages = [
+      { role: 'system', content: workerPrompt({ cwd: this.cwd, name, memory: this.memory, skills }) },
+      { role: 'user', content: String(task.instructions) },
+    ];
+    const available = this.toolsNow().filter((t) => !WORKER_EXCLUDED.has(t.name));
+    const wanted = process.env.UCODE_WORKER_MODEL;
+    const workerModel = wanted && MODELS[wanted] ? wanted : model();
+
+    for (let step = 0; step < WORKER_STEPS; step++) {
+      if (this.abort?.signal.aborted) break;
+      const reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel });
+      this.record(reply.usage);
+
+      if (!reply.toolCalls.length) {
+        this.ui.toolResult(`${name} finished`);
+        return { name, summary: reply.text?.trim() || 'Finished without a summary.', touched: [...touched] };
+      }
+
+      messages.push({ role: 'assistant', content: reply.text || '', toolCalls: reply.toolCalls });
+      for (const call of reply.toolCalls) {
+        this.ui.toolCall(`${name} › ${describe(call.name, call.args)}`);
+        if (FILE_WRITES.has(call.name)) for (const p of pathsOf(call)) touched.add(p);
+        const { out, err } = FILE_WRITES.has(call.name)
+          ? await this.fileLock(() => this.execute(call))
+          : await this.execute(call);
+        if (err) {
+          if (!(err instanceof ToolFailure)) throw err;
+          this.ui.toolFailed(`${name}: ${err.kind}: ${err.failed}`);
+        }
+        messages.push({
+          role: 'tool', toolCallId: call.id, name: call.name,
+          content: err ? err.forModel() : out.content,
+        });
+      }
+    }
+
+    return { name, summary: `Stopped after ${WORKER_STEPS} steps without finishing.`, touched: [...touched] };
+  }
+
+  /**
+   * Check the code files changed since the last check, and return the
+   * errors as text for the model — or null when everything is clean.
+   *
+   * TypeScript projects get one `tsc --noEmit` per project that owns a
+   * changed file (an app scaffolded into a subfolder is its own project).
+   * Plain JavaScript gets a syntax check, Python a compile check. Nothing
+   * runs that is not already installed.
+   */
+  async autoCheck() {
+    const changed = [...this.sinceCheck].filter((f) => CHECKABLE.test(f));
+    this.sinceCheck.clear();
+    if (!changed.length) return null;
+
+    const root = path.resolve(this.cwd);
+    const tsRoots = new Set();
+    const singles = [];
+
+    for (const rel of changed) {
+      const abs = path.resolve(root, rel);
+      if (!(await exists(abs))) continue;
+      if (/\.py$/i.test(rel)) { singles.push({ abs, rel, command: `python -m py_compile "${abs}"` }); continue; }
+      let dir = path.dirname(abs);
+      let owner = null;
+      while (dir.startsWith(root)) {
+        if (await exists(path.join(dir, 'tsconfig.json'))) { owner = dir; break; }
+        const up = path.dirname(dir);
+        if (up === dir) break;
+        dir = up;
+      }
+      if (owner && (await exists(path.join(owner, 'node_modules', 'typescript')))) tsRoots.add(owner);
+      else if (/\.[cm]?js$/i.test(rel)) singles.push({ abs, rel, command: `node --check "${abs}"` });
+    }
+
+    const problems = [];
+    const check = async (label, command, cwd) => {
+      this.ui.toolCall(label);
+      this.ui.startSpinner(label);
+      const { out, err } = await this.execute({
+        id: 'check', name: 'run_command',
+        args: { command, cwd: path.relative(root, cwd) || '.', timeout_ms: 180_000 },
+      });
+      this.ui.stopSpinner();
+      return err ? { exitCode: -1, content: String(err.failed ?? err.message) } : out;
+    };
+
+    for (const dir of tsRoots) {
+      const show = path.relative(root, dir) || '.';
+      const out = await check(`Checking types in ${show}`, 'npx --no-install tsc --noEmit --pretty false', dir);
+      if (out.exitCode === 0) { this.ui.toolResult('types check out'); continue; }
+      const errors = out.content.split('\n').filter((l) => /error TS\d+/.test(l));
+      this.ui.toolFailed(`${errors.length || 'some'} type error${errors.length === 1 ? '' : 's'}`);
+      problems.push(`In ${show} (tsc --noEmit):\n${(errors.length ? errors : out.content.split('\n')).slice(0, 40).join('\n')}`);
+    }
+
+    for (const f of singles) {
+      const out = await check(`Checking ${f.rel}`, f.command, root);
+      if (out.exitCode === 0) { this.ui.toolResult('ok'); continue; }
+      this.ui.toolFailed('does not compile');
+      problems.push(`${f.rel}:\n${out.content.split('\n').slice(0, 20).join('\n')}`);
+    }
+
+    return problems.length ? problems.join('\n\n') : null;
   }
 
   loadSkill(name) {
@@ -847,6 +1177,7 @@ export class Agent {
         return this.cmdSessions(arg);
 
       case '/new':      return this.cmdNew();
+      case '/remember': return this.cmdRemember(arg);
       case '/skills':   return this.cmdSkills();
       case '/clear':    this.showHeader(); return;
       case '/search':   return this.cmdSearch(arg);
@@ -866,6 +1197,7 @@ export class Agent {
       ['/model', 'show the models and switch between them'],
       ['/resume', 'pick up an earlier conversation'],
       ['/new', 'save this one and start fresh'],
+      ['/remember <note>', `add a standing note to ${MEMORY_FILE}`],
       ['/skills', 'what ucode knows how to do'],
       ['/search <query>', 'look something up on the web'],
       ['/copy', 'copy the last reply to the clipboard'],
@@ -1058,6 +1390,25 @@ export class Agent {
       else this.ui.write(`${blue('›')} ${dim(m.content.split('\n')[0])}`);
     }
     if (tail.length) this.ui.write(dim('  ── picking up here ──\n'));
+  }
+
+  /** Add a line to this project's UCODE.md, read at the start of every turn. */
+  async cmdRemember(note) {
+    if (!note) {
+      this.ui.note(`usage: /remember <something ucode should always know here> — saved to ${MEMORY_FILE}`);
+      return;
+    }
+    try {
+      const file = await remember(this.cwd, note);
+      this.ui.note(`remembered · ${path.relative(this.cwd, file) || MEMORY_FILE}`);
+    } catch (err) {
+      this.ui.error(new Failure({
+        kind: 'memory_unwritable',
+        attempted: `saving to ${MEMORY_FILE}`,
+        failed: err.message,
+        fix: 'Check that this folder is writable.',
+      }), { debug: this.debug });
+    }
   }
 
   async cmdNew() {

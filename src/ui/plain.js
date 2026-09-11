@@ -13,13 +13,13 @@ import readline from 'node:readline';
 import chalk from 'chalk';
 import {
   theme, blue, sky, dim, boxTop, boxBottom, boxRow,
-  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen,
+  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine,
 } from './theme.js';
 import { renderer, render } from './markdown.js';
 
 const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
-  '/new', '/skills', '/clear', '/search', '/copy', '/exit',
+  '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
 ];
 
 export class Plain {
@@ -141,6 +141,11 @@ export class Plain {
   toolCall(label) {
     this.stopSpinner();
     this.output.write(`${blue('●')} ${asLabel(label)}\n`);
+  }
+
+  plan(items) {
+    const line = planLine(items);
+    if (line) this.write(line);
   }
 
   toolResult(summary) {

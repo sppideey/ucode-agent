@@ -103,15 +103,44 @@ long think are for. When the wait stops being worth it, switch.
 
 ## What it does
 
-**Twelve tools.** `read_file`, `read_files`, `write_file`, `batch_write`, `edit_file`,
-`multi_edit`, `list_dir`, `glob`, `grep`, `run_command`, `run_commands`,
-`web_search`. Read-only calls run in parallel; anything that writes runs on its
-own, in order.
+**Thirteen tools.** `read_file`, `read_files`, `write_file`, `batch_write`,
+`edit_file`, `multi_edit`, `edit_files`, `list_dir`, `glob`, `grep`,
+`run_command`, `run_commands`, `web_search`. Read-only calls run in parallel,
+and start the moment the model finishes writing them — while the rest of its
+reply is still arriving. Anything that writes runs on its own, in order.
+
+**Parallel workers.** When a build splits into parts that touch different files
+— the API route, the upload component, the results view — the model hands them
+to up to three workers that build at the same time, each line in the transcript
+tagged with the worker's name. File writes take turns so two never collide.
+
+**Installs that start early.** The moment a `package.json` with dependencies is
+written, its install starts in the background while the rest of the app is
+still being written. An install the model asks for later waits for that one
+instead of running twice, and anything run in that folder waits for it too.
+
+**Errors fixed before you see them.** When the model says it is done, ucode
+type-checks every file it changed — `tsc --noEmit` for TypeScript projects,
+a syntax check for JavaScript and Python — and hands any errors back to fix,
+up to three rounds.
+
+**A plan you can see.** For longer jobs the model keeps a short checklist, shown
+as one line: `plan 2/5  ✓ Scaffold · ✓ Upload · ▸ Score dial · ○ Findings · ○ Polish`.
+
+**It knows the project before it asks.** Each turn starts with a map of every
+file and the names each code file exports, so the model goes straight to the
+right file instead of searching for it.
+
+**Project memory.** `UCODE.md` in a project — and `~/.ucode/UCODE.md` for how you
+like to work everywhere — is read at the start of every turn. `/remember <note>`
+adds a line to it.
 
 **Edits that never guess.** `edit_file` matches exactly once or it fails, and
-when it fails it says *why* — the text is there but the indentation differs, or
-its first line appears at line 40 and the rest does not. A wrong edit reported
-as a success is the most expensive thing an agent can do.
+when it fails it says *why*. It tolerates what does not matter — tabs against
+spaces, a different indent depth, Windows line endings — and re-indents the
+replacement to fit the file, but a match found twice is still refused.
+`edit_files` changes several files in one call, and writes none of them if any
+edit fails.
 
 **Diffs with real line numbers.** Removed lines are numbered where they were,
 added lines where they now are. Numbers you can jump to, not decoration.
@@ -179,6 +208,7 @@ Everything after the frontmatter is the instruction.
 | `/model` | show the models and switch — `/models` does the same |
 | `/resume` | pick up an earlier conversation — `/session`, `/sessions` too |
 | `/new` | save this one and start fresh |
+| `/remember <note>` | add a standing note to this project's `UCODE.md` |
 | `/skills` | what it knows how to do, and what is loaded |
 | `/search <query>` | look something up on the web |
 | `/copy` | last reply to the clipboard |
@@ -209,8 +239,11 @@ ucode [options]
 | `~/.ucode/.env` | `UCODE_API_KEY`, and `TAVILY_API_KEY` for web search |
 | `~/.ucode/sessions/` | one JSON per conversation |
 | `.ucode/skills/` | skills belonging to a project |
+| `UCODE.md` | project memory, read every turn |
+| `~/.ucode/UCODE.md` | your own standing instructions, for every project |
 
-Environment overrides: `UCODE_MODEL`, `UCODE_MAX_CONTEXT_TOKENS`,
+Environment overrides: `UCODE_MODEL`, `UCODE_WORKER_MODEL` (a faster model for
+parallel workers), `UCODE_WORKER_STEPS`, `UCODE_MAX_CONTEXT_TOKENS`,
 `UCODE_MAX_STEPS`, `UCODE_MAX_TOOL_OUTPUT`, `UCODE_REQUEST_TIMEOUT_MS`,
 `UCODE_BASE_URL`.
 
@@ -226,6 +259,7 @@ src/core/provider.js  the only file that knows which provider answers
 src/core/history.js   sessions on disk
 src/core/window.js    folding a long conversation to fit
 src/core/skills.js    loading skills, and deciding which load themselves
+src/core/context.js   the project map and project memory
 src/core/failure.js   one error shape: what, why, what next
 src/tools/            the eleven tools, plus their shared plumbing
 src/ui/screen.js      the full-screen interface

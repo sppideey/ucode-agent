@@ -82,6 +82,10 @@ export function childEnv(base = process.env) {
     npm_config_fund: 'false',
     npm_config_audit: 'false',
     npm_config_update_notifier: 'false',
+    // Take a package from the local cache when it is there, instead of asking
+    // the registry whether a newer copy exists first. Installing the same
+    // framework for the second app in a day goes from network-bound to disk-bound.
+    npm_config_prefer_offline: 'true',
     NEXT_TELEMETRY_DISABLED: '1',
     NO_COLOR: '1',
     FORCE_COLOR: '0',
@@ -319,6 +323,137 @@ function startServer(command, workdir, { env } = {}) {
 }
 
 // ---------------------------------------------------------------------------
+// Installing in the background
+// ---------------------------------------------------------------------------
+
+/**
+ * Installs already running, by directory.
+ *
+ * The moment a package.json with dependencies is written, its install starts
+ * in the background — while the model is still writing the components. By the
+ * time it asks to install, build or start the app, the install is usually done
+ * or nearly so, and whatever wait is left is the remainder rather than the
+ * whole thing.
+ */
+const installs = new Map();
+
+/** The package manager a project already uses, going by its lockfile. */
+export function packageManagerFor(dir) {
+  const has = (f) => { try { statSync(path.join(dir, f)); return true; } catch { return false; } };
+  if (has('pnpm-lock.yaml')) return 'pnpm';
+  if (has('yarn.lock')) return 'yarn';
+  if (has('bun.lockb') || has('bun.lock')) return 'bun';
+  // npm by default, deliberately: pnpm 10+ refuses to run install scripts
+  // without an interactive approval, which fails the install outright here.
+  return 'npm';
+}
+
+function runInstall(dir) {
+  const pm = packageManagerFor(dir);
+  const command = pm === 'npm' ? 'npm install --no-audit --no-fund' : `${pm} install`;
+  const started = Date.now();
+
+  const promise = new Promise((resolve) => {
+    let output = '';
+    let child;
+    try {
+      child = spawn(command, {
+        cwd: dir, shell: true, windowsHide: true,
+        stdio: ['ignore', 'pipe', 'pipe'], env: childEnv(),
+      });
+    } catch (err) {
+      resolve({ code: -1, output: err.message, command, seconds: 0 });
+      return;
+    }
+    const take = (chunk) => { if (output.length < MAX_OUTPUT * 2) output += stripAnsi(chunk.toString()); };
+    child.stdout?.on('data', take);
+    child.stderr?.on('data', take);
+    const timer = setTimeout(() => killTree(child.pid), INSTALL_TIMEOUT);
+    child.on('close', (code) => {
+      clearTimeout(timer);
+      resolve({ code, output: output.trim(), command, seconds: Math.round((Date.now() - started) / 1000) });
+    });
+    child.on('error', (err) => {
+      clearTimeout(timer);
+      resolve({ code: -1, output: err.message, command, seconds: 0 });
+    });
+  });
+
+  const entry = { promise, stale: false };
+  installs.set(dir, entry);
+  // If package.json changed again while this was running, go once more.
+  promise.then(() => {
+    if (installs.get(dir) !== entry) return;
+    if (entry.stale) runInstall(dir);
+    else installs.delete(dir);
+  });
+  return entry;
+}
+
+/**
+ * Called whenever a package.json is written. Starts an install if it declares
+ * dependencies, or marks a running one to go again with the new list.
+ */
+export function packageJsonWritten(file, content) {
+  let pkg;
+  try { pkg = JSON.parse(content); } catch { return; }
+  const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) };
+  if (Object.keys(deps).length === 0) return;
+
+  const dir = path.dirname(file);
+  const running = installs.get(dir);
+  if (running) running.stale = true;
+  else runInstall(dir);
+}
+
+/** The install running for this directory or any folder above it, if one is. */
+function installFor(dir) {
+  let at = path.resolve(dir);
+  for (;;) {
+    if (installs.has(at)) return { dir: at, entry: installs.get(at) };
+    const up = path.dirname(at);
+    if (up === at) return null;
+    at = up;
+  }
+}
+
+const PLAIN_INSTALL = /^\s*(?:npm\s+(?:i|install)|pnpm\s+(?:i|install)|yarn(?:\s+install)?|bun\s+(?:i|install))(?:\s+--?[\w-]+(?:=\S+)?)*\s*$/i;
+
+/**
+ * Wait for a background install before running something that needs it — and
+ * if the command IS that install, hand back the background one's result
+ * instead of doing it twice.
+ */
+async function awaitInstall(command, workdir, onOutput) {
+  // Models often write `cd app && npm run build` instead of passing cwd, so the
+  // directory a command really runs in is read off the front of it.
+  const cd = /^\s*cd\s+(?:\/d\s+)?("?)([^"&|;]+?)\1\s*(?:&&|;)\s*/i.exec(command);
+  const dir = cd ? path.resolve(workdir.abs, cd[2].trim()) : path.resolve(workdir.abs);
+  const rest = cd ? command.slice(cd[0].length) : command;
+
+  const found = installFor(dir);
+  if (!found) return null;
+
+  onOutput?.(['waiting for the install that started when package.json was written']);
+  let done = await found.entry.promise;
+  // It may have been restarted for a newer package.json; wait for that too.
+  while (installs.get(found.dir) && installs.get(found.dir) !== found.entry) {
+    done = await installs.get(found.dir).promise;
+  }
+
+  if (!PLAIN_INSTALL.test(rest) || path.resolve(found.dir) !== dir) return null;
+
+  const out = result(
+    `The install already ran in the background as soon as package.json was written ` +
+      `(\`${done.command}\`, ${done.seconds}s).\n\nexit code: ${done.code}\n\n${done.output || '(no output)'}`,
+    `already installed in the background · exit ${done.code} · ${done.seconds}s`
+  );
+  out.exitCode = done.code;
+  if (done.code !== 0) out.output = tail(done.output);
+  return out;
+}
+
+// ---------------------------------------------------------------------------
 // run_command
 // ---------------------------------------------------------------------------
 
@@ -354,6 +489,12 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
 
   const env = childEnv();
   const server = LOOKS_LIKE_SERVER.test(command);
+
+  // Anything run where a background install is still going waits for it —
+  // two installs in one folder corrupt node_modules, and a build before the
+  // install finishes fails for no reason the model could see.
+  const alreadyInstalled = await awaitInstall(command, workdir, onOutput);
+  if (alreadyInstalled) return alreadyInstalled;
 
   // A dev server is backgrounded whether or not the model remembered to ask.
   // Only an explicit `background: false` keeps one in the foreground.

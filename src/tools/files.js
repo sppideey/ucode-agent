@@ -14,6 +14,7 @@ import {
   resolveIn, guard, result, fsFailure, looksBinary, toLines, bytes,
   changedRegion, renderDiff, renderNewFile, READ_LINES, MAX_FILE_OUTPUT,
 } from './shared.js';
+import { packageJsonWritten } from './shell.js';
 
 export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
   const target = resolveIn(p, 'read_file');
@@ -82,6 +83,15 @@ export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
     more || from > 1 ? `lines ${from}-${last} of ${lines.length}` : `${lines.length} lines`,
     MAX_FILE_OUTPUT
   );
+}
+
+/**
+ * Everything that writes a file ends here. A package.json with dependencies
+ * starts its install in the background at once, while the rest of the app is
+ * still being written.
+ */
+function written(target, content) {
+  if (path.basename(target.abs) === 'package.json') packageJsonWritten(target.abs, content);
 }
 
 /** At most this many files in one read_files call. */
@@ -194,6 +204,7 @@ async function put(target, content, { diffMax = 16 } = {}) {
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
   }
+  written(target, content);
 
   const existed = previous !== null;
   const lineCount = content === '' ? 0 : toLines(content).length;
@@ -346,23 +357,82 @@ function replaceOnce(text, { old_string, new_string }, { show, attempted, label 
     });
   }
 
-  const hits = text.split(old_string).length - 1;
-
-  if (hits === 0) {
-    const { failed, fix } = explainMiss(text, old_string, show);
-    throw new ToolFailure({ kind: 'no_match', attempted, failed: prefix + failed, fix });
-  }
-  if (hits > 1) {
-    throw new ToolFailure({
-      kind: 'ambiguous', attempted,
-      failed: `${prefix}old_string appears ${hits} times in ${show}. Refusing to guess which one you meant.`,
-      fix: 'Add surrounding lines to old_string until it matches exactly one place.',
-      detail: { hits },
-    });
+  // Models write \n. A file checked out on Windows is often \r\n, and then an
+  // otherwise perfect old_string can never match. Speak the file's dialect.
+  let oldText = old_string;
+  let newText = new_string;
+  if (text.includes('\r\n') && !oldText.includes('\r')) {
+    oldText = oldText.replace(/\r?\n/g, '\r\n');
+    newText = newText.replace(/\r?\n/g, '\r\n');
   }
 
-  const at = text.slice(0, text.indexOf(old_string)).split(/\r?\n/).length;
-  return { text: text.replace(old_string, () => new_string), at };
+  const ambiguous = (hits, how = '') => new ToolFailure({
+    kind: 'ambiguous', attempted,
+    failed: `${prefix}old_string appears ${hits} times in ${show}${how}. Refusing to guess which one you meant.`,
+    fix: 'Add surrounding lines to old_string until it matches exactly one place.',
+    detail: { hits },
+  });
+
+  const hits = text.split(oldText).length - 1;
+  if (hits > 1) throw ambiguous(hits);
+  if (hits === 1) {
+    const at = text.slice(0, text.indexOf(oldText)).split(/\r?\n/).length;
+    return { text: text.replace(oldText, () => newText), at, loose: false };
+  }
+
+  // No exact match. The commonest reason by far is whitespace — tabs against
+  // spaces, a different indent depth, trailing spaces — with every word right.
+  // Match line by line ignoring that, and re-indent the replacement to fit.
+  // Still unique or nothing: a loose match found twice is refused like any other.
+  const loose = looseReplace(text, old_string, new_string);
+  if (loose?.count === 1) return { text: loose.text, at: loose.at, loose: true };
+  if (loose?.count > 1) throw ambiguous(loose.count, ' once whitespace is ignored');
+
+  const { failed, fix } = explainMiss(text, old_string, show);
+  throw new ToolFailure({ kind: 'no_match', attempted, failed: prefix + failed, fix });
+}
+
+/**
+ * Find old_string by its lines' content alone and swap in new_string, indented
+ * the way the file is indented at that spot. Returns { count } when it finds
+ * none or several, and { count: 1, text, at } when it finds exactly one.
+ */
+function looseReplace(text, oldString, newString) {
+  const eol = text.includes('\r\n') ? '\r\n' : '\n';
+  const lines = text.split(/\r?\n/);
+
+  const want = oldString.replace(/\r/g, '').split('\n');
+  while (want.length > 1 && !want[want.length - 1].trim()) want.pop();
+  while (want.length > 1 && !want[0].trim()) want.shift();
+  const target = want.map((l) => l.trim());
+  if (target.every((t) => !t)) return null;
+
+  const starts = [];
+  for (let i = 0; i + want.length <= lines.length; i++) {
+    let same = true;
+    for (let j = 0; j < want.length; j++) {
+      if (lines[i + j].trim() !== target[j]) { same = false; break; }
+    }
+    if (same) starts.push(i);
+  }
+  if (starts.length !== 1) return { count: starts.length };
+
+  const start = starts[0];
+  const indent = (l) => /^[ \t]*/.exec(l)[0];
+  const first = want.findIndex((l) => l.trim());
+  const fileIndent = indent(lines[start + first]);
+  const wroteIndent = indent(want[first]);
+
+  const replacement = newString.replace(/\r/g, '').split('\n');
+  if (replacement.length > 1 && replacement[replacement.length - 1] === '') replacement.pop();
+  const reindented = replacement.map((l) => {
+    if (!l.trim()) return l.trim();
+    const body = l.startsWith(wroteIndent) ? l.slice(wroteIndent.length) : l.replace(/^[ \t]*/, '');
+    return fileIndent + body;
+  });
+
+  const out = [...lines.slice(0, start), ...reindented, ...lines.slice(start + want.length)];
+  return { count: 1, text: out.join(eol), at: start + 1 };
 }
 
 export async function editFile({ path: p, old_string, new_string }) {
@@ -377,7 +447,7 @@ export async function editFile({ path: p, old_string, new_string }) {
     throw fsFailure(err, attempted, target.show);
   }
 
-  const { text, at } = replaceOnce(original, { old_string, new_string }, {
+  const { text, at, loose } = replaceOnce(original, { old_string, new_string }, {
     show: target.show, attempted,
   });
 
@@ -386,13 +456,15 @@ export async function editFile({ path: p, old_string, new_string }) {
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
   }
+  written(target, text);
 
   const delta = toLines(text).length - toLines(original).length;
   const change = delta === 0 ? 'same line count' : `${delta > 0 ? '+' : ''}${delta} lines`;
+  const how = loose ? ', matched ignoring whitespace and re-indented to fit' : '';
 
   const out = result(
-    `Replaced one occurrence in ${target.show} at line ${at} (${change}).`,
-    `1 change at line ${at} · ${change}`
+    `Replaced one occurrence in ${target.show} at line ${at} (${change}${how}).`,
+    `1 change at line ${at} · ${change}${loose ? ' · whitespace-tolerant' : ''}`
   );
   // The replacement is diffed on its own and offset to where it landed, so
   // the gutter shows the file's line numbers rather than 1, 2, 3.
@@ -453,6 +525,7 @@ export async function multiEdit({ path: p, edits }) {
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
   }
+  written(target, text);
 
   const delta = toLines(text).length - toLines(original).length;
   const change = delta === 0 ? 'same line count' : `${delta > 0 ? '+' : ''}${delta} lines`;
@@ -462,5 +535,89 @@ export async function multiEdit({ path: p, edits }) {
     `${edits.length} edits · ${change}`
   );
   out.diff = diff;
+  return out;
+}
+
+/**
+ * Exact replacements across several files in one call.
+ *
+ * A change that touches the route, the component and the type together is one
+ * round trip instead of three. Every edit in every file is applied to a copy
+ * in memory first; if any of them fails, nothing is written anywhere — a
+ * cross-file change that half landed leaves the project in a state that
+ * compiles nowhere.
+ */
+export async function editFiles({ files }) {
+  if (!Array.isArray(files) || files.length === 0) {
+    throw new ToolFailure({
+      kind: 'bad_args',
+      attempted: 'editing several files',
+      failed: 'The "files" argument must be a non-empty array.',
+      fix: 'Pass files as [{ path, edits: [{ old_string, new_string }, ...] }, ...].',
+    });
+  }
+
+  const planned = [];
+  const seen = new Set();
+
+  for (const [i, entry] of files.entries()) {
+    const target = resolveIn(entry?.path, 'edit_files');
+    const attempted = `editing ${target.show}`;
+
+    if (seen.has(target.abs)) {
+      throw new ToolFailure({
+        kind: 'bad_args', attempted,
+        failed: `${target.show} is listed twice.`,
+        fix: 'List each file once, with all of its edits together. Nothing was written.',
+      });
+    }
+    seen.add(target.abs);
+
+    if (!Array.isArray(entry.edits) || entry.edits.length === 0) {
+      throw new ToolFailure({
+        kind: 'bad_args', attempted,
+        failed: `File ${i + 1} (${target.show}) has no edits.`,
+        fix: 'Give every file a non-empty edits array. Nothing was written.',
+      });
+    }
+
+    await guard(target, `edit ${target.abs}`);
+
+    let original;
+    try {
+      original = await fs.readFile(target.abs, 'utf8');
+    } catch (err) {
+      throw fsFailure(err, attempted, target.show);
+    }
+
+    let text = original;
+    const diff = [`~${target.show}`];
+    for (const [j, edit] of entry.edits.entries()) {
+      const applied = replaceOnce(text, edit ?? {}, {
+        show: target.show,
+        attempted,
+        label: `${target.show}, edit ${j + 1} of ${entry.edits.length} (nothing was written)`,
+      });
+      diff.push(...renderDiff(changedRegion(edit.old_string, edit.new_string), { offset: applied.at - 1, max: 6 }));
+      text = applied.text;
+    }
+    planned.push({ target, text, diff, count: entry.edits.length });
+  }
+
+  for (const { target, text } of planned) {
+    try {
+      await fs.writeFile(target.abs, text, 'utf8');
+    } catch (err) {
+      throw fsFailure(err, `editing ${target.show}`, target.show);
+    }
+    written(target, text);
+  }
+
+  const edits = planned.reduce((n, p) => n + p.count, 0);
+  const out = result(
+    planned.map((p) => `Edited ${p.target.show} (${p.count} change${p.count === 1 ? '' : 's'})`).join('\n'),
+    `${planned.length} files · ${edits} edits`
+  );
+  out.diff = planned.flatMap((p) => p.diff);
   return out;
 }

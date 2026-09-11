@@ -630,6 +630,8 @@ async function streamed(request, opts, id) {
   let finishReason = 'stop';
   let usage = null;
   const partial = new Map();
+  const handed = new Set();
+  let highest = -1;
 
   for await (const chunk of stream) {
     if (opts.signal?.aborted) break;
@@ -656,6 +658,20 @@ async function streamed(request, opts, id) {
     // A tool call's name and arguments arrive across several chunks, keyed by
     // index, so they are stitched back together here.
     for (const call of delta.tool_calls ?? []) {
+      // Calls arrive one after another, so the first chunk of call N means
+      // every call before it is complete. Those are handed over at once, and
+      // the caller can start running them while the rest are still being
+      // written — the reply streaming and the tools working overlap.
+      if (opts.onToolCall && call.index > highest) {
+        for (const [index, slot] of partial) {
+          if (index < call.index && !handed.has(index)) {
+            handed.add(index);
+            opts.onToolCall(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args }));
+          }
+        }
+        highest = call.index;
+      }
+
       const slot = partial.get(call.index) ?? { id: '', name: '', args: '' };
       if (call.id) slot.id = call.id;
       if (call.function?.name) slot.name += call.function.name;
@@ -665,9 +681,8 @@ async function streamed(request, opts, id) {
   }
 
   const toolCalls = [];
-  let n = 0;
-  for (const slot of partial.values()) {
-    toolCalls.push(readCall({ id: slot.id || `call_${n++}`, name: slot.name, raw: slot.args }));
+  for (const [index, slot] of partial) {
+    toolCalls.push(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args }));
   }
 
   return {

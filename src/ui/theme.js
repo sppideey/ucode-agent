@@ -254,3 +254,21 @@ export function asLabel(text) {
     .replace(/\s+/g, ' ')
     .replace(/(?<=[\w)\]"'`])[.。]+$/, '');
 }
+
+/**
+ * The model's checklist, as one short line — done ticked, the current item
+ * marked, the rest dim — so progress is visible without taking over the screen.
+ */
+export function planLine(items) {
+  const list = (Array.isArray(items) ? items : []).slice(0, 6);
+  if (!list.length) return '';
+  const done = list.filter((i) => i?.done).length;
+  const current = list.findIndex((i) => !i?.done);
+  const parts = list.map((item, i) => {
+    const text = clip(String(item?.text ?? '').trim(), 30);
+    if (item?.done) return `${theme.ok('✓')} ${dim(text)}`;
+    if (i === current) return `${blue('▸')} ${chalk.white(text)}`;
+    return dim(`○ ${text}`);
+  });
+  return `  ${sky(`plan ${done}/${list.length}`)}  ${parts.join(dim('  ·  '))}`;
+}

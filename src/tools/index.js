@@ -4,7 +4,7 @@
  */
 
 import { ToolFailure } from '../core/failure.js';
-import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit } from './files.js';
+import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFiles } from './files.js';
 import { listDir, glob, grep } from './search.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
@@ -138,6 +138,43 @@ export const tools = [
     },
   },
   {
+    name: 'edit_files',
+    description:
+      'Exact replacements across several files in one call - the fastest way to make ' +
+      'a change that touches a route, a component and a type together. Same matching ' +
+      'rules as edit_file for every edit. If any edit in any file fails, nothing is ' +
+      'written anywhere.',
+    parameters: {
+      type: 'object',
+      properties: {
+        files: {
+          type: 'array',
+          description: 'One entry per file, each listed once.',
+          items: {
+            type: 'object',
+            properties: {
+              path: str('File path, relative to the project root.'),
+              edits: {
+                type: 'array',
+                description: 'Replacements for this file, in order.',
+                items: {
+                  type: 'object',
+                  properties: {
+                    old_string: str('The exact text to replace.'),
+                    new_string: str('What to put there instead.'),
+                  },
+                  required: ['old_string', 'new_string'],
+                },
+              },
+            },
+            required: ['path', 'edits'],
+          },
+        },
+      },
+      required: ['files'],
+    },
+  },
+  {
     name: 'list_dir',
     description: 'List what is in one directory, with file sizes.',
     parameters: {
@@ -255,6 +292,7 @@ const run = {
   batch_write: batchWrite,
   edit_file: editFile,
   multi_edit: multiEdit,
+  edit_files: editFiles,
   list_dir: listDir,
   glob,
   grep,
@@ -265,7 +303,7 @@ const run = {
 
 /** Tools that change the project or execute code. */
 export const MUTATING = new Set([
-  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'run_command', 'run_commands',
+  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands',
 ]);
 
 /** Tools with no side effects, so several may run at the same time. */
@@ -273,8 +311,12 @@ export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'gl
 
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
-  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'run_command', 'run_commands',
+  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands',
+  'delegate',
 ]);
+
+/** Tools that change files on disk, which parallel workers take turns at. */
+export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files']);
 
 // ---------------------------------------------------------------------------
 // Argument checking
@@ -372,6 +414,15 @@ export function describe(name, args = {}) {
       return `Editing ${clip(args.path)}`;
     case 'multi_edit':
       return `Editing ${clip(args.path)}, ${args.edits?.length ?? 0} changes`;
+    case 'edit_files': {
+      const n = args.files?.length ?? 0;
+      const first = args.files?.[0]?.path;
+      return n === 1 && first ? `Editing ${clip(first)}` : `Editing ${n} files`;
+    }
+    case 'update_plan':
+      return 'Updating the plan';
+    case 'delegate':
+      return `Starting ${args.tasks?.length ?? 0} workers in parallel`;
     case 'list_dir':
       return !args.path || args.path === '.'
         ? 'Listing the project root'

@@ -19,7 +19,7 @@ import {
   globToRegExp, toLines, changedRegion, renderDiff, renderNewFile, cap,
   setRoot, setConfirm, resolveIn, bytes,
 } from '../src/tools/shared.js';
-import { readFile, readFiles, writeFile, editFile, multiEdit, batchWrite } from '../src/tools/files.js';
+import { readFile, readFiles, writeFile, editFile, multiEdit, batchWrite, editFiles } from '../src/tools/files.js';
 import { listDir, glob, grep } from '../src/tools/search.js';
 import { runCommand, childEnv, killTree } from '../src/tools/shell.js';
 import { tools, runTool, describe, PARALLEL_SAFE, WRITES } from '../src/tools/index.js';
@@ -458,13 +458,32 @@ await test('an ambiguous edit is refused, not guessed', async () => {
   eq(await read('d.js'), 'x();\nx();\n', 'nothing should have been written');
 });
 
-await test('a miss explains itself when only the whitespace differs', async () => {
+await test('an edit that differs only in indentation still lands, re-indented to fit', async () => {
   await write('e.js', 'function a() {\n\treturn 1;\n}\n');
-  const err = await throws(
-    () => editFile({ path: 'e.js', old_string: '    return 1;', new_string: '    return 2;' }),
-    'no_match'
-  );
-  ok(/whitespace/i.test(err.failed), `unhelpful message: ${err.failed}`);
+  const out = await editFile({ path: 'e.js', old_string: '    return 1;', new_string: '    return 2;' });
+  eq(await read('e.js'), 'function a() {\n\treturn 2;\n}\n', 'the file keeps its own tab indent');
+  ok(out.summary.includes('whitespace-tolerant'), `summary was: ${out.summary}`);
+});
+
+await test('an edit written with \\n still matches a file saved with \\r\\n', async () => {
+  await write('crlf.js', 'const a = 1;\r\nconst b = 2;\r\n');
+  await editFile({ path: 'crlf.js', old_string: 'const a = 1;\nconst b = 2;', new_string: 'const a = 1;\nconst b = 3;' });
+  eq(await read('crlf.js'), 'const a = 1;\r\nconst b = 3;\r\n', 'line endings are preserved');
+});
+
+await test('edit_files changes several files, or none', async () => {
+  await write('m1.js', 'export const x = 1;\n');
+  await write('m2.js', 'export const y = 1;\n');
+  await editFiles({ files: [
+    { path: 'm1.js', edits: [{ old_string: 'x = 1', new_string: 'x = 2' }] },
+    { path: 'm2.js', edits: [{ old_string: 'y = 1', new_string: 'y = 2' }] },
+  ] });
+  eq(await read('m1.js'), 'export const x = 2;\n');
+  await throws(() => editFiles({ files: [
+    { path: 'm1.js', edits: [{ old_string: 'x = 2', new_string: 'x = 3' }] },
+    { path: 'm2.js', edits: [{ old_string: 'not there', new_string: 'z' }] },
+  ] }), 'no_match');
+  eq(await read('m1.js'), 'export const x = 2;\n', 'the first file must be untouched when the second fails');
 });
 
 await test('a miss points at where the first line does appear', async () => {
