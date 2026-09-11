@@ -1,81 +1,160 @@
 ---
 name: build-app
-description: Take something from nothing to running — choosing the stack, laying out the files, installing, wiring it up, and proving it works before saying it does.
-auto: scaffold, new project, from scratch, build an app, make an app, create an app, build a website, make a website, build a site, build me a, next.js app, nextjs app, next app, react app, vite app, shadcn, create-next-app
+description: Take an app from nothing to running and finished — stack choice, non-interactive scaffolding, project structure, secrets, AI and API integration, error handling, and proving it works before saying it does.
+auto: scaffold, new project, from scratch, build an app, make an app, create an app, build a website, make a website, build a site, build me a, next.js app, nextjs app, next app, react app, vite app, shadcn, create-next-app, full stack, fullstack, saas, mvp
 ---
 
 # Building something from nothing
 
-The failure mode here is not writing bad code. It is delivering a folder of
-files that has never been run, described as if it works.
+The failure mode is not bad code. It is a folder of files that has never been
+run, handed over as if it works. Everything here is ordered to prevent that.
 
-## Decide the shape before writing anything
+## 1. Decide the shape, out loud, before any file exists
 
-State these in one line each, out loud, then build to them:
+One line each:
 
-- **What it does** — the single sentence a user would say.
-- **The stack** — and why. Default to the smallest thing that does the job: a
-  single HTML file with no build step is a legitimate answer and often the
-  right one. Reach for a framework when routing, state or a component tree
-  genuinely earns it, not because the project sounds serious.
-- **The files** — the whole list, before you create any of them.
+- **What it does** — the sentence a user would say.
+- **The core loop** — the one path through it that must work perfectly
+  (e.g. upload a photo → analysed → see a score and the problems).
+- **The stack, and why** — the smallest thing that does the job:
 
-If the request has a user interface in it, the `ui-ux` skill is already loaded.
-Follow it. Do not design as you go and tidy up afterwards.
+  | Need | Choose |
+  | --- | --- |
+  | One page, no secrets, no server | a single `index.html`, no build step |
+  | Interactive client app, no secrets | Vite + React + TypeScript |
+  | Pages plus a server, secrets, API routes, SEO | Next.js App Router + TypeScript |
+  | An API on its own | Node (Hono/Express) or Python (FastAPI) |
 
-## Scaffold without being asked questions
+- **The file list** — the whole tree, before creating any of it.
 
-Nothing you run has a keyboard. A scaffolder that stops to ask "Would you like
-to use TypeScript?" gets no answer and fails, so give it every answer up front:
+If there is a user interface, the `ui-ux` skill is already loaded. Decide the
+design direction now, not after the logic works.
+
+## 2. Scaffold without being asked questions
+
+Nothing you run has a keyboard. A scaffolder that asks "Would you like to use
+TypeScript?" gets no answer and fails, so give it every answer up front:
 
 ```bash
-# Next.js — creates ./my-app; use . instead of a name to fill the current folder
+# Next.js into ./my-app (use . to fill the current folder — it must be empty)
 npx create-next-app@latest my-app --ts --tailwind --eslint --app --src-dir --import-alias "@/*" --use-npm --yes
 
-# shadcn/ui, from inside the Next.js project
+# shadcn/ui, from inside the project — every component you need, in one add
 npx shadcn@latest init -d -y
-npx shadcn@latest add button card input label badge progress separator skeleton sonner -y
+npx shadcn@latest add button card input label badge progress separator skeleton sonner tooltip -y
 ```
 
-For any other scaffolder, find its flags for every question it would ask
-(`--help` lists them) before running it for real.
+- `create-next-app` refuses a folder that already has files. If the current
+  folder is not empty, scaffold into a named subfolder and pass it as `cwd` to
+  every later command.
+- For any other scaffolder, find the flag for every question (`--help`) first.
+- Install dependencies once, all together: `npm i zod lucide-react` — not one
+  `npm i` per package.
 
-`create-next-app` refuses a folder that already has files in it. If the current
-folder is not empty, scaffold into a named subfolder and pass that as `cwd` to
-every command after it.
+## 3. Structure it like a real project
 
-Add every shadcn component you will need in one `add` call, not one per call.
+For Next.js App Router:
 
-## Lay it out in one pass
+```
+src/
+  app/
+    layout.tsx          fonts, metadata, <body> shell, Toaster
+    page.tsx            the screen — composes components, holds little logic
+    globals.css         design tokens and the shadcn theme variables
+    api/<name>/route.ts server-only endpoints; the only place secrets live
+  components/
+    <feature>/          one folder per feature: its pieces, split by job
+    ui/                 shadcn components (generated — edit via the theme)
+  lib/
+    <service>.ts        calls to outside services, typed in and out
+    schemas.ts          zod schemas shared by client and server
+    utils.ts
+  types/                shared TypeScript types, if lib/ does not own them
+```
 
-Use `batch_write` for the whole skeleton rather than `write_file` twenty times.
-One call, every file, in dependency order. Then `run_command` the install, and
-`run_commands` for anything independent that can happen at the same time.
+- **One component per file**, named for what it is (`ScoreDial.tsx`,
+  `NutrientFindings.tsx`, `LabelUpload.tsx`), not a 600-line `page.tsx`.
+- Server components by default; `"use client"` only on the interactive parts.
+- Types at every boundary. Parse external data with zod rather than trusting
+  its shape.
 
-Real content from the first pass. Placeholder copy, `TODO`, and a commented-out
-function are all the same thing: a promise you did not keep, in a file the user
-now has to find.
+## 4. Secrets and outside services
 
-## Wire everything
+- **A key never reaches the browser.** It lives in a server route or server
+  action. Anything imported by a `"use client"` file ships to every visitor —
+  including a "hardcoded for now" key. If the user asks to hardcode one, put it
+  in a server-only module (`lib/server/*.ts`, or `import 'server-only'`) and
+  say where it is so they can move it to `.env.local` later.
+- Every outbound call gets: a timeout (`AbortSignal.timeout(60_000)`), a check
+  of the response status, and an error that says what failed — surfaced to the
+  UI as a real message, never a silent `catch {}`.
 
-Every button does its thing. Every form submits, validates and says what went
-wrong. Every list has an empty state. Every request has a loading state and a
-failure state. A control that does nothing is worse than no control, because
-the user has to try it to find out.
+### Calling an AI model (OpenRouter or any OpenAI-compatible API)
 
-If it stores anything, decide where, and make it survive a reload.
+```ts
+// src/app/api/analyze/route.ts — runs on the server only
+export const runtime = 'nodejs';
+export const maxDuration = 60;
 
-## Run it, then look at it
+const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+  method: 'POST',
+  headers: { Authorization: `Bearer ${KEY}`, 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    model: 'provider/model-id',
+    messages: [
+      { role: 'system', content: 'Reply with JSON only, matching this shape: {...}' },
+      { role: 'user', content: [
+        { type: 'text', text: 'Analyse this nutrition label.' },
+        { type: 'image_url', image_url: { url: dataUrl } },   // data:image/jpeg;base64,...
+      ] },
+    ],
+  }),
+  signal: AbortSignal.timeout(60_000),
+});
+```
 
-- Start it with `run_command`. A dev server needs `background: true`, which
-  returns immediately with a PID — a foreground server just burns the turn and
-  gets killed.
-- Then actually exercise it: `curl` the routes, run the tests, open the page.
-  A clean build is not evidence that it works, only that it compiles.
-- Fix what you find and run it again.
+- **Ask for JSON and parse it defensively.** Models wrap JSON in prose or code
+  fences: extract the first `{...}` block, `JSON.parse` it, validate with zod,
+  and on failure return a clear "could not read the result" error rather than
+  crashing. Clamp numbers to their range.
+- **Put the judgement rules in the prompt, explicitly** — thresholds, what
+  counts as "too much", what to omit. A vague prompt gives a different answer
+  every time; a specific one gives the product its consistency.
+- **Images:** check type and size on the client (e.g. ≤ 5 MB, jpeg/png/webp),
+  downscale large photos in a canvas before upload, send as a base64 data URL.
+- Reasoning models may take 10–60s. Show progress, and make the route's
+  timeout longer than the model's.
 
-## Report what happened
+## 5. Build order
 
-Say what you built, how to start it, and what you checked. If something is
-untested or unfinished, say which part and why — that sentence costs you
-nothing and saves the user an hour of finding out on their own.
+1. Skeleton and design tokens, so every later piece is styled correctly first time.
+2. The server route with the real integration, tested with `curl` before any UI.
+3. The core loop UI, wired to the real route.
+4. Every state: empty, loading, success, error, and invalid input.
+5. Polish: motion, responsive, copy, favicon, page title and metadata.
+
+Use `batch_write` for the skeleton — one call, every file.
+
+## 6. Prove it works
+
+- `npm run build` — it type-checks and lints; a build that fails is not done.
+- Start it: `npm run dev` goes to the background on its own and comes back with
+  the URL once ready. Do not start it twice.
+- Exercise it: `curl` the API route with real input, load the page, check the
+  core loop end to end. A clean build proves it compiles, not that it works.
+- Fix what you find and check again.
+
+## 7. Definition of done
+
+- The core loop works end to end against the real service.
+- No `TODO`, no placeholder copy, no dead buttons, no console errors.
+- Every async action has loading, success and error states.
+- Invalid input is caught with a useful message before it reaches the server.
+- Secrets only on the server.
+- `npm run build` passes.
+
+## 8. Report
+
+What you built, the URL, how to start it again, and what you checked. If
+anything is untested or unfinished, name it — one sentence of honesty saves the
+user an hour of finding out on their own.

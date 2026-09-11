@@ -1,6 +1,6 @@
 {
   "name": "ucode-agent",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "ucode - a terminal coding agent that reads, edits and runs your code. NVIDIA and Cohere models over OpenRouter.",
   "type": "module",
   "main": "ucode.js",

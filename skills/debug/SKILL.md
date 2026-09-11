@@ -1,47 +1,89 @@
 ---
 name: debug
-description: Find the actual cause of a bug instead of the first plausible one — reproduce it, narrow it, prove the fix, and leave a test behind.
+description: Find and fix the real cause of a bug — reproduce it, narrow it down with evidence, prove the fix, guard it with a test, and check for the same bug elsewhere.
+auto: bug, crash, crashes, crashing, broken, not working, doesn't work, does not work, stack trace, exception, traceback, throws, failing, fails, regression, undefined is not, cannot read properties, 500 error, blank page, hangs, freezes
 ---
 
 # Debugging
 
-The temptation is to read the code, form a theory, change something, and
-declare victory when the symptom disappears. That is how a bug gets moved
-rather than fixed.
+The temptation is to read the code, form a theory, change something, and call
+it fixed when the symptom goes away. That moves bugs rather than fixing them.
+Work from evidence, in this order.
 
-## Reproduce it first
+## 1. Reproduce it yourself
 
-Do not start from the description. Run the thing and see the failure with your
-own eyes: the command, the input, the exact error and where it comes from. If
-you cannot reproduce it, say so and ask for what you need — the input, the
-version, the full stack. Guessing from a paraphrase wastes everyone's turn.
+Do not debug from the description. Run it and see it fail: the exact command,
+the input, the full error, the line it comes from. Write down the reproduction
+as a single command or a few steps — you will run it again at the end.
 
-## Narrow before you theorise
+If you cannot reproduce it, say so and ask for exactly what is missing: the
+input, the environment, the version, the full output. Guessing from a
+paraphrase wastes everyone's turn.
 
-- Read the whole stack trace, including the frames you assume are irrelevant.
-  The top frame is where it surfaced, not necessarily where it went wrong.
-- `grep` for the message text to find where it is produced.
-- Cut the search space in half at a time: does the smaller input fail? Does it
-  fail on the previous commit? Does the layer below get the right value?
-- Print or log the values at the boundary rather than reasoning about what they
-  should be. What you believe is in that variable is the thing under suspicion.
+## 2. Read the whole error
 
-## Fix the cause
+- The whole stack trace, including frames you assume are irrelevant. The top
+  frame is where it surfaced, not necessarily where it went wrong.
+- The first error, not the last. Later errors are often consequences.
+- `grep` for the exact message text to find where it is produced.
+- Check the obvious before the clever: is the file saved, the server restarted,
+  the right branch checked out, the env var set, the dependency installed, the
+  cache cleared (`.next`, `node_modules/.vite`, `__pycache__`)?
 
-State the cause in one sentence before you change anything: *this value is
-undefined here because the caller only sets it on the success path*. If you
-cannot write that sentence, you have not found it yet.
+## 3. Narrow it down
 
-Then fix that, not the symptom. A guard that hides the undefined value leaves
-the real defect in place, with one more layer over it.
+Cut the search space in half each step:
 
-## Prove it
+- **Input:** does a smaller or simpler input still fail? Find the smallest one
+  that does.
+- **Code:** comment out or bypass half the path. Does it still fail?
+- **Time:** did it work before? `git log` / `git diff` since then, or
+  `git bisect` between a good and a bad commit.
+- **Layer:** is the value right when it enters the function? When it leaves?
+  At the API boundary? In the database? Log it at each boundary and look,
+  rather than reasoning about what it "should" be.
 
-- Run the original reproduction. It must now pass.
-- Run the rest of the tests. A fix that breaks two other things is a trade,
-  and the user gets to make it, not you.
-- Write a test that fails without your fix. A bug with no regression test comes
-  back.
+The value you are sure about is the one under suspicion. Print it.
 
-Then say what the cause actually was, in one or two sentences. If you fixed
-something adjacent along the way, say that too.
+## 4. Know where bugs usually live
+
+- **Async:** a missing `await`, a race between two requests, state read before
+  it is set, a promise rejection nobody catches.
+- **State:** stale closures in React effects, mutation of shared objects, a
+  cache that was never invalidated.
+- **Boundaries:** off-by-one, empty arrays, `null` vs `undefined` vs `''`,
+  timezones, number parsing (`'10' + 1`), float rounding.
+- **Data shape:** the API returned something different from the type — an
+  error object, a wrapped payload, a string instead of JSON.
+- **Environment:** missing env var, wrong Node version, path case sensitivity,
+  Windows vs POSIX paths and line endings, a port already in use.
+- **Build tooling:** a stale build cache, a server/client boundary violation in
+  Next.js, a default vs named export mismatch, ESM vs CommonJS.
+
+## 5. State the cause before fixing it
+
+Write it in one sentence: *"`score` is `undefined` here because the parser
+returns `{ data: {...} }` and the component reads `result.score`."* If you
+cannot write that sentence, you have not found the cause yet — keep narrowing.
+
+## 6. Fix the cause, not the symptom
+
+A `?.` or a `try/catch` that hides the failure leaves the defect in place under
+one more layer. Fix it where it originates. Keep the change as small as the
+cause allows, and do not refactor unrelated code in the same change.
+
+## 7. Prove it
+
+- Run the original reproduction. It must pass now.
+- Run the whole test suite. A fix that breaks two other things is a trade the
+  user gets to decide on, not you.
+- Add a regression test that fails without the fix and passes with it — then
+  briefly revert the fix to confirm the test really catches it.
+- Look for the same mistake elsewhere: `grep` for the same pattern, call, or
+  assumption. Bugs come in families.
+
+## 8. Report
+
+The cause in one or two sentences, the fix, how you verified it, and anything
+adjacent you noticed but did not change. If you could not fully confirm it,
+say what is still uncertain.

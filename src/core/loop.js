@@ -1053,8 +1053,9 @@ export class Agent {
       .slice(-count);
 
     for (const m of tail) {
-      if (m.role === 'user') this.ui.write(`${blue('›')} ${dim(m.content.split('\n')[0])}`);
-      else this.ui.assistant(m.content);
+      if (m.role !== 'user') this.ui.assistant(m.content);
+      else if (this.ui.userMessage) this.ui.userMessage(m.content);
+      else this.ui.write(`${blue('›')} ${dim(m.content.split('\n')[0])}`);
     }
     if (tail.length) this.ui.write(dim('  ── picking up here ──\n'));
   }

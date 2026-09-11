@@ -241,6 +241,34 @@ export class Screen {
   }
 
   /**
+   * Something the user said, in the conversation, in the same blue box as the
+   * input it was typed into.
+   *
+   * A long session is mostly the agent's output — tool calls, diffs, answers.
+   * Your own messages are the landmarks you scroll back looking for, so they
+   * get the frame: every one of them is findable at a glance, and the box
+   * matches the one below so it is plain where each came from.
+   */
+  userMessage(text) {
+    const width = this.width();
+    const room = Math.max(8, width - 6);   // borders, padding, and the caret column
+
+    const rows = [];
+    for (const paragraph of String(text).replace(/\r/g, '').split('\n')) {
+      for (const line of wrapAnsi(paragraph, room)) rows.push(line);
+    }
+
+    this.add('');
+    this.add(boxTop(width, edge));
+    rows.forEach((row, i) => {
+      const lead = i === 0 ? blue('›') : ' ';
+      this.add(boxRow(` ${lead} ${chalk.white(row)}`, width, edge));
+    });
+    this.add(boxBottom(width, edge));
+    this.render();
+  }
+
+  /**
    * A tool call, as it happens: "● Listing src".
    *
    * This lives in the transcript rather than only on the status line. The
@@ -894,10 +922,9 @@ export class Screen {
         this.historyIndex = -1;
         if (text.trim()) {
           this.history.unshift(text);
-          // Echo it so the transcript reads as a conversation rather than as
-          // a series of unprompted answers.
-          this.push('');
-          this.push(`${blue('›')} ${chalk.white(text)}`);
+          // Answers to a y/N or a numbered pick are not messages, so they are
+          // not echoed: the prompt reports its own outcome.
+          if (!this.pendingPrompt) this.userMessage(text);
         }
         this.render();
         this.submit(text);
