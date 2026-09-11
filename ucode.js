@@ -14,6 +14,7 @@ import { pathToFileURL, fileURLToPath } from 'node:url';
 
 import { Agent } from './src/core/loop.js';
 import { setModel, modelName, MODELS, DEFAULT_MODEL, ENV_FILE } from './src/core/provider.js';
+import { VERSION } from './src/core/version.js';
 import { Plain } from './src/ui/plain.js';
 import { blue, dim, sky } from './src/ui/theme.js';
 
@@ -50,7 +51,7 @@ function usage() {
     '    -v, --version      print the version\n' +
     '    -h, --help         this message\n\n' +
     `  ${sky('Models')}\n${models}\n\n` +
-    `  Needs OPENROUTER_API_KEY in the environment or in ${ENV_FILE}\n` +
+    `  Needs UCODE_API_KEY in the environment or in ${ENV_FILE}\n` +
     '  Free keys: https://openrouter.ai/keys\n\n'
   );
 }
@@ -61,9 +62,7 @@ async function main() {
   if (args.help) return usage();
 
   if (args.version) {
-    const here = path.dirname(fileURLToPath(import.meta.url));
-    const pkg = JSON.parse(await readFile(path.join(here, 'package.json'), 'utf8'));
-    process.stdout.write(`${pkg.version}\n`);
+    process.stdout.write(`${VERSION}\n`);
     return;
   }
 

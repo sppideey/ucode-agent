@@ -28,7 +28,8 @@ One line each:
 - **The file list** — the whole tree, before creating any of it.
 
 If there is a user interface, the `ui-ux` skill is already loaded. Decide the
-design direction now, not after the logic works.
+design direction now, not after the logic works. If the app calls a model,
+load `ai-features`; if it has accounts, keys or uploads, load `security`.
 
 ## 2. Scaffold without being asked questions
 
@@ -89,7 +90,7 @@ src/
   of the response status, and an error that says what failed — surfaced to the
   UI as a real message, never a silent `catch {}`.
 
-### Calling an AI model (OpenRouter or any OpenAI-compatible API)
+### Calling an AI model (any OpenAI-compatible API)
 
 ```ts
 // src/app/api/analyze/route.ts — runs on the server only

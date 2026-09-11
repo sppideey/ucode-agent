@@ -2,31 +2,49 @@
 
 A coding agent that lives in your terminal. It reads your code, edits it, runs
 your commands, and keeps every conversation on disk. It runs on NVIDIA and
-Cohere models through OpenRouter, all of them free.
+Cohere models, all of them free.
+
+It opens on a quiet screen — the name, the place to type, and the version in the
+corner:
+
+```
+                     ██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗
+                     ██║   ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝
+                     ██║   ██║██║     ██║   ██║██║  ██║█████╗
+                     ██║   ██║██║     ██║   ██║██║  ██║██╔══╝
+                     ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗
+                      ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝
+
+
+  ╭──────────────────────────────────────────────────────────────────────────────╮
+  │ › Ask anything…                                                              │
+  │                                                                              │
+  │ ◆ Build · Nemotron 3 Ultra                                                0% │
+  ╰──────────────────────────────────────────────────────────────────────────────╯
+
+
+                                                                            v1.2.0
+```
+
+and once you are talking, each message you send is boxed in the same blue as
+the input, so your own words are easy to find in a long session:
 
 ```
 ╭──────────────────────────────────────────────────────────────────────────────────╮
-│  ██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗   dir      ~/projects/notes-app      │
-│  ██║   ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝   keys     /help · esc interrupts    │
-│  ██║   ██║██║     ██║   ██║██║  ██║█████╗                                        │
-│  ██║   ██║██║     ██║   ██║██║  ██║██╔══╝                                        │
-│  ╚██████╔╝╚██████╗╚██████╔╝██████╔╝███████╗                                      │
-│   ╚═════╝  ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝   made with ❤️ by om dixit           │
+│ › build a notes dashboard                                                        │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
-
 ● Writing index.html
   └ created · 148 lines
        1 + <!doctype html>
        2 + <html lang="en">
-       3 +   <head>
-         … 145 more lines
-● Running npm test
-  └ exit 0 · 12 lines
+         … 146 more lines
+● Running npm run dev
+  └ ready · http://localhost:3000 · PID 4812
 
 ╭──────────────────────────────────────────────────────────────────────────────────╮
 │ › now add a dark mode toggle                                                     │
 │                                                                                  │
-│ ◆ Build · Nemotron 3 Ultra (free)                                             4% │
+│ ◆ Build · Nemotron 3 Ultra                                                    4% │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -47,7 +65,7 @@ Then put a key where it will survive upgrades:
 
 ```bash
 mkdir -p ~/.ucode
-echo "OPENROUTER_API_KEY=sk-or-..." > ~/.ucode/.env
+echo "UCODE_API_KEY=sk-or-..." > ~/.ucode/.env
 ```
 
 Keys are free at [openrouter.ai/keys](https://openrouter.ai/keys). A `.env` in
@@ -65,7 +83,7 @@ Needs Node 22 or newer.
 ## The models
 
 Five, and no picker full of names nobody recognises. NVIDIA and Cohere both
-serve capable models free through OpenRouter, and both handle tool calling
+serve capable models free, and both handle tool calling
 properly, which is the thing an agent actually depends on.
 
 | Model | Context | For |
@@ -128,10 +146,15 @@ when it is wanted, so the prompt stays the same size however many you add.
 | `debug` | finding the real cause instead of the first plausible one |
 | `code-review` | reviewing a change the way a careful colleague would |
 | `write-tests` | tests that fail for the right reason |
+| `ai-features` | model-backed features: prompts with rules, validated JSON, images, failure handling |
+| `security` | secrets, auth, ownership checks, injection, XSS, CSRF, SSRF, uploads |
+| `performance` | measure first, find the real bottleneck, prove the win with numbers |
+| `refactor` | change the shape of code without changing what it does |
 
-**`ui-ux` loads itself.** Ask for an app, a dashboard, a landing page, or say
-the UI is ugly, and the whole skill is in context before the model takes its
-first step. Waiting for the model to decide it needs design guidance means
+**Every skill loads itself** when the request calls for it — an app pulls in
+`ui-ux` and `build-app`, "it crashes" pulls in `debug`, an AI feature pulls in
+`ai-features`, an API key pulls in `security` — so the whole skill is in
+context before the model takes its first step. Waiting for the model to decide it needs design guidance means
 finding out it did not after the app is built.
 
 Add your own in `.ucode/skills/<name>/SKILL.md` inside a project. A project
@@ -183,7 +206,7 @@ ucode [options]
 
 | | |
 | --- | --- |
-| `~/.ucode/.env` | `OPENROUTER_API_KEY`, and `TAVILY_API_KEY` for web search |
+| `~/.ucode/.env` | `UCODE_API_KEY`, and `TAVILY_API_KEY` for web search |
 | `~/.ucode/sessions/` | one JSON per conversation |
 | `.ucode/skills/` | skills belonging to a project |
 
@@ -199,7 +222,7 @@ one, ucode answers from what it knows and says that it could not check.
 ```
 ucode.js              the command: arguments in, Agent out
 src/core/loop.js      the agent loop, the system prompt, the slash commands
-src/core/provider.js  the only file that knows OpenRouter exists
+src/core/provider.js  the only file that knows which provider answers
 src/core/history.js   sessions on disk
 src/core/window.js    folding a long conversation to fit
 src/core/skills.js    loading skills, and deciding which load themselves

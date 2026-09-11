@@ -15,7 +15,7 @@
  *   ╭──────────────────────────────────────────────────╮
  *   │ › what you are typing, growing downward as it     │
  *   │                                                  │
- *   │ ◆ Build · Nemotron 3 Ultra (free)             4% │
+ *   │ ◆ Build · Nemotron 3 Ultra                    4% │
  *   ╰──────────────────────────────────────────────────╯
  *
  * Both boxes are drawn rather than ruled off, because a box says "this is a
@@ -37,11 +37,12 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import {
-  theme, blue, sky, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
+  theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour,
 } from './theme.js';
 import { renderer, render, polish } from './markdown.js';
+import { VERSION } from '../core/version.js';
 
 /**
  * One line of narration, in the model's own words: "Reading screen.js".
@@ -99,6 +100,12 @@ const CHROME_BELOW = 6;
 
 /** The wordmark only earns its place with room for the facts column beside it. */
 const WORDMARK_NEEDS = BANNER_WIDTH + 30;
+
+/** Where the U ends and CODE begins in each row of the wordmark. */
+const WORDMARK_SPLIT = 9;
+
+/** What the empty input box says before anything is typed. */
+const PLACEHOLDER = 'Ask anything…';
 
 export class Screen {
   constructor({ cwd, input = process.stdin, output = process.stdout } = {}) {
@@ -528,9 +535,8 @@ export class Screen {
 
   // -- input box -----------------------------------------------------------
 
-  /** The typed line, wrapped to the inside of the box. */
-  inputLines() {
-    const width = this.inner();
+  /** The typed line, wrapped to the inside of a box `width` characters across. */
+  inputLines(width = this.inner()) {
     const prefix = this.pendingPrompt ? `${this.pendingPrompt} ` : '› ';
     const full = prefix + this.buffer;
 
@@ -557,12 +563,14 @@ export class Screen {
    * border it reads as part of the thing you are using — the box says "this is
    * where you work", and the row underneath says what you are working with.
    */
-  inputBox() {
-    const width = this.width();
-    const { rows } = this.inputLines();
+  inputBox(width = this.width()) {
+    const { rows } = this.inputLines(width - 4);
+    // Nothing typed yet: a quiet prompt where the text will go. The caret sits
+    // on its first letter and typing replaces it.
+    const empty = !this.buffer && !this.pendingPrompt;
     const painted = rows.map((row, i) =>
       i === 0
-        ? boxRow(` ${blue('›')}${row.slice(1)}`, width, edge)      // the caret, coloured
+        ? boxRow(` ${blue('›')}${empty ? ` ${dim(PLACEHOLDER)}` : row.slice(1)}`, width, edge)
         : boxRow(` ${row}`, width, edge)
     );
     return [
@@ -572,7 +580,7 @@ export class Screen {
       // status read as a second line of the thing being typed; one row of air
       // separates what you are writing from what you are writing it with.
       boxRow('', width, edge),
-      boxRow(this.statusRow(), width, edge),
+      boxRow(this.statusRow(width), width, edge),
       boxBottom(width, edge),
     ];
   }
@@ -605,8 +613,8 @@ export class Screen {
    * The middle is borrowed while something is running, for the spinner and the
    * way out of it, and handed straight back when it finishes.
    */
-  statusRow() {
-    const inner = this.width() - 2;      // the space between the two borders
+  statusRow(width = this.width()) {
+    const inner = width - 2;             // the space between the two borders
     const chip = this.modeChip();
     const left = ` ${chip} ${dim('·')} ${chalk.white(this.model || '—')}`;
     const right = `${this.percentChip()} `;
@@ -645,6 +653,12 @@ export class Screen {
    */
   paintStatus() {
     if (this.closed) return;
+    // On the start screen the status row is mid-screen, not second from the
+    // bottom, so the cheap single-row repaint would draw it in the wrong place.
+    if (this.welcoming()) {
+      this.render();
+      return;
+    }
     const [row, col] = this.caret();
     this.output.write(
       HIDE +
@@ -898,6 +912,12 @@ export class Screen {
       return;
     }
     if (press !== 'M' || button !== 0) return;
+    if (this.welcoming()) {
+      const g = this.welcomeGeometry();
+      const statusRow = g.boxTop + g.inputRows + 3;          // 1-based
+      if (row === statusRow && col > g.left + 1 && col <= g.left + this.chipTo) this.toggleMode();
+      return;
+    }
     // The mode chip, at the left of the bottom row.
     if (row === this.rows - 1 && col >= 2 && col <= this.chipTo) this.toggleMode();
   }
@@ -1013,6 +1033,10 @@ export class Screen {
 
   render() {
     if (this.closed) return;
+    if (this.welcoming()) {
+      this.renderWelcome();
+      return;
+    }
 
     const width = this.width();
     const height = this.viewportHeight();
@@ -1053,6 +1077,15 @@ export class Screen {
    * padding, then the text.
    */
   caret() {
+    if (this.welcoming()) {
+      const g = this.welcomeGeometry();
+      const { rows, prefix, width } = this.inputLines(g.boxWidth - 4);
+      const index = prefix.length + this.cursor;
+      const row = Math.min(Math.floor(index / width), rows.length - 1);
+      // g.boxTop is 0-based and the typed lines start one below the border.
+      return [g.boxTop + 2 + row, g.left + 3 + (index % width)];
+    }
+
     const { rows, prefix, width } = this.inputLines();
     const index = prefix.length + this.cursor;
     const row = Math.min(Math.floor(index / width), rows.length - 1);
@@ -1061,6 +1094,66 @@ export class Screen {
     // row is above it, then the blank row, then the typed lines.
     const firstRow = this.rows - 2 - rows.length;
     return [firstRow + row, col];
+  }
+
+  // -- start screen ----------------------------------------------------------
+
+  /**
+   * Nothing has been said yet, so there is nothing to scroll: the screen is the
+   * wordmark and the place to type, centred, and nothing else.
+   *
+   * It comes back after /clear and /new too, since those empty the transcript —
+   * a fresh conversation starts from the same quiet screen as a fresh launch.
+   */
+  welcoming() {
+    return this.lines.length === 0 && !this.picker;
+  }
+
+  /** Where everything on the start screen goes, 0-based rows. */
+  welcomeGeometry() {
+    const cols = this.width();
+    const boxWidth = Math.max(30, Math.min(cols - 4, 84));
+    const left = Math.max(0, Math.floor((cols - boxWidth) / 2));
+    const big = cols >= BANNER_WIDTH + 4 && this.rows >= 18;
+    const art = big ? BANNER : ['u c o d e'];
+    const inputRows = this.inputLines(boxWidth - 4).rows.length;
+    const block = art.length + 2 + inputRows + 4;          // wordmark, gap, box
+    // A touch above true centre reads as centred; exact centre looks low.
+    const top = Math.max(0, Math.floor((this.rows - block) / 2) - 1);
+    return { cols, boxWidth, left, big, art, inputRows, top, boxTop: top + art.length + 2 };
+  }
+
+  renderWelcome() {
+    const g = this.welcomeGeometry();
+    const frame = new Array(this.rows).fill('');
+
+    // The wordmark in two tones of the one blue, the way a name reads in two
+    // halves: the U quieter, CODE brighter.
+    g.art.forEach((line, i) => {
+      const pad = ' '.repeat(Math.max(0, Math.floor((g.cols - line.length) / 2)));
+      frame[g.top + i] = pad + (g.big
+        ? deep(line.slice(0, WORDMARK_SPLIT)) + sky(line.slice(WORDMARK_SPLIT))
+        : blue.bold(line));
+    });
+
+    const indent = ' '.repeat(g.left);
+    this.inputBox(g.boxWidth).forEach((row, i) => {
+      frame[g.boxTop + i] = indent + row;
+    });
+
+    // The version, in the corner, and nothing else on the screen.
+    if (VERSION) {
+      const tag = dim(`v${VERSION}`);
+      frame[this.rows - 1] = ' '.repeat(Math.max(0, g.cols - visLen(tag) - 2)) + tag;
+    }
+
+    const out = [HIDE, HOME];
+    for (let i = 0; i < this.rows; i++) {
+      out.push(CLEAR_LINE + padVis(frame[i], g.cols) + (i === this.rows - 1 ? '' : '\n'));
+    }
+    const [row, col] = this.caret();
+    out.push(at(row, col) + SHOW);
+    this.output.write(out.join(''));
   }
 }
 

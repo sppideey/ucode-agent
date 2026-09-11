@@ -162,7 +162,7 @@ function fakeScreen(cols = 100, rows = 30) {
   const s = new Screen({ cwd: 'C:/projects/app', input, output });
   s.cols = cols;
   s.rows = rows;
-  s.setFacts({ cwd: 'C:/projects/app', model: 'Nemotron 3 Ultra (free)', title: 'A session', percent: 4 });
+  s.setFacts({ cwd: 'C:/projects/app', model: 'Nemotron 3 Ultra', title: 'A session', percent: 4 });
   return { screen: s, written };
 }
 
@@ -170,7 +170,7 @@ await test('it carries the mode, the model and the percentage — and nothing el
   const { screen } = fakeScreen();
   const row = bare(screen.statusRow());
   ok(row.includes('Build'), `no mode in "${row}"`);
-  ok(row.includes('Nemotron 3 Ultra (free)'), `no model in "${row}"`);
+  ok(row.includes('Nemotron 3 Ultra'), `no model in "${row}"`);
   ok(/\b4%/.test(row), `no percentage in "${row}"`);
   ok(!/OpenRouter/i.test(row), 'the provider name should be gone');
   ok(!/\d{1,2} \w{3} \d{4}/.test(row), 'no date down here');
@@ -936,14 +936,14 @@ await test('exactly the NVIDIA and Cohere models are offered', () => {
 
 await test('the default is Nemotron 3 Ultra', () => {
   eq(DEFAULT_MODEL, 'nvidia/nemotron-3-ultra-550b-a55b:free');
-  eq(modelName(DEFAULT_MODEL), 'Nemotron 3 Ultra (free)');
+  eq(modelName(DEFAULT_MODEL), 'Nemotron 3 Ultra');
 });
 
 await test('the list is locked to those five', () => {
   const before = model();
   try {
     setModel('cohere/north-mini-code:free');
-    eq(modelName(), 'North Mini Code (free)');
+    eq(modelName(), 'North Mini Code');
     const err = new Error('should have thrown');
     try {
       setModel('openai/gpt-4o');

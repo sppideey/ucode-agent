@@ -55,28 +55,28 @@ dotenv.config({ path: join(PACKAGE_ROOT, '.env'), quiet: true });
  */
 export const MODELS = {
   'nvidia/nemotron-3-ultra-550b-a55b:free': {
-    name: 'Nemotron 3 Ultra (free)',
+    name: 'Nemotron 3 Ultra',
     context: 1_000_000,
     star: true,
     note: 'deepest reasoning, 1M context — the default',
   },
   'nvidia/nemotron-3.5-lightning:free': {
-    name: 'Nemotron 3.5 Lightning (free)',
+    name: 'Nemotron 3.5 Lightning',
     context: 1_000_000,
     note: 'same huge window, answers much sooner',
   },
   'nvidia/nemotron-3-super-120b-a12b:free': {
-    name: 'Nemotron 3 Super (free)',
+    name: 'Nemotron 3 Super',
     context: 262_144,
     note: 'strong all-rounder, quick to first token',
   },
   'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free': {
-    name: 'Nemotron 3 Nano Omni (free)',
+    name: 'Nemotron 3 Nano Omni',
     context: 256_000,
     note: 'small and fast, reasoning tuned',
   },
   'cohere/north-mini-code:free': {
-    name: 'North Mini Code (free)',
+    name: 'North Mini Code',
     context: 256_000,
     star: true,
     note: 'code and UI specialist — reach for it on frontend work',
@@ -121,7 +121,7 @@ export function setModel(id) {
   return current;
 }
 
-/** The short name for a model id: "Nemotron 3 Ultra (free)". */
+/** The short name for a model id: "Nemotron 3 Ultra". */
 export function modelName(id = current) {
   return MODELS[id]?.name ?? id;
 }
@@ -179,16 +179,18 @@ export function estimateConversation(messages) {
  * of first-run convenience is worth handing out a live credential.
  */
 function apiKey() {
-  const key = (process.env.OPENROUTER_API_KEY ?? '').trim();
+  // UCODE_API_KEY is the documented name. The provider's own variable name is
+  // still read, so a key set up for another tool keeps working here.
+  const key = (process.env.UCODE_API_KEY || process.env.OPENROUTER_API_KEY || '').trim();
   if (!key) {
     throw new Failure({
       kind: 'no_api_key',
-      attempted: 'connecting to OpenRouter',
-      failed: 'OPENROUTER_API_KEY is not set in the environment or in any .env file.',
+      attempted: 'connecting to the model',
+      failed: 'No API key is set - UCODE_API_KEY is missing from the environment and from every .env file.',
       fix:
-        `Put OPENROUTER_API_KEY=your-key in ${ENV_FILE} — that applies to every ` +
+        `Put UCODE_API_KEY=your-key in ${ENV_FILE} — that applies to every ` +
         'project on this machine — or in a .env file beside your code. ' +
-        'Keys are free at https://openrouter.ai/keys',
+        'Free keys: https://openrouter.ai/keys',
     });
   }
   return key;
@@ -349,10 +351,10 @@ export function explain(err, id) {
     return new Failure({
       kind: 'invalid_api_key',
       attempted,
-      failed: `OpenRouter rejected the API key (HTTP ${status ?? 401}).`,
+      failed: `The API key was rejected (HTTP ${status ?? 401}).`,
       fix:
-        'Check OPENROUTER_API_KEY for a typo or trailing space, and confirm the key ' +
-        'is still active at https://openrouter.ai/keys',
+        'Check UCODE_API_KEY in ~/.ucode/.env for a typo or trailing space, and ' +
+        'confirm the key is still active in your account.',
       cause: err,
     });
   }
@@ -380,8 +382,8 @@ export function explain(err, id) {
         ? `The free daily request cap for ${modelName(id)} is used up.`
         : `Too many requests for ${modelName(id)} just now${wait ? ` — clear in ${wait}` : ''}.`,
       fix: daily
-        ? 'Free caps reset each day. /model switches to another one, or add credit at ' +
-          'https://openrouter.ai/credits to lift the ceiling.'
+        ? 'Free caps reset each day. /model switches to another one, or add credit to ' +
+          'your account to lift the ceiling.'
         : 'ucode waits these out on its own. Free endpoints are shared, so it usually ' +
           'clears in seconds; /model moves to a quieter one.',
       detail: { retryAfter, daily },
@@ -406,7 +408,7 @@ export function explain(err, id) {
     return new Failure({
       kind: 'bad_model',
       attempted,
-      failed: `OpenRouter has no model "${id}" available to this key.`,
+      failed: `No model "${id}" is available to this key.`,
       fix: `Run /model. ucode ships with: ${Object.keys(MODELS).join(', ')}`,
       cause: err,
     });
@@ -435,7 +437,7 @@ export function explain(err, id) {
       attempted,
       failed: noTools
         ? `${modelName(id)} cannot call tools, which ucode needs for every task.`
-        : `OpenRouter rejected the request as malformed (HTTP 400): ${detail}`,
+        : `The request was rejected as malformed (HTTP 400): ${detail}`,
       fix: noTools
         ? 'Run /model and pick another one.'
         : 'Usually an oversized conversation. /new starts a fresh one.',
@@ -497,7 +499,7 @@ export function explain(err, id) {
     return new Failure({
       kind: 'network',
       attempted,
-      failed: `The connection to OpenRouter dropped: ${raw}`,
+      failed: `The connection to the model dropped: ${raw}`,
       fix:
         'ucode retries this by itself. If it keeps happening, check your connection, ' +
         'VPN and any corporate proxy (HTTPS_PROXY) — or /model to a lighter one, since ' +
