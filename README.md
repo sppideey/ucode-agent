@@ -111,11 +111,19 @@ chosen model gets another go a few minutes later.
 
 ## What it does
 
-**Fourteen tools.** `read_file`, `read_files`, `write_file`, `batch_write`,
-`edit_file`, `multi_edit`, `edit_files`, `list_dir`, `glob`, `grep`,
-`run_command`, `run_commands`, `look_at_app`, `web_search`. Read-only calls run in parallel,
+**Fifteen tools.** `create_app`, `read_file`, `read_files`, `write_file`,
+`batch_write`, `edit_file`, `multi_edit`, `edit_files`, `list_dir`, `glob`,
+`grep`, `run_command`, `run_commands`, `look_at_app`, `web_search`. Read-only calls run in parallel,
 and start the moment the model finishes writing them — while the rest of its
 reply is still arriving. Anything that writes runs on its own, in order.
+
+**Apps start from a ready-made starter.** Setting up Next.js and shadcn from
+nothing takes about four minutes — `create-next-app` and the shadcn CLI measured
+at 116s and 130s — plus a dozen model round trips. `create_app` copies ucode's
+starter instead: Next.js 16, TypeScript, Tailwind 4, shadcn/ui with 25 common
+components, light/dark mode, toasts and a considered theme, already known to
+build. The copy takes under a second, and its install runs in the background
+while the model writes the first components.
 
 **Parallel workers.** When a build splits into parts that touch different files
 — the API route, the upload component, the results view — the model hands them

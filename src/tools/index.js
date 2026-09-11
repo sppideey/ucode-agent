@@ -9,6 +9,7 @@ import { listDir, glob, grep } from './search.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
 import { lookAtApp } from './browser.js';
+import { createApp } from './scaffold.js';
 import { clip, READ_LINES } from './shared.js';
 
 export { setRoot, setConfirm, getRoot } from './shared.js';
@@ -18,6 +19,25 @@ const int = (description) => ({ type: 'integer', description });
 const bool = (description) => ({ type: 'boolean', description });
 
 export const tools = [
+  {
+    name: 'create_app',
+    description:
+      'Start a new Next.js + shadcn/ui app from the ready-made ucode starter. This is how every ' +
+      'Next.js app begins - never run create-next-app or shadcn init. It copies a project that ' +
+      'is already known to build (Next.js 16, TypeScript, Tailwind 4, shadcn with 25 common ' +
+      'components, light/dark mode, toasts, a considered theme) into a new empty folder, and ' +
+      'starts installing its packages in the background so you can write components at once. ' +
+      'The result lists everything included.',
+    parameters: {
+      type: 'object',
+      properties: {
+        folder: str('A new, empty folder for the app, relative to the project root, e.g. "stride".'),
+        name: str('The display name of the app, e.g. "Stride".'),
+        description: str('One line about the app, used in the page metadata.'),
+      },
+      required: ['folder', 'name'],
+    },
+  },
   {
     name: 'read_file',
     description:
@@ -324,6 +344,7 @@ const run = {
   run_commands: runCommands,
   web_search: webSearch,
   look_at_app: lookAtApp,
+  create_app: createApp,
 };
 
 /** Tools that change the project or execute code. */
@@ -337,7 +358,7 @@ export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'gl
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
   'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands',
-  'delegate',
+  'delegate', 'create_app',
 ]);
 
 /** Tools that change files on disk, which parallel workers take turns at. */
@@ -460,6 +481,8 @@ export function describe(name, args = {}) {
       return `Running ${clip(args.command, 70)}${args.background ? ' in the background' : ''}`;
     case 'run_commands':
       return `Running ${args.commands?.length ?? 0} commands together`;
+    case 'create_app':
+      return `Creating ${clip(args.name || args.folder, 30)} from the Next.js starter`;
     case 'look_at_app':
       return `Looking at ${clip(args.url, 40)} on a phone and a desktop`;
     case 'web_search':

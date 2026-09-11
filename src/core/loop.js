@@ -240,6 +240,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  one at a time when you already know which ones you want.',
     '- Put independent calls in the same message — several greps, a glob and a read.',
     '  Read-only calls in one message run at the same time.',
+    '- New Next.js app? create_app - one step, never create-next-app or shadcn init. It',
+    '  copies a starter that already builds and installs it in the background.',
     '- batch_write to lay out several new files at once, multi_edit for several changes',
     '  to one file, edit_files for a change that spans several files.',
     '- For work with three or more steps, keep a short plan with update_plan - at most',

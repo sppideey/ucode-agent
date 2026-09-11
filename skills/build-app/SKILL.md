@@ -31,7 +31,25 @@ If there is a user interface, the `ui-ux` skill is already loaded. Decide the
 design direction now, not after the logic works. If the app calls a model,
 load `ai-features`; if it has accounts, keys or uploads, load `security`.
 
-## 2. Scaffold without being asked questions
+## 2. Start from the starter
+
+**For a Next.js app, call `create_app`** — one step, about a second:
+
+```
+create_app({ folder: "my-app", name: "My App", description: "…" })
+```
+
+It copies ucode's ready-made starter — Next.js 16, TypeScript, Tailwind 4,
+shadcn/ui with 25 common components, light/dark mode, toasts, a considered
+theme — which is already known to build, and starts `npm install` in the
+background. Read the `TEMPLATE.md` it lists, then start writing components
+straight away; commands in that folder wait for the install on their own.
+Re-tint the palette in `globals.css` and swap the font for the app's direction.
+
+Never run `create-next-app` or `shadcn init` for a Next.js app — that is
+four minutes and a dozen steps the starter already did.
+
+### Other stacks
 
 Nothing you run has a keyboard. A scaffolder that asks "Would you like to use
 TypeScript?" gets no answer and fails, so give it every answer up front:

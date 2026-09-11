@@ -22,6 +22,7 @@ import {
 import { readFile, readFiles, writeFile, editFile, multiEdit, batchWrite, editFiles } from '../src/tools/files.js';
 import { listDir, glob, grep } from '../src/tools/search.js';
 import { runCommand, childEnv, killTree } from '../src/tools/shell.js';
+import { createApp } from '../src/tools/scaffold.js';
 import { tools, runTool, describe, PARALLEL_SAFE, WRITES } from '../src/tools/index.js';
 import { parseSkill, autoLoadFor, catalogue, findSkill } from '../src/core/skills.js';
 import { titleFrom, newSession, save, load, list, removeAll } from '../src/core/history.js';
@@ -589,6 +590,37 @@ await test('batch_write creates parent directories', async () => {
   eq(await read('deep/nested/two.txt'), 'two\n');
   ok(out.summary.includes('2 files'));
   ok(out.diff.some((r) => r.startsWith('~deep/nested/one.txt')));
+});
+
+section('create_app');
+
+const present = (rel) => fs.access(path.join(sandbox, rel)).then(() => true, () => false);
+
+await test('the starter is copied with the name filled in and npm-safe files renamed back', async () => {
+  const out = await createApp({ folder: 'newapp', name: 'Stride "Tasks"', description: 'a test', install: false });
+  ok(/\d+ files/.test(out.summary), `summary was: ${out.summary}`);
+  eq(JSON.parse(await read('newapp/package.json')).name, 'stride-tasks');
+  ok((await read('newapp/src/app/layout.tsx')).includes('title: "Stride Tasks"'), 'the quotes are stripped, the name is in');
+  ok(await present('newapp/.gitignore'), '.gitignore restored');
+  ok(await present('newapp/package-lock.json'), 'package-lock.json restored');
+  ok(!(await present('newapp/_gitignore')), 'no underscore names left behind');
+  ok(await present('newapp/src/components/ui/button.tsx'), 'the components come with it');
+  ok(!(await read('newapp/src/app/page.tsx')).includes('__APP_NAME__'), 'no placeholder left unfilled');
+});
+
+await test('an app never lands on top of existing files', async () => {
+  await throws(() => createApp({ folder: 'newapp', name: 'Again', install: false }), 'not_empty');
+});
+
+await test('an app needs its own folder', async () => {
+  await throws(() => createApp({ folder: '.', name: 'Root', install: false }), 'bad_args');
+});
+
+await test('the shipped starter has every file the copy relies on', async () => {
+  const root = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/(\w:)/, '$1')), '..', 'templates', 'next-shadcn');
+  for (const f of ['package.json', '_package-lock.json', '_gitignore', 'TEMPLATE.md', 'components.json', 'next-env.d.ts', 'src/app/layout.tsx', 'src/app/globals.css', 'src/lib/utils.ts']) {
+    ok(await fs.access(path.join(root, f)).then(() => true, () => false), `${f} is missing from the starter`);
+  }
 });
 
 section('search');
