@@ -58,7 +58,7 @@ export const MODELS = {
     name: 'Nemotron 3 Ultra',
     context: 1_000_000,
     star: true,
-    note: 'deepest reasoning, 1M context — the default',
+    note: 'deepest reasoning, 1M context — slowest to answer',
   },
   'nvidia/nemotron-3.5-lightning:free': {
     name: 'Nemotron 3.5 Lightning',
@@ -79,18 +79,43 @@ export const MODELS = {
     name: 'North Mini Code',
     context: 256_000,
     star: true,
-    note: 'code and UI specialist — reach for it on frontend work',
+    note: 'the default — built for code and interface work, quick to answer',
   },
 };
 
 /**
- * Nemotron 3 Ultra is the default because the work ucode is for — read a
- * codebase, hold it in mind, change several files consistently — is exactly
- * what a million-token window and a long think buy you. It is slower to the
- * first token than the others and that is the trade being made. /model swaps
- * to Lightning or North Mini Code when the wait stops being worth it.
+ * North Mini Code is the default: it is built for code and interface work,
+ * which is what ucode is mostly asked to do, and it answers far sooner than
+ * the big reasoning models. /model moves to Ultra when a problem needs the
+ * million-token window and the long think more than it needs the speed.
  */
-export const DEFAULT_MODEL = 'nvidia/nemotron-3-ultra-550b-a55b:free';
+export const DEFAULT_MODEL = 'cohere/north-mini-code:free';
+
+/**
+ * Where to go when a model is busy, in order of preference. Each is served by
+ * a different upstream, so a rate limit on one rarely means a limit on the
+ * next — which is what lets a long build keep going instead of stopping at
+ * the first "too many requests".
+ */
+export const FALLBACKS = [
+  'cohere/north-mini-code:free',
+  'nvidia/nemotron-3.5-lightning:free',
+  'nvidia/nemotron-3-super-120b-a12b:free',
+  'nvidia/nemotron-3-ultra-550b-a55b:free',
+];
+
+/** The next model to try after `id`, skipping any already tried this round. */
+export function fallbackFor(id, tried = new Set()) {
+  const start = Math.max(0, FALLBACKS.indexOf(id));
+  for (let i = 1; i <= FALLBACKS.length; i++) {
+    const next = FALLBACKS[(start + i) % FALLBACKS.length];
+    if (next !== id && !tried.has(next)) return next;
+  }
+  return null;
+}
+
+/** Seconds to wait on successive rate limits that come with no retry-after. */
+const RATE_LIMIT_BACKOFF = [5, 10, 20];
 
 let current = process.env.UCODE_MODEL || DEFAULT_MODEL;
 let client = null;
@@ -578,12 +603,15 @@ export async function ask(messages, tools = [], opts = {}) {
       problem = explain(err, id);
 
       // A per-minute limit is a wait, not a failure. Sit it out rather than
-      // making the user retype their message.
-      const wait = problem.detail?.retryAfter;
+      // making the user retype their message. Free endpoints often refuse
+      // without saying how long to wait, so when there is no retry-after the
+      // pauses grow on their own — 5s, 10s, 20s — and only then does the
+      // error go up to the loop, which moves to another model.
+      const told = problem.detail?.retryAfter;
+      const wait = Number.isFinite(told) && told > 0 && told <= 90 ? told : RATE_LIMIT_BACKOFF[attempt - 1];
       if (
         problem.kind === 'rate_limit' && !problem.detail?.daily &&
-        Number.isFinite(wait) && wait > 0 && wait <= 90 &&
-        attempt < attempts && !opts.signal?.aborted
+        wait && attempt < attempts && printed === 0 && !opts.signal?.aborted
       ) {
         const until = Date.now() + wait * 1000;
         while (Date.now() < until && !opts.signal?.aborted) {

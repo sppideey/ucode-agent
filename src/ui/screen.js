@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine,
+  shortenPath, asLabel, ensureColour, planLine, bare,
 } from './theme.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -773,11 +773,15 @@ export class Screen {
    * cannot be given up permanently, because under alternate scroll the mouse
    * wheel arrives as arrow keys.
    */
-  pick(items, { active = 0, hint = 'enter to choose · esc to cancel' } = {}) {
+  pick(items, { active = 0, hint = 'enter to choose · esc to cancel', deletable = false } = {}) {
     this.picker = {
       items,
       index: Math.min(Math.max(0, active), Math.max(0, items.length - 1)),
       hint,
+      // With deletable, `d` twice on a row resolves { delete: index }. Twice,
+      // because a single stray keypress should never cost a conversation.
+      deletable,
+      armed: null,
     };
     this.render();
     return new Promise((resolve) => { this.pickerResolve = resolve; });
@@ -799,7 +803,7 @@ export class Screen {
    * about instead of a column of near-identical titles.
    */
   pickerLines(height) {
-    const { items, index, hint } = this.picker;
+    const { items, index, hint, armed } = this.picker;
     const room = Math.max(1, height - 2);
 
     // Rows per item, so the window can be sized in rows rather than in items.
@@ -821,12 +825,15 @@ export class Screen {
     for (let i = first; i <= last; i++) {
       const item = items[i];
       const body = typeof item === 'string' ? item : item.label;
-      out.push(i === index ? `${blue('❯')} ${chalk.bold.white(body)}` : `  ${dim(body)}`);
+      if (i === armed) out.push(`${theme.warn('✗')} ${theme.warn(bare(body))}`);
+      else out.push(i === index ? `${blue('❯')} ${chalk.bold.white(body)}` : `  ${dim(body)}`);
       if (typeof item !== 'string' && item.sub) out.push(`  ${item.sub}`);
     }
 
     out.push('');
-    out.push(dim(`  ${hint}`));
+    out.push(armed !== null && armed !== undefined
+      ? theme.warn('  press d again to delete this conversation · any other key keeps it')
+      : dim(`  ${hint}`));
     return out;
   }
 
@@ -932,6 +939,13 @@ export class Screen {
     // An open picker owns the keyboard until it closes.
     if (this.picker) {
       const last = this.picker.items.length - 1;
+      if (this.picker.deletable && (key === 'd' || key === 'D' || key === `${ESC}[3~`)) {
+        if (this.picker.armed === this.picker.index) { this.closePicker({ delete: this.picker.index }); return; }
+        this.picker.armed = this.picker.index;
+        this.render();
+        return;
+      }
+      this.picker.armed = null;   // any other key takes the delete back
       if (key === `${ESC}[A`) { this.picker.index = Math.max(0, this.picker.index - 1); this.render(); return; }
       if (key === `${ESC}[B`) { this.picker.index = Math.min(last, this.picker.index + 1); this.render(); return; }
       if (key === '\r' || key === '\n') { this.closePicker(this.picker.index); return; }
@@ -1149,7 +1163,7 @@ export class Screen {
 
     // The version, in the corner, and nothing else on the screen.
     if (VERSION) {
-      const tag = dim(`v${VERSION}`);
+      const tag = dim(this.facts.update ? `v${VERSION} · v${this.facts.update} installed, starts next time` : `v${VERSION}`);
       frame[this.rows - 1] = ' '.repeat(Math.max(0, g.cols - visLen(tag) - 2)) + tag;
     }
 

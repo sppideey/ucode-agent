@@ -28,8 +28,9 @@ import { titleFrom, newSession, save, load, list, removeAll } from '../src/core/
 import { usage, tooBig, fold, forSummary } from '../src/core/window.js';
 import {
   MODELS, DEFAULT_MODEL, setModel, model, modelName, modelList,
-  estimateTokens, estimateConversation, contextLimit, explain,
+  estimateTokens, estimateConversation, contextLimit, explain, fallbackFor, FALLBACKS,
 } from '../src/core/provider.js';
+import { newer } from '../src/core/updater.js';
 import { Failure, ToolFailure, Declined, isFailure } from '../src/core/failure.js';
 
 // ---------------------------------------------------------------------------
@@ -255,6 +256,7 @@ await test('there is always a clear row between the conversation and the input b
 
 await test('the caret sits on the typed line, not on the status row', () => {
   const { screen } = fakeScreen(100, 30);
+  screen.add('something said'); // past the start screen, into the conversation layout
   screen.buffer = 'hello';
   screen.cursor = 5;
   const [row, col] = screen.caret();
@@ -267,6 +269,7 @@ await test('the caret sits on the typed line, not on the status row', () => {
 
 await test('the caret follows a wrapped line down', () => {
   const { screen } = fakeScreen(40, 30);
+  screen.add('something said');
   screen.buffer = 'x'.repeat(80);         // more than one row's worth
   screen.cursor = screen.buffer.length;
   const { rows } = screen.inputLines();
@@ -285,6 +288,29 @@ await test('the header carries only where you are and how to get help', () => {
   ok(!header.includes('A session'), 'the session title should be gone');
   ok(header.includes('dir'), 'the directory should stay');
   ok(header.includes('/help'), 'the keys should stay');
+});
+
+await test('the start screen shows until something is said, and parks the caret in its box', () => {
+  const { screen } = fakeScreen(100, 30);
+  ok(screen.welcoming(), 'an empty transcript is the start screen');
+  const g = screen.welcomeGeometry();
+  const [row, col] = screen.caret();
+  eq(row, g.boxTop + 2, 'on the first line inside the centred box');
+  eq(col, g.left + 5, 'on the first letter of the placeholder');
+  screen.add('hello');
+  ok(!screen.welcoming(), 'the first message leaves the start screen');
+});
+
+await test('d twice in a deletable picker deletes, anything else takes it back', async () => {
+  const { screen } = fakeScreen(100, 30);
+  const picking = screen.pick(['one', 'two', 'three'], { deletable: true });
+  screen.onKey('[B');     // to 'two'
+  screen.onKey('d');          // armed
+  screen.onKey('x');          // disarmed
+  ok(screen.picker, 'still open after a single d and another key');
+  screen.onKey('d');
+  screen.onKey('d');
+  eq(await picking, { delete: 1 });
 });
 
 section('keys');
@@ -953,9 +979,25 @@ await test('exactly the NVIDIA and Cohere models are offered', () => {
   }
 });
 
-await test('the default is Nemotron 3 Ultra', () => {
-  eq(DEFAULT_MODEL, 'nvidia/nemotron-3-ultra-550b-a55b:free');
-  eq(modelName(DEFAULT_MODEL), 'Nemotron 3 Ultra');
+await test('the default is North Mini Code', () => {
+  eq(DEFAULT_MODEL, 'cohere/north-mini-code:free');
+  eq(modelName(DEFAULT_MODEL), 'North Mini Code');
+});
+
+await test('a busy model has somewhere to go, and never back to itself', () => {
+  const next = fallbackFor(DEFAULT_MODEL);
+  ok(next && next !== DEFAULT_MODEL, `got ${next}`);
+  ok(MODELS[next], 'the fallback is one of the five');
+  const tried = new Set(FALLBACKS);
+  eq(fallbackFor(DEFAULT_MODEL, tried), null, 'nothing left once every model was tried');
+  eq(fallbackFor('nvidia/nemotron-3-ultra-550b-a55b:free', new Set()), FALLBACKS[0], 'the chain wraps around');
+});
+
+await test('update versions compare as numbers, not strings', () => {
+  ok(newer('1.10.0', '1.9.3'));
+  ok(newer('2.0.0', '1.99.99'));
+  ok(!newer('1.4.0', '1.4.0'));
+  ok(!newer('1.3.9', '1.4.0'));
 });
 
 await test('the list is locked to those five', () => {
@@ -1068,7 +1110,7 @@ await test('a bad key says exactly what to check', () => {
   const err = Object.assign(new Error('invalid api key'), { status: 401 });
   const f = explain(err, DEFAULT_MODEL);
   eq(f.kind, 'invalid_api_key');
-  ok(f.fix.includes('openrouter.ai/keys'));
+  ok(f.fix.includes('UCODE_API_KEY'), `fix was: ${f.fix}`);
 });
 
 await test('an abort is not reported as a failure of the model', () => {

@@ -1,6 +1,6 @@
 {
   "name": "ucode-agent",
-  "version": "1.3.0",
+  "version": "1.4.0",
   "description": "ucode - a terminal coding agent that reads, edits and runs your code, on NVIDIA and Cohere models.",
   "type": "module",
   "main": "ucode.js",
@@ -48,6 +48,7 @@
     "dotenv": "^17.4.2",
     "marked": "^15.0.12",
     "marked-terminal": "^7.3.0",
-    "openai": "^7.4.0"
+    "openai": "^7.4.0",
+    "playwright-core": "^1.63.0"
   }
 }

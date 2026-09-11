@@ -200,7 +200,14 @@ function startServer(command, workdir, { env } = {}) {
         cwd: workdir.abs,
         shell: true,
         windowsHide: true,
-        detached: true,
+        // Not detached on Windows, and this is load-bearing. A detached process
+        // there has no console, and programs launched under it write nothing
+        // to a redirected file — measured: every one of node, npm and next
+        // produced an empty log, so a server's "ready" line never arrived and
+        // every start waited out the full timer. Attached, the output lands.
+        // The server itself still outlives ucode: only this shell is tied to
+        // ucode's job object, and the job lets grandchildren break away.
+        detached: process.platform !== 'win32',
         stdio: ['ignore', fd, fd],
         env,
       });

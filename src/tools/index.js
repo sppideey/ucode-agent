@@ -8,6 +8,7 @@ import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFi
 import { listDir, glob, grep } from './search.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
+import { lookAtApp } from './browser.js';
 import { clip, READ_LINES } from './shared.js';
 
 export { setRoot, setConfirm, getRoot } from './shared.js';
@@ -268,6 +269,29 @@ export const tools = [
     },
   },
   {
+    name: 'look_at_app',
+    description:
+      'Open the running app in a real browser at a phone width (375px) and a desktop width ' +
+      '(1440px) and report what a person would run into: console errors, failed requests, ' +
+      'content that spills off the side of the screen, broken images, unlabeled buttons and ' +
+      'fields - plus a designer-style review of the screenshots. Use it once the dev server ' +
+      'is ready, and again after visual changes, then fix what it reports. Screenshots are ' +
+      'saved under .ucode/screenshots.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: str('The local URL the dev server reported, e.g. http://localhost:3000'),
+        paths: {
+          type: 'array',
+          description: 'Pages to open, e.g. ["/", "/settings"]. Defaults to ["/"]. Up to 4.',
+          items: { type: 'string' },
+        },
+        review: bool('Include the visual design review of the screenshots. Defaults to true.'),
+      },
+      required: ['url'],
+    },
+  },
+  {
     name: 'web_search',
     description:
       'Search the web and get back titles, links and summaries. For anything the ' +
@@ -299,6 +323,7 @@ const run = {
   run_command: runCommand,
   run_commands: runCommands,
   web_search: webSearch,
+  look_at_app: lookAtApp,
 };
 
 /** Tools that change the project or execute code. */
@@ -435,6 +460,8 @@ export function describe(name, args = {}) {
       return `Running ${clip(args.command, 70)}${args.background ? ' in the background' : ''}`;
     case 'run_commands':
       return `Running ${args.commands?.length ?? 0} commands together`;
+    case 'look_at_app':
+      return `Looking at ${clip(args.url, 40)} on a phone and a desktop`;
     case 'web_search':
       return `Searching the web for ${clip(args.query, 60)}`;
     case 'load_skill':

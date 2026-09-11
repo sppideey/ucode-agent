@@ -19,7 +19,7 @@ corner:
   ╭──────────────────────────────────────────────────────────────────────────────╮
   │ › Ask anything…                                                              │
   │                                                                              │
-  │ ◆ Build · Nemotron 3 Ultra                                                0% │
+  │ ◆ Build · North Mini Code                                                 0% │
   ╰──────────────────────────────────────────────────────────────────────────────╯
 
 
@@ -44,7 +44,7 @@ the input, so your own words are easy to find in a long session:
 ╭──────────────────────────────────────────────────────────────────────────────────╮
 │ › now add a dark mode toggle                                                     │
 │                                                                                  │
-│ ◆ Build · Nemotron 3 Ultra                                                    4% │
+│ ◆ Build · North Mini Code                                                     4% │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -88,24 +88,32 @@ properly, which is the thing an agent actually depends on.
 
 | Model | Context | For |
 | --- | --- | --- |
-| **Nemotron 3 Ultra** ★ | 1M | the default — deepest reasoning, slowest to first token |
+| Nemotron 3 Ultra | 1M | deepest reasoning, slowest to first token |
 | Nemotron 3.5 Lightning | 1M | the same enormous window, answers much sooner |
 | Nemotron 3 Super | 262k | strong all-rounder, quick to start |
 | Nemotron 3 Nano Omni | 256k | small, fast, reasoning tuned |
-| **North Mini Code** ★ | 256k | code and UI specialist — reach for it on frontend work |
+| **North Mini Code** ★ | 256k | the default — built for code and interface work, quick to answer |
 
 `/model` shows them and switches. `ucode -m cohere/north-mini-code:free`
 starts on one.
 
-Ultra is the default because the work this is for — read a codebase, hold it in
-mind, change several files consistently — is what a million-token window and a
-long think are for. When the wait stops being worth it, switch.
+North Mini Code is the default: it is built for code and interfaces, which is most
+of what ucode is asked to do, and it answers far sooner than the big reasoning
+models. Switch to Ultra when a problem needs the million-token window more than
+the speed.
+
+**A busy model never stops a build.** Free endpoints are shared, and "too many
+requests" is routine. ucode waits it out with growing pauses, and if the model
+stays busy it carries on with the next one — North Mini Code, then Nemotron 3.5
+Lightning, Super, Ultra — from exactly where it was, and tells you it switched.
+If every model is busy at once it waits a minute and goes round again. Your
+chosen model gets another go a few minutes later.
 
 ## What it does
 
-**Thirteen tools.** `read_file`, `read_files`, `write_file`, `batch_write`,
+**Fourteen tools.** `read_file`, `read_files`, `write_file`, `batch_write`,
 `edit_file`, `multi_edit`, `edit_files`, `list_dir`, `glob`, `grep`,
-`run_command`, `run_commands`, `web_search`. Read-only calls run in parallel,
+`run_command`, `run_commands`, `look_at_app`, `web_search`. Read-only calls run in parallel,
 and start the moment the model finishes writing them — while the rest of its
 reply is still arriving. Anything that writes runs on its own, in order.
 
@@ -118,6 +126,14 @@ tagged with the worker's name. File writes take turns so two never collide.
 written, its install starts in the background while the rest of the app is
 still being written. An install the model asks for later waits for that one
 instead of running twice, and anything run in that folder waits for it too.
+
+**It looks at what it built.** `look_at_app` opens the running app in a real
+browser — the Edge or Chrome already on your machine, so there is nothing extra
+to download — at 375px and 1440px. It reports console errors, failed requests,
+content that spills off a phone screen, broken images and unlabeled controls,
+saves screenshots to `.ucode/screenshots`, and has Nemotron Nano Omni review them
+the way a designer would. The model fixes what it finds before calling the app
+done.
 
 **Errors fixed before you see them.** When the model says it is done, ucode
 type-checks every file it changed — `tsc --noEmit` for TypeScript projects,
@@ -154,7 +170,12 @@ them; the chip inside the input box says which is live.
 
 **Sessions.** Everything is on disk under `~/.ucode/sessions`, saved after every
 step. `/resume` lists them with what each one was actually about, the ones from
-this folder first.
+this folder first. Press `d` twice on one to delete it — the list stays open, so
+clearing out several is quick — or `/session delete 2,5`.
+
+**It updates itself.** Each launch checks npm in the background and, if there is
+a newer version, installs it while you work. The next launch is the new one.
+Set `UCODE_NO_UPDATE=1` to turn that off.
 
 **A context window that folds rather than forgets.** Past 75% the oldest turns
 are summarised instead of dropped, never cutting between a tool call and its
@@ -207,6 +228,7 @@ Everything after the frontmatter is the instruction.
 | `/help` | the list |
 | `/model` | show the models and switch — `/models` does the same |
 | `/resume` | pick up an earlier conversation — `/session`, `/sessions` too |
+| `/session delete 2,5` | delete saved conversations by number (or `d d` in the list) |
 | `/new` | save this one and start fresh |
 | `/remember <note>` | add a standing note to this project's `UCODE.md` |
 | `/skills` | what it knows how to do, and what is loaded |
@@ -245,7 +267,7 @@ ucode [options]
 Environment overrides: `UCODE_MODEL`, `UCODE_WORKER_MODEL` (a faster model for
 parallel workers), `UCODE_WORKER_STEPS`, `UCODE_MAX_CONTEXT_TOKENS`,
 `UCODE_MAX_STEPS`, `UCODE_MAX_TOOL_OUTPUT`, `UCODE_REQUEST_TIMEOUT_MS`,
-`UCODE_BASE_URL`.
+`UCODE_BASE_URL`, `UCODE_NO_UPDATE`.
 
 Web search needs a Tavily key — free, 1000 searches a month, no card. Without
 one, ucode answers from what it knows and says that it could not check.

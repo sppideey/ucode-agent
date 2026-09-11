@@ -141,8 +141,10 @@ Use `batch_write` for the skeleton — one call, every file.
 - `npm run build` — it type-checks and lints; a build that fails is not done.
 - Start it: `npm run dev` goes to the background on its own and comes back with
   the URL once ready. Do not start it twice.
-- Exercise it: `curl` the API route with real input, load the page, check the
-  core loop end to end. A clean build proves it compiles, not that it works.
+- Exercise it: `curl` the API route with real input, then `look_at_app` on every
+  page — it loads them in a real browser at phone and desktop width and reports
+  errors, overflow and a visual review. A clean build proves it compiles, not
+  that it works.
 - Fix what you find and check again.
 
 ## 7. Definition of done

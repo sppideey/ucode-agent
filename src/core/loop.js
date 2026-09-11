@@ -17,14 +17,16 @@ import { spawn } from 'node:child_process';
 
 import {
   ask, model, setModel, modelName, modelList, contextLimit, rateLimits,
-  MODELS, DEFAULT_MODEL, PROVIDER,
+  MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor,
 } from './provider.js';
 import {
   tools, runTool, describe, setRoot, setConfirm, PARALLEL_SAFE, WRITES, FILE_WRITES,
 } from '../tools/index.js';
 import { projectMap, loadMemory, remember, MEMORY_FILE } from './context.js';
+import { autoUpdate } from './updater.js';
+import { closeBrowser } from '../tools/browser.js';
 import {
-  newSession, save, load, list, removeAll, titleFrom,
+  newSession, save, load, list, remove, removeAll, titleFrom,
 } from './history.js';
 import { fold, usage, tooBig, SUMMARY_PROMPT, forSummary } from './window.js';
 import { loadSkills, catalogue, findSkill, skillMessage, autoLoadFor } from './skills.js';
@@ -63,6 +65,17 @@ const MAX_FIX_ROUNDS = 3;
 
 /** Files worth checking after they change. */
 const CHECKABLE = /\.(?:[cm]?[jt]sx?|py)$/i;
+
+/**
+ * Failures that are the provider's and not the model's: busy, slow, down, or
+ * unreachable. None of them should end a build — the turn moves to another
+ * model and carries on from exactly where it was.
+ */
+const TRANSIENT = new Set(['rate_limit', 'timeout', 'server', 'network', 'no_content']);
+const MAX_FAILOVERS = 8;
+const COOLDOWN = 5 * 60_000;
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /** Parallel workers at once, and how many steps each may take. */
 const MAX_WORKERS = 3;
@@ -129,7 +142,7 @@ const delegateTool = {
 };
 
 /** The instructions a parallel worker starts with. */
-function workerPrompt({ cwd, name, memory, skills }) {
+function workerPrompt({ cwd, name, memory, skills, map }) {
   return [
     `You are a ucode worker called "${name}" - one of several building parts of the same project at the same time.`,
     '',
@@ -145,7 +158,11 @@ function workerPrompt({ cwd, name, memory, skills }) {
     '- Finish what you build: real content, every state handled, no TODOs.',
     '- When done, reply with two or three sentences: what you built, in which files, and',
     '  anything the lead has to wire up.',
+    '- The files you own may not exist yet - create them. Do not go looking for them',
+    '  first. The project map below shows what does exist; read only the files whose',
+    '  interfaces you must match, then start writing within two or three steps.',
     ...(memory ? ['', '## Project memory', '', memory] : []),
+    ...(map ? ['', '## Project map', '', map] : []),
     ...(skills ? ['', '## Instructions in force', '', skills] : []),
   ].join('\n');
 }
@@ -234,6 +251,9 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  writing files. Running the install yourself afterwards just waits for that one.',
     '- When you finish, ucode type-checks what you changed and hands you the errors, so',
     '  there is no need to run tsc yourself.',
+    '- Once the dev server is ready, run look_at_app on the pages you built and fix what',
+    '  it reports - errors, layout that overflows a phone, and the visual review - then',
+    '  look again. Do not call an interface finished before it has been looked at.',
     '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',
     '  would ask a question, or it fails instead of waiting: create-next-app --yes,',
     '  npx shadcn@latest init -d -y, npx shadcn@latest add <names> -y, npm init -y.',
@@ -373,6 +393,14 @@ export class Agent {
 
     this.showHeader();
     this.installSignals();
+
+    // Checked in the background; nothing here waits on it.
+    autoUpdate({
+      onUpdated: (version) => {
+        this.ui.setFacts?.({ update: version });
+        if (!this.ui.welcoming?.()) this.ui.note(`updated to v${version} — it takes over the next time you start ucode`);
+      },
+    });
     await this.repl();
   }
 
@@ -485,6 +513,7 @@ export class Agent {
   }
 
   async shutdown() {
+    await closeBrowser().catch(() => {});
     this.ui.stopSpinner();
     if (this.session.messages.length) {
       await this.persist();
@@ -559,6 +588,14 @@ export class Agent {
     ]);
     await this.persist();
 
+    // A busy model was swapped for a fallback earlier; after a few minutes the
+    // one the user chose gets another go.
+    this.preferred ??= model();
+    if (model() !== this.preferred && Date.now() > (this.cooldownUntil ?? 0)) {
+      setModel(this.preferred);
+      if (this.full) this.showHeader({ clear: false });
+    }
+
     this.busy = true;
     this.abort = new AbortController();
 
@@ -591,6 +628,8 @@ export class Agent {
     let askedToVerify = false;
     let askedToSpeak = false;
     let fixRounds = 0;
+    this.failovers = 0;
+    this.tried = new Set([model()]);
 
     this.touched = new Set();
     this.sinceCheck = new Set();
@@ -668,6 +707,10 @@ export class Agent {
           });
           continue;
         }
+
+        // Busy, slow or down: move to the next model and carry on, rather
+        // than ending a half-built app with an error.
+        if (TRANSIENT.has(err.kind) && !this.abort.signal.aborted && (await this.failover(err))) continue;
         throw err;
       }
 
@@ -917,6 +960,38 @@ export class Agent {
     });
   }
 
+  /**
+   * Switch to the next model after a provider failure. Returns false once
+   * there is nothing sensible left to try. When every model is busy at once,
+   * it waits a minute and goes round again rather than giving up.
+   */
+  async failover(err) {
+    if (++this.failovers > MAX_FAILOVERS) return false;
+    const from = model();
+    let next = fallbackFor(from, this.tried);
+
+    if (!next) {
+      const until = Date.now() + 60_000;
+      this.ui.startSpinner('every model is busy');
+      while (Date.now() < until && !this.abort?.signal.aborted) {
+        this.ui.updateSpinner(`every model is busy — trying again in ${Math.ceil((until - Date.now()) / 1000)}s`);
+        await wait(1000);
+      }
+      this.ui.stopSpinner();
+      if (this.abort?.signal.aborted) return false;
+      this.tried = new Set();
+      next = this.preferred && this.preferred !== from ? this.preferred : fallbackFor(from, this.tried) ?? from;
+    }
+
+    this.tried.add(next);
+    setModel(next);
+    this.cooldownUntil = Date.now() + COOLDOWN;
+    const why = err.kind === 'rate_limit' ? 'busy' : err.kind === 'timeout' ? 'too slow to answer' : 'not answering';
+    this.ui.note(`${modelName(from)} is ${why} — carrying on with ${modelName(next)}`);
+    if (this.full) this.showHeader({ clear: false });
+    return true;
+  }
+
   /** Run a call and settle to { out } or { err } — never throws. */
   execute(call) {
     return this.dispatch(call).then((out) => ({ out }), (err) => ({ err }));
@@ -964,10 +1039,18 @@ export class Agent {
 
     for (const r of results) for (const f of r.touched) { this.touched.add(f); this.sinceCheck.add(f); }
 
+    // A worker that wrote nothing has not done its part, whatever it said.
+    // The lead builds those itself rather than leaving holes in the app.
+    const empty = results.filter((r) => !r.touched.length).map((r) => r.name);
+
     return {
       content: results
         .map((r) => `## ${r.name}\n${r.summary}\nFiles changed: ${r.touched.join(', ') || 'none'}`)
-        .join('\n\n'),
+        .join('\n\n') +
+        (empty.length
+          ? `\n\n${empty.join(', ')} wrote no files. Build ${empty.length === 1 ? 'that part' : 'those parts'} ` +
+            'yourself now, directly - do not delegate them again.'
+          : ''),
       summary: results.map((r) => `${r.name} · ${r.touched.length} file${r.touched.length === 1 ? '' : 's'}`).join('  '),
     };
   }
@@ -980,16 +1063,39 @@ export class Agent {
       .map((s) => `--- ${s.name} ---\n${s.body}`)
       .join('\n\n');
     const messages = [
-      { role: 'system', content: workerPrompt({ cwd: this.cwd, name, memory: this.memory, skills }) },
+      { role: 'system', content: workerPrompt({ cwd: this.cwd, name, memory: this.memory, skills, map: this.map }) },
       { role: 'user', content: String(task.instructions) },
     ];
     const available = this.toolsNow().filter((t) => !WORKER_EXCLUDED.has(t.name));
     const wanted = process.env.UCODE_WORKER_MODEL;
-    const workerModel = wanted && MODELS[wanted] ? wanted : model();
+    let workerModel = wanted && MODELS[wanted] ? wanted : model();
+    const tried = new Set([workerModel]);
+    let failovers = 0;
+
+    // Start a moment apart. Three requests in the same instant is exactly what
+    // trips a free endpoint's rate limit, and the stagger costs a second or two.
+    if (index) await wait(index * 1500);
 
     for (let step = 0; step < WORKER_STEPS; step++) {
       if (this.abort?.signal.aborted) break;
-      const reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel });
+
+      let reply;
+      try {
+        reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel });
+      } catch (err) {
+        // Same rule as the lead: a busy model is swapped, not a reason to stop.
+        if (TRANSIENT.has(err.kind) && failovers < 6 && !this.abort?.signal.aborted) {
+          failovers++;
+          let next = fallbackFor(workerModel, tried);
+          if (!next) { tried.clear(); await wait(20_000); next = fallbackFor(workerModel, tried) ?? workerModel; }
+          tried.add(next);
+          this.ui.note(`${name}: ${modelName(workerModel)} is busy — switching to ${modelName(next)}`);
+          workerModel = next;
+          step--;
+          continue;
+        }
+        throw err;
+      }
       this.record(reply.usage);
 
       if (!reply.toolCalls.length) {
@@ -1220,6 +1326,7 @@ export class Agent {
     if (arg) {
       try {
         setModel(arg);
+        this.preferred = model();
       } catch (err) {
         this.ui.error(err, { debug: this.debug });
         return;
@@ -1247,6 +1354,7 @@ export class Agent {
       if (chosen === null) return;
 
       setModel(all[chosen].id);
+      this.preferred = model();
       this.session.model = model();
       this.ui.note(`now using ${modelName()}`);
       this.showHeader({ clear: false });
@@ -1285,7 +1393,7 @@ export class Agent {
    * and how far it got, and the ones from this folder are marked, because that
    * is nearly always the one being looked for.
    */
-  describeSession(s, width) {
+  describeSession(s, width, i) {
     const room = Math.max(24, Math.min(46, width - 34));
     const mark = s.mine ? blue('●') : dim('○');
     const when = relativeTime(s.updatedAt).padEnd(9);
@@ -1293,7 +1401,8 @@ export class Agent {
     const where = s.mine ? 'here' : shortenPath(s.cwd, 26);
 
     return {
-      label: `${mark} ${clip(s.title, room).padEnd(room)}  ${dim(when)}${dim(turns)}${dim(where)}`,
+      // Numbered in the picker, so /session delete 3 has something to point at.
+      label: `${i === undefined ? '' : `${dim(String(i + 1).padStart(2))} `}${mark} ${clip(s.title, room).padEnd(room)}  ${dim(when)}${dim(turns)}${dim(where)}`,
       sub: s.preview ? dim(`     ${clip(s.preview, width - 10)}`) : '',
     };
   }
@@ -1313,6 +1422,10 @@ export class Agent {
       this.ui.note('all sessions deleted');
       return;
     }
+
+    // /session delete 3   or   /session delete 2,5,7
+    const del = /^(?:delete|del|rm|remove)\b\s*(.*)$/i.exec(arg ?? '');
+    if (del) return this.deleteSessions(del[1]);
 
     const sessions = await list({ cwd: this.cwd });
     if (!sessions.length) {
@@ -1336,22 +1449,48 @@ export class Agent {
       }
       index = n - 1;
     } else if (this.ui.pick) {
-      const here = shown.filter((s) => s.mine).length;
-      index = await this.ui.pick(
-        shown.map((s) => this.describeSession(s, width)),
-        {
-          hint:
-            `↑↓ move · enter to continue · esc to cancel` +
-            (here ? ` — ${here} from this folder` : '') +
-            (sessions.length > shown.length ? ` · ${sessions.length - shown.length} older not shown` : ''),
+      // The picker stays open while you delete, so clearing out several old
+      // conversations is d d, d d, d d — then Enter on the one you want.
+      let active = 0;
+      for (;;) {
+        const here = shown.filter((s) => s.mine).length;
+        const picked = await this.ui.pick(
+          shown.map((s, i) => this.describeSession(s, width, i)),
+          {
+            active,
+            deletable: true,
+            hint:
+              `↑↓ move · enter to continue · d twice to delete · esc to cancel` +
+              (here ? ` — ${here} from this folder` : ''),
+          }
+        );
+        if (picked === null) return;
+        if (typeof picked === 'object' && picked.delete !== undefined) {
+          const doomed = shown[picked.delete];
+          active = picked.delete;
+          if (doomed.id === this.session.id) {
+            this.ui.flash?.('that is the conversation you are in — /new first, then delete it');
+            continue;
+          }
+          await remove(doomed.id);
+          shown.splice(picked.delete, 1);
+          this.ui.flash?.(`deleted · ${clip(doomed.title, 50)}`);
+          if (!shown.length) {
+            this.ui.note('no saved conversations left');
+            return;
+          }
+          active = Math.min(active, shown.length - 1);
+          continue;
         }
-      );
-      if (index === null) return;
+        index = picked;
+        break;
+      }
     } else {
       this.ui.blank();
+      this.ui.note('/session delete <number> removes one, or several: /session delete 2,5');
       index = await this.ui.choose(
         'continue which?',
-        shown.map((s) => this.describeSession(s, width).label)
+        shown.map((s, i) => this.describeSession(s, width, i).label)
       );
       if (index === null) return;
     }
@@ -1360,6 +1499,26 @@ export class Agent {
     if (await this.resume(shown[index].id)) {
       this.showHeader();
       this.replayTail();
+    }
+  }
+
+  /** /session delete 3, or 2,5,7 — numbers as the session list shows them. */
+  async deleteSessions(spec) {
+    const sessions = (await list({ cwd: this.cwd })).slice(0, 25);
+    const numbers = [...new Set(String(spec).split(/[\s,]+/).filter(Boolean).map(Number))];
+    const bad = numbers.filter((n) => !Number.isInteger(n) || n < 1 || n > sessions.length);
+    if (!numbers.length || bad.length) {
+      this.ui.write(theme.warn(`  usage: /session delete <number>[,<number>…] — numbers from 1 to ${sessions.length}`));
+      return;
+    }
+    for (const n of numbers) {
+      const s = sessions[n - 1];
+      if (s.id === this.session.id) {
+        this.ui.note(`skipped ${n} — that is the conversation you are in`);
+        continue;
+      }
+      await remove(s.id);
+      this.ui.note(`deleted ${n} · ${s.title}`);
     }
   }
 
