@@ -26,7 +26,7 @@ import {
 } from '../tools/index.js';
 import { projectMap, loadMemory, remember, MEMORY_FILE } from './context.js';
 import { autoUpdate } from './updater.js';
-import { closeBrowser } from '../tools/browser.js';
+import { closeBrowser, forgetReviews } from '../tools/browser.js';
 import {
   newSession, save, load, list, remove, removeAll, titleFrom,
 } from './history.js';
@@ -74,6 +74,8 @@ const CHECKABLE = /\.(?:[cm]?[jt]sx?|py)$/i;
  * model and carries on from exactly where it was.
  */
 const TRANSIENT = new Set(['rate_limit', 'timeout', 'server', 'network', 'no_content']);
+/** Will another model, or a little patience, get past this? Not the daily cap: it covers them all. */
+const passing = (err) => TRANSIENT.has(err.kind) && !err.detail?.daily;
 const MAX_FAILOVERS = 8;
 const COOLDOWN = 5 * 60_000;
 
@@ -329,9 +331,10 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  writing files. Running the install yourself afterwards just waits for that one.',
     '- When you finish, ucode type-checks what you changed and hands you the errors, so',
     '  there is no need to run tsc yourself.',
-    '- Once the dev server is ready, run look_at_app on the pages you built and fix what',
-    '  it reports - errors, layout that overflows a phone, and the visual review - then',
-    '  look again. Do not call an interface finished before it has been looked at.',
+    '- Once the dev server is ready, run look_at_app on the pages you built. Fix what it',
+    '  reports - errors, layout that overflows a phone, the review points worth fixing -',
+    '  in one pass, then look once more. A clean second look means it is done: report',
+    '  back instead of polishing in circles. Never call an interface finished unlooked at.',
     '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',
     '  would ask a question, or it fails instead of waiting: create-next-app --yes,',
     '  npx shadcn@latest init -d -y, npx shadcn@latest add <names> -y, npm init -y.',
@@ -343,6 +346,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '- A failed build names the problem. Fix exactly that, then build again. Never go',
     '  exploring inside node_modules: a missing component or package is one install away.',
+    '- A build takes most of a minute. Fix every error it lists in one pass - multi_edit,',
+    '  edit_files - before building again, never one error per build.',
     '- Never delete an app folder to start over. Fix it where it is - starting again throws',
     '  away the install and everything already written.',
     '- Run an app\'s commands with cwd set to its folder, and keep paths inside those',
@@ -658,6 +663,7 @@ export class Agent {
   }
 
   async turn(input) {
+    forgetReviews(); // a new request: its apps get a fresh design review
     const images = await this.attachImages(input);
     this.push(images.length
       ? { role: 'user', content: input, images }
@@ -800,7 +806,7 @@ export class Agent {
 
         // Busy, slow or down: move to the next model and carry on, rather
         // than ending a half-built app with an error.
-        if (TRANSIENT.has(err.kind) && !this.abort.signal.aborted && (await this.failover(err))) continue;
+        if (passing(err) && !this.abort.signal.aborted && (await this.failover(err))) continue;
         throw err;
       }
 
@@ -1190,7 +1196,7 @@ export class Agent {
         reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel });
       } catch (err) {
         // Same rule as the lead: a busy model is swapped, not a reason to stop.
-        if (TRANSIENT.has(err.kind) && failovers < 6 && !this.abort?.signal.aborted) {
+        if (passing(err) && failovers < 6 && !this.abort?.signal.aborted) {
           failovers++;
           let next = fallbackFor(workerModel, tried);
           if (!next) { tried.clear(); await wait(20_000); next = fallbackFor(workerModel, tried) ?? workerModel; }

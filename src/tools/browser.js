@@ -25,6 +25,7 @@ const WIDTHS = [
   { name: 'desktop', width: 1440, height: 900 },
 ];
 const LOCAL = /^https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\])(?::\d+)?(?:\/|$)/i;
+const MAX_SHOT_HEIGHT = 3000;
 
 let browserPromise = null;
 
@@ -131,7 +132,8 @@ async function review(shots) {
       role: 'system',
       content:
         'You are a senior product designer reviewing screenshots of a web app, one at a phone width ' +
-        'and one at desktop width. List the concrete visual problems a user would notice, most ' +
+        'and one at desktop width. Each screenshot is the whole page, top to bottom, so anything not ' +
+        'in it is genuinely not there. List the concrete visual problems a user would notice, most ' +
         'important first: broken or cramped layout, overflow, misalignment, weak hierarchy (is the ' +
         'most important thing the most prominent?), inconsistent spacing, low contrast, default-looking ' +
         'components, awkward empty states, text that is too small. For each: where it is, what is wrong, ' +
@@ -144,11 +146,40 @@ async function review(shots) {
       images: shots.map((s) => s.dataUrl),
     },
   ];
-  const reply = await ask(request, [], { model: VISION_MODEL, temperature: 0.2, maxOutputTokens: 900 });
-  return reply.text.trim();
+  const reply = await ask(request, [], {
+    model: VISION_MODEL,
+    temperature: 0.2,
+    // A reasoning model spends its budget thinking before it writes; 900
+    // tokens came back as an empty review. Keep the thinking short, and leave
+    // room for the answer.
+    maxOutputTokens: 4000,
+    reasoning: { effort: 'low' },
+    // The free vision model is often busy. One try, and a hard cap: a review
+    // that cannot run is skipped, never waited on.
+    attempts: 1,
+    signal: AbortSignal.timeout(REVIEW_BUDGET_MS),
+  });
+  const text = reply.text.trim();
+  if (!text) throw new Error('the vision model returned an empty review');
+  return text;
 }
 
-export async function lookAtApp({ url, paths = ['/'], review: wantReview = true }) {
+const REVIEW_BUDGET_MS = 60_000;
+
+/**
+ * The designer's review is the slow part — a reasoning model looking at
+ * screenshots, most of a minute — so each app gets one per turn: a look after
+ * the fixes only re-runs the fast checks. A review that failed (busy model,
+ * empty reply) gets one more try on the next look, then is let go.
+ */
+const reviews = new Map(); // base URL -> { done, tries }
+
+/** A new request from the user: the apps may be reviewed afresh. */
+export function forgetReviews() {
+  reviews.clear();
+}
+
+export async function lookAtApp({ url, paths = ['/'] }) {
   const base = String(url ?? '').trim().replace(/\/+$/, '');
   if (!LOCAL.test(`${base}/`)) {
     throw new ToolFailure({
@@ -167,79 +198,104 @@ export async function lookAtApp({ url, paths = ['/'], review: wantReview = true 
   await fs.mkdir(shotsDir, { recursive: true });
 
   const b = await browser();
-  const sections = [];
-  const toReview = [];
-  let problems = 0;
 
-  for (const pagePath of pages) {
-    for (const size of WIDTHS) {
-      const context = await b.newContext({ viewport: { width: size.width, height: size.height }, deviceScaleFactor: 1 });
-      const page = await context.newPage();
-      const errors = [];
-      const failed = [];
-      page.on('console', (m) => {
-        if (m.type() === 'error' && !/devtools|download the react/i.test(m.text())) errors.push(m.text().slice(0, 200));
-      });
-      page.on('pageerror', (e) => errors.push(`uncaught: ${String(e.message).slice(0, 200)}`));
-      page.on('requestfailed', (r) => failed.push(`${r.method()} ${r.url().slice(0, 100)} — ${r.failure()?.errorText ?? 'failed'}`));
-      page.on('response', (r) => { if (r.status() >= 400) failed.push(`${r.status()} ${r.url().slice(0, 100)}`); });
+  // Every page at every width opens at once, each in its own context: the
+  // wait is for the slowest one, not the sum of them all.
+  const checks = await Promise.all(pages.flatMap((pagePath) => WIDTHS.map(async (size) => {
+    let problems = 0;
+    let shot = null;
+    const context = await b.newContext({ viewport: { width: size.width, height: size.height }, deviceScaleFactor: 1 });
+    const page = await context.newPage();
+    const errors = [];
+    const failed = [];
+    page.on('console', (m) => {
+      if (m.type() === 'error' && !/devtools|download the react/i.test(m.text())) errors.push(m.text().slice(0, 200));
+    });
+    page.on('pageerror', (e) => errors.push(`uncaught: ${String(e.message).slice(0, 200)}`));
+    page.on('requestfailed', (r) => failed.push(`${r.method()} ${r.url().slice(0, 100)} — ${r.failure()?.errorText ?? 'failed'}`));
+    page.on('response', (r) => { if (r.status() >= 400) failed.push(`${r.status()} ${r.url().slice(0, 100)}`); });
 
-      const target = `${base}${pagePath}`;
-      let loadError = null;
-      try {
-        // 'load', not 'networkidle': a dev server holds a hot-reload
-        // connection open and polls, so the network may never go quiet and
-        // 'networkidle' would wait out its whole timeout on every page, at
-        // every width. 'load' covers the first-request compile; the page's own
-        // data then gets a short, bounded chance to settle.
-        await page.goto(target, { waitUntil: 'load', timeout: 90_000 });
-        await page.waitForLoadState('networkidle', { timeout: 2_500 }).catch(() => {});
-      } catch (err) {
-        loadError = String(err.message).split('\n')[0];
-      }
-      await page.waitForTimeout(400); // let entrance animations settle
+    const target = `${base}${pagePath}`;
+    let loadError = null;
+    try {
+      // 'load', not 'networkidle': a dev server holds a hot-reload
+      // connection open and polls, so the network may never go quiet and
+      // 'networkidle' would wait out its whole timeout on every page, at
+      // every width. 'load' covers the first-request compile; the page's own
+      // data then gets a short, bounded chance to settle.
+      await page.goto(target, { waitUntil: 'load', timeout: 90_000 });
+      await page.waitForLoadState('networkidle', { timeout: 1_500 }).catch(() => {});
+    } catch (err) {
+      loadError = String(err.message).split('\n')[0];
+    }
+    await page.waitForTimeout(400); // let entrance animations settle
 
-      const file = path.join(shotsDir, `${safeName(pagePath)}-${size.name}.jpg`);
-      let facts = null;
+    const file = path.join(shotsDir, `${safeName(pagePath)}-${size.name}.jpg`);
+    let facts = null;
+    try {
       if (!loadError) {
         facts = await page.evaluate(inspect).catch((err) => ({ error: err.message }));
-        const buffer = await page.screenshot({ type: 'jpeg', quality: 70, fullPage: false });
+        // The whole page, so the reviewer never reports as missing what is
+        // only below the fold — capped, so an endless feed stays one image.
+        const tall = await page.evaluate(() => document.documentElement.scrollHeight).catch(() => 0);
+        const buffer = await page.screenshot({
+          type: 'jpeg',
+          quality: 70,
+          fullPage: true,
+          ...(tall > MAX_SHOT_HEIGHT ? { clip: { x: 0, y: 0, width: size.width, height: MAX_SHOT_HEIGHT } } : {}),
+        });
         await fs.writeFile(file, buffer);
-        toReview.push({ label: `${pagePath} at ${size.width}px (${size.name})`, dataUrl: `data:image/jpeg;base64,${buffer.toString('base64')}` });
+        shot = { label: `${pagePath} at ${size.width}px (${size.name})`, dataUrl: `data:image/jpeg;base64,${buffer.toString('base64')}` };
       }
-      await context.close();
-
-      const lines = [`### ${pagePath} at ${size.width}px (${size.name})`];
-      if (loadError) {
-        lines.push(`Could not load: ${loadError}`);
-        problems++;
-      } else {
-        lines.push(`Screenshot: ${path.relative(getRoot(), file).split(path.sep).join('/')}`);
-        if (facts?.empty) { lines.push('- The page rendered no visible text at all.'); problems++; }
-        if (facts?.overflow) {
-          lines.push(`- Content is ${facts.overflow}px wider than the screen, so it scrolls sideways:`, ...facts.wide.map((w) => `  - ${w}`));
-          problems++;
-        }
-        if (facts?.broken?.length) { lines.push(`- Broken images: ${facts.broken.join(', ')}`); problems++; }
-        if (facts?.unnamed?.length) { lines.push(`- Buttons or links with no accessible name: ${facts.unnamed.join(', ')}`); problems++; }
-        if (facts?.inputsNoLabel) { lines.push(`- ${facts.inputsNoLabel} form field(s) without a label.`); problems++; }
-        if (facts?.noAlt) lines.push(`- ${facts.noAlt} image(s) without alt text.`);
-        if (facts?.tiny) lines.push(`- ${facts.tiny} tap target(s) smaller than 32px on a phone.`);
-        if (facts?.smallText) lines.push(`- ${facts.smallText} text element(s) under 12px.`);
-      }
-      if (errors.length) { lines.push('- Console errors:', ...[...new Set(errors)].slice(0, 6).map((e) => `  - ${e}`)); problems++; }
-      if (failed.length) { lines.push('- Failed requests:', ...[...new Set(failed)].slice(0, 6).map((f) => `  - ${f}`)); problems++; }
-      if (lines.length === 2 && !loadError) lines.push('- No errors, no overflow, nothing unlabeled.');
-      sections.push(lines.join('\n'));
+    } catch (err) {
+      loadError = `the page broke while being checked: ${String(err.message).split('\n')[0]}`;
+    } finally {
+      await context.close().catch(() => {});
     }
-  }
 
+    const lines = [`### ${pagePath} at ${size.width}px (${size.name})`];
+    if (loadError) {
+      lines.push(`Could not load: ${loadError}`);
+      problems++;
+    } else {
+      lines.push(`Screenshot: ${path.relative(getRoot(), file).split(path.sep).join('/')}`);
+      if (facts?.empty) { lines.push('- The page rendered no visible text at all.'); problems++; }
+      if (facts?.overflow) {
+        lines.push(`- Content is ${facts.overflow}px wider than the screen, so it scrolls sideways:`, ...facts.wide.map((w) => `  - ${w}`));
+        problems++;
+      }
+      if (facts?.broken?.length) { lines.push(`- Broken images: ${facts.broken.join(', ')}`); problems++; }
+      if (facts?.unnamed?.length) { lines.push(`- Buttons or links with no accessible name: ${facts.unnamed.join(', ')}`); problems++; }
+      if (facts?.inputsNoLabel) { lines.push(`- ${facts.inputsNoLabel} form field(s) without a label.`); problems++; }
+      if (facts?.noAlt) lines.push(`- ${facts.noAlt} image(s) without alt text.`);
+      if (facts?.tiny) lines.push(`- ${facts.tiny} tap target(s) smaller than 32px on a phone.`);
+      if (facts?.smallText) lines.push(`- ${facts.smallText} text element(s) under 12px.`);
+    }
+    if (errors.length) { lines.push('- Console errors:', ...[...new Set(errors)].slice(0, 6).map((e) => `  - ${e}`)); problems++; }
+    if (failed.length) { lines.push('- Failed requests:', ...[...new Set(failed)].slice(0, 6).map((f) => `  - ${f}`)); problems++; }
+    if (lines.length === 2 && !loadError) lines.push('- No errors, no overflow, nothing unlabeled.');
+    const broken = Boolean(loadError || errors.length || facts?.empty);
+    return { section: lines.join('\n'), shot, problems, broken };
+  })));
+
+  const sections = checks.map((c) => c.section);
+  const toReview = checks.map((c) => c.shot).filter(Boolean);
+  const problems = checks.reduce((n, c) => n + c.problems, 0);
+  const broken = checks.some((c) => c.broken);
+
+  // A page that crashed or threw is fixed first; reviewing a screenshot of an
+  // error overlay is a minute spent on nothing.
   let critique = '';
-  if (wantReview !== false && toReview.length) {
+  const state = reviews.get(base) ?? { done: false, tries: 0 };
+  if (!broken && !state.done && state.tries < 2 && toReview.length) {
+    state.tries++;
+    reviews.set(base, state);
     try {
       critique = await review(toReview.slice(0, 4));
+      state.done = true;
     } catch (err) {
-      critique = `(The visual review could not run: ${err.failed ?? err.message}. The checks above still apply.)`;
+      const why = String(err.failed ?? err.message).replace(/[.\s]+$/, '');
+      critique = `(The visual review could not run: ${why}. The checks above still apply.)`;
     }
   }
 
@@ -249,7 +305,10 @@ export async function lookAtApp({ url, paths = ['/'], review: wantReview = true 
     '',
     problems
       ? 'Fix the problems above, then look again to confirm.'
-      : 'The automatic checks found nothing. Weigh the visual review, fix what is worth fixing.',
+      : state.done && critique
+        ? 'The automatic checks found nothing. Weigh the visual review, fix what is worth fixing - ' +
+          'the next look re-runs only the fast checks.'
+        : 'The automatic checks found nothing.',
   ].filter(Boolean).join('\n\n');
 
   return result(

@@ -295,9 +295,10 @@ export const tools = [
       'Open the running app in a real browser at a phone width (375px) and a desktop width ' +
       '(1440px) and report what a person would run into: console errors, failed requests, ' +
       'content that spills off the side of the screen, broken images, unlabeled buttons and ' +
-      'fields - plus a designer-style review of the screenshots. Use it once the dev server ' +
-      'is ready, and again after visual changes, then fix what it reports. Screenshots are ' +
-      'saved under .ucode/screenshots.',
+      'fields. The first look at an app also brings a designer-style review of the ' +
+      'screenshots; later looks re-run only the fast checks. Use it once the dev server is ' +
+      'ready, fix what it reports, then look once more to confirm. Screenshots are saved ' +
+      'under .ucode/screenshots.',
     parameters: {
       type: 'object',
       properties: {
@@ -307,7 +308,6 @@ export const tools = [
           description: 'Pages to open, e.g. ["/", "/settings"]. Defaults to ["/"]. Up to 4.',
           items: { type: 'string' },
         },
-        review: bool('Include the visual design review of the screenshots. Defaults to true.'),
       },
       required: ['url'],
     },

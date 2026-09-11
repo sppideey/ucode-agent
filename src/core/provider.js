@@ -396,7 +396,14 @@ export function explain(err, id) {
       (Number.isFinite(asNumber) && asNumber > 0 ? asNumber : null) ??
       seconds(/try again in ([\dhms.]+)/i.exec(detail)?.[1]) ??
       null;
-    const daily = /per day|RPD|TPD|tokens per day/i.test(detail);
+    // The daily cap reads "free-models-per-day-high-balance", with hyphens, and
+    // names its source in the metadata. It is one cap across every free model,
+    // so it is reported at once rather than waited on model after model.
+    const meta = body?.error?.metadata ?? {};
+    const daily = /per[- ]day|RPD|TPD|daily/i.test(`${detail} ${meta.limit_source ?? ''}`);
+    const resetMs = Number(meta.headers?.['X-RateLimit-Reset'] ?? err?.headers?.get?.('x-ratelimit-reset'));
+    const resetAt = daily && Number.isFinite(resetMs) && resetMs > Date.now() ? new Date(resetMs) : null;
+    const cap = Number(meta.headers?.['X-RateLimit-Limit']) || null;
     const wait = Number.isFinite(retryAfter) && retryAfter
       ? (retryAfter >= 60 ? `${Math.ceil(retryAfter / 60)} min` : `${Math.ceil(retryAfter)}s`)
       : null;
@@ -405,14 +412,14 @@ export function explain(err, id) {
       kind: 'rate_limit',
       attempted,
       failed: daily
-        ? `The free daily request cap for ${modelName(id)} is used up.`
+        ? `This key's free daily limit${cap ? ` of ${cap} requests` : ''} is used up. It covers every free model, so switching will not help.`
         : `Too many requests for ${modelName(id)} just now${wait ? ` — clear in ${wait}` : ''}.`,
       fix: daily
-        ? 'Free caps reset each day. /model switches to another one, or add credit to ' +
-          'your account to lift the ceiling.'
+        ? `It resets ${resetAt ? `at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'once a day'}. ` +
+          'Adding credit to your account raises the limit.'
         : 'ucode waits these out on its own. Free endpoints are shared, so it usually ' +
           'clears in seconds; /model moves to a quieter one.',
-      detail: { retryAfter, daily },
+      detail: { retryAfter, daily, resetAt: resetAt?.getTime() ?? null },
       cause: err,
     });
   }
@@ -555,7 +562,7 @@ const pause = (ms) => new Promise((r) => setTimeout(r, ms));
  * @param {Array}  messages neutral messages
  * @param {Array}  [tools]  neutral tool definitions
  * @param {object} [opts]   { model, temperature, signal, maxOutputTokens,
- *                            onText, onThinking, onWait }
+ *                            reasoning, attempts, onText, onThinking, onWait }
  */
 export async function ask(messages, tools = [], opts = {}) {
   const id = opts.model || current;
@@ -579,8 +586,11 @@ export async function ask(messages, tools = [], opts = {}) {
   }
   if (opts.temperature !== undefined) request.temperature = opts.temperature;
   if (opts.maxOutputTokens) request.max_tokens = opts.maxOutputTokens;
+  if (opts.reasoning) request.reasoning = opts.reasoning;
 
-  const attempts = 4;
+  // A side call (the design review) passes fewer: it is better skipped than
+  // waited on through a string of rate-limit pauses.
+  const attempts = opts.attempts ?? 4;
   let problem;
 
   // Text already on screen cannot be unprinted, so a stream is only safe to
@@ -729,6 +739,56 @@ async function streamed(request, opts, id) {
 }
 
 /**
+ * Recover the files from a file-write call whose JSON will not parse.
+ *
+ * The usual cause is a double quote inside the code that the model forgot to
+ * escape — `className="flex"` — which ends the JSON string early. No general
+ * repair can know which quote was meant, but a file write has a fixed shape:
+ * "path", then "content", then either the next file or the end. Splitting on
+ * that shape and escaping the stray quotes gets every file back.
+ */
+export function salvageWrites(text) {
+  const heads = [...text.matchAll(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"content"\s*:\s*"/g)];
+  if (!heads.length) return null;
+
+  const files = [];
+  for (let i = 0; i < heads.length; i++) {
+    const from = heads[i].index + heads[i][0].length;
+    const to = i + 1 < heads.length ? heads[i + 1].index : text.length;
+    // The string ends at the last quote that is followed by nothing but JSON
+    // punctuation — `"}, {`, or `"}}, {` when the model added a brace, or `"}]}`.
+    const body = text.slice(from, to).replace(/"[\s,{}[\]]*$/, '');
+    const content = unescapeLoose(body);
+    const pathValue = unescapeLoose(heads[i][1]);
+    if (!pathValue || !content) return null; // not the shape we thought — leave it an honest error
+    files.push({ path: pathValue, content });
+  }
+  return files.length ? files : null;
+}
+
+/**
+ * Decode a JSON string body the forgiving way: the standard escapes are
+ * honoured, and everything JSON would reject — a raw line break, a tab, a stray
+ * quote, an escape JSON does not know — is kept as the character it plainly is.
+ */
+function unescapeLoose(s) {
+  const simple = { n: '\n', t: '\t', r: '\r', b: '\b', f: '\f', '"': '"', '\\': '\\', '/': '/' };
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c !== '\\' || i === s.length - 1) { out += c; continue; }
+    const next = s[++i];
+    if (next === 'u' && /^[0-9a-fA-F]{4}$/.test(s.slice(i + 1, i + 5))) {
+      out += String.fromCharCode(parseInt(s.slice(i + 1, i + 5), 16));
+      i += 4;
+    } else {
+      out += simple[next] ?? next;
+    }
+  }
+  return out;
+}
+
+/**
  * Parse one tool call's arguments.
  *
  * A parse error is recorded on the call rather than thrown. The loop hands it
@@ -757,7 +817,14 @@ export function readCall({ id, name, raw, cutOff = false }) {
           call.repaired = true;
           return call;
         }
-      } catch { /* beyond repair — fall through */ }
+      } catch { /* beyond general repair — try the file-write shape next */ }
+
+      const salvaged = (name === 'write_file' || name === 'batch_write') ? salvageWrites(text) : null;
+      if (salvaged) {
+        call.args = name === 'write_file' ? salvaged[0] : { files: salvaged };
+        call.repaired = true;
+        return call;
+      }
     }
     call.parseError = `${err.message} — the raw arguments were: ${text.slice(0, 300)}`;
   }

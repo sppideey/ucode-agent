@@ -472,7 +472,7 @@ async function awaitInstall(command, workdir, onOutput) {
  * the app and started over. The error names exactly what is missing; this
  * turns that into the one command that fixes it.
  */
-export function buildHints(output) {
+export function buildHints(output, dir = null) {
   const hints = [];
   const seen = new Set();
   const add = (key, text) => {
@@ -488,10 +488,21 @@ export function buildHints(output) {
       'Do not look inside node_modules.');
   }
 
-  const PKG = /(?:Can't resolve|Cannot find module) '((?:@[\w.-]+\/)?[\w.-]+)(?:\/[^']*)?'/g;
+  const PKG = /(?:Can't resolve|Cannot find module) '((?:@[\w.-]+\/)?[\w.-]+)(\/[^']*)?'/g;
   for (const m of output.matchAll(PKG)) {
-    const pkg = m[1];
+    const [, pkg, subpath] = m;
     if (pkg.startsWith('.')) continue;
+    if (subpath && dir && installed(dir, pkg)) {
+      // Installed, but that path inside it does not exist: an import copied
+      // from an older version. Installing it again changes nothing.
+      add(`sub:${pkg}${subpath}`, `"${pkg}" is installed, but "${pkg}${subpath}" does not exist — ` +
+        `that path is from an older version. Import from "${pkg}" itself` +
+        (pkg === 'next-themes'
+          ? '; for the provider\'s props use `React.ComponentProps<typeof NextThemesProvider>`.'
+          : ', or check its package.json "exports" for the right path.') +
+        ' Do not reinstall it.');
+      continue;
+    }
     add(`pkg:${pkg}`, `The package "${pkg}" is not installed. Install it with ` +
       `\`npm install ${pkg}\` (cwd: the app folder), then build again.`);
   }
@@ -502,6 +513,23 @@ export function buildHints(output) {
   }
 
   return hints;
+}
+
+/** Is this package installed for the project at dir (or a folder above it)? */
+function installed(dir, pkg) {
+  for (let at = path.resolve(dir); ; at = path.dirname(at)) {
+    try {
+      statSync(path.join(at, 'node_modules', pkg, 'package.json'));
+      return true;
+    } catch { /* not here */ }
+    if (path.dirname(at) === at) return false;
+  }
+}
+
+/** The folder a command really runs in: its cwd, moved by a leading `cd x &&`. */
+function effectiveDir(command, workdir) {
+  const cd = /^\s*cd\s+(?:\/d\s+)?("?)([^"&|;]+?)\1\s*(?:&&|;)\s*/i.exec(command);
+  return cd ? path.resolve(workdir.abs, cd[2].trim()) : path.resolve(workdir.abs);
 }
 
 // ---------------------------------------------------------------------------
@@ -662,7 +690,7 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
       }
 
       const count = captured.trim() ? captured.trim().split(/\r?\n/).length : 0;
-      const hints = code !== 0 ? buildHints(captured) : [];
+      const hints = code !== 0 ? buildHints(captured, effectiveDir(command, workdir)) : [];
       const advice = hints.length ? `\n\nWhat to do:\n${hints.map((h) => `- ${h}`).join('\n')}` : '';
       const out = result(
         `exit code: ${code}\n\n${body}${advice}`,

@@ -21,7 +21,7 @@ import {
 } from '../src/tools/shared.js';
 import { readFile, readFiles, writeFile, editFile, multiEdit, batchWrite, editFiles } from '../src/tools/files.js';
 import { listDir, glob, grep } from '../src/tools/search.js';
-import { runCommand, childEnv, killTree } from '../src/tools/shell.js';
+import { runCommand, childEnv, killTree, buildHints } from '../src/tools/shell.js';
 import { createApp } from '../src/tools/scaffold.js';
 import { tools, runTool, describe, PARALLEL_SAFE, WRITES } from '../src/tools/index.js';
 import { parseSkill, autoLoadFor, catalogue, findSkill } from '../src/core/skills.js';
@@ -1131,7 +1131,7 @@ await test('a daily cap is not something to wait out', () => {
   const f = explain(err, DEFAULT_MODEL);
   eq(f.kind, 'rate_limit');
   ok(f.detail.daily);
-  ok(f.fix.includes('/model'));
+  ok(!f.fix.includes('/model'), 'one cap covers every free model, so switching is no advice');
 });
 
 await test('a 404 on a known model is a busy provider, so it retries', () => {
@@ -1151,6 +1151,25 @@ await test('an abort is not reported as a failure of the model', () => {
   eq(explain(err, DEFAULT_MODEL).kind, 'aborted');
 });
 
+await test('the daily free cap is recognised, with its reset time, and not waited on', () => {
+  const reset = Date.now() + 3 * 3600_000;
+  const err = Object.assign(new Error('429 Rate limit exceeded: free-models-per-day-high-balance.'), {
+    status: 429,
+    error: {
+      message: 'Rate limit exceeded: free-models-per-day-high-balance. ',
+      metadata: { headers: { 'X-RateLimit-Limit': '1000', 'X-RateLimit-Reset': String(reset) }, limit_source: 'openrouter_free_tier_daily' },
+    },
+  });
+  const f = explain(err, DEFAULT_MODEL);
+  eq(f.kind, 'rate_limit');
+  ok(f.detail.daily, 'a daily cap');
+  eq(f.detail.resetAt, reset);
+  ok(/1000 requests/.test(f.failed) && /resets at/.test(f.fix), `${f.failed} / ${f.fix}`);
+  ok(!/openrouter/i.test(`${f.failed} ${f.fix}`), 'no provider name in what the user reads');
+  const busy = explain(Object.assign(new Error('429 Provider returned error'), { status: 429 }), DEFAULT_MODEL);
+  ok(!busy.detail.daily, 'a busy model is not a daily cap');
+});
+
 section('speed');
 
 await test('a tool call with a missing comma is repaired, not thrown away', () => {
@@ -1159,6 +1178,44 @@ await test('a tool call with a missing comma is repaired, not thrown away', () =
   ok(!call.parseError, `still failed: ${call.parseError}`);
   eq(call.args.files.length, 2, 'both files survive the repair');
   ok(call.repaired);
+});
+
+await test('a file write with an unescaped quote in the code is recovered file by file', () => {
+  const raw = '{"files": [{"path": "a.tsx", "content": "const A = () => <div className="flex">hi</div>;\\n"}, ' +
+    '{"path": "b.ts", "content": "export const b = 1;\\n"}]}';
+  const call = readCall({ id: '1', name: 'batch_write', raw });
+  ok(!call.parseError, `still failed: ${call.parseError}`);
+  eq(call.args.files.map((f) => f.path), ['a.tsx', 'b.ts']);
+  eq(call.args.files[0].content, 'const A = () => <div className="flex">hi</div>;\n', 'the quotes survive as written');
+});
+
+await test('a file write with raw line breaks and stray quotes still comes through', () => {
+  const raw = '{"files": [{"path": "a.tsx", "content": "export function A() {\n  return <p className="x">it\\"s \\u00e9</p>;\n}\n"}, ' +
+    '{"path": "b.css", "content": "body {\n\tmargin: 0;\n}\n"}]}';
+  const call = readCall({ id: '1', name: 'batch_write', raw });
+  ok(!call.parseError, `still failed: ${call.parseError}`);
+  eq(call.args.files.map((f) => f.path), ['a.tsx', 'b.css']);
+  eq(call.args.files[0].content, 'export function A() {\n  return <p className="x">it"s \u00e9</p>;\n}\n');
+  eq(call.args.files[1].content, 'body {\n\tmargin: 0;\n}\n');
+});
+
+await test('a bad import path in an installed package is not answered with "npm install"', async () => {
+  const app = path.join(sandbox, 'hint-app');
+  await fs.mkdir(path.join(app, 'node_modules', 'next-themes'), { recursive: true });
+  await fs.writeFile(path.join(app, 'node_modules', 'next-themes', 'package.json'), '{"name":"next-themes"}');
+  const [old] = buildHints("error TS2307: Cannot find module 'next-themes/dist/types' or its corresponding type declarations.", app);
+  ok(/does not exist/.test(old) && /Do not reinstall/.test(old) && !/npm install/.test(old), old);
+  const [missing] = buildHints("Module not found: Can't resolve 'framer-motion'", app);
+  ok(/npm install framer-motion/.test(missing), missing);
+});
+
+await test('an extra brace between files leaves no JSON behind in the code', () => {
+  const raw = '{"files": [{"path": "a.tsx", "content": "export default function A() {\n  return <b className="x">a</b>\n}"}}, ' +
+    '{"path": "b.ts", "content": "export const s = \\"}\\"\n"}}]}';
+  const call = readCall({ id: '1', name: 'batch_write', raw });
+  ok(!call.parseError, `still failed: ${call.parseError}`);
+  eq(call.args.files[0].content, 'export default function A() {\n  return <b className="x">a</b>\n}');
+  eq(call.args.files[1].content, 'export const s = "}"\n');
 });
 
 await test('output cut off at the limit is never repaired into half a file', () => {
@@ -1218,6 +1275,18 @@ await test('byte sizes are readable', () => {
   eq(bytes(2048), '2.0 KB');
   eq(bytes(1024 * 1024 * 3), '3.0 MB');
 });
+
+// ---------------------------------------------------------------------------
+// Feature suites in test/more/*.js. Each exports a default async function
+// that receives the same helpers, so a feature keeps its tests beside the
+// others without everything living in this one file.
+
+const moreDir = path.join(path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, '$1')), 'more');
+const suites = (await fs.readdir(moreDir).catch(() => [])).filter((f) => f.endsWith('.js')).sort();
+for (const file of suites) {
+  const suite = await import(pathToFileURL(path.join(moreDir, file)).href);
+  await suite.default({ test, section, ok, eq, throws, tmp, sandbox, fakeHome, write, read });
+}
 
 // ---------------------------------------------------------------------------
 

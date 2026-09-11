@@ -125,6 +125,26 @@ components, light/dark mode, toasts and a considered theme, already known to
 build. The copy takes under a second, and its install runs in the background
 while the model writes the first components.
 
+**Built to be fast, and measured.** A traced build of a small Next.js app went
+from 17 minutes and 116 model steps to about 6 minutes and 25 steps, by fixing
+where the time actually went:
+
+- Edits return the file as it now stands, so the model does not re-read it.
+- Files written more than a few steps ago stop being re-sent in full; the
+  conversation stays small, so every step answers faster.
+- A file-write whose JSON is malformed — a missing comma, an unescaped quote in
+  the code, raw line breaks — is repaired instead of thrown away with all its
+  output.
+- Every write is parsed on the spot, so a syntax error comes back in the same
+  step rather than a minute later from a failed build.
+- A failed build that is missing a component or package says exactly which
+  command fixes it.
+- The starter is the shadcn models already know (Radix), so the code they write
+  compiles the first time.
+
+`UCODE_TRACE=1` writes every model call and tool, with its duration, to
+`~/.ucode/trace.jsonl`.
+
 **Parallel workers.** When a build splits into parts that touch different files
 — the API route, the upload component, the results view — the model hands them
 to up to three workers that build at the same time, each line in the transcript
@@ -141,7 +161,10 @@ to download — at 375px and 1440px. It reports console errors, failed requests,
 content that spills off a phone screen, broken images and unlabeled controls,
 saves screenshots to `.ucode/screenshots`, and has Nemotron Nano Omni review them
 the way a designer would. The model fixes what it finds before calling the app
-done.
+done. Both widths load at once, and the designer review — the slow part — runs
+on the first look at an app in each request and is skipped, not waited on, when
+the vision model is busy. The look after the fixes re-runs only the fast checks:
+a few seconds.
 
 **Errors fixed before you see them.** When the model says it is done, ucode
 type-checks every file it changed — `tsc --noEmit` for TypeScript projects,

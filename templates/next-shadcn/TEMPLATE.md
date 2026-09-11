@@ -23,6 +23,10 @@ has the guides — check them before using an API you are unsure of.
   (`bg-success`, `text-warning`, ...).
 - `src/app/page.tsx` — a placeholder. Replace it.
 
+`layout.tsx`, `theme-provider.tsx`, `theme-toggle.tsx`, `src/lib/utils.ts` and
+everything in `src/components/ui/` are finished and build. Use them; do not
+rewrite them — a rewrite from memory brings back APIs that no longer exist.
+
 ## Components in `src/components/ui/`
 
 accordion, alert-dialog, avatar, badge, button, calendar, card, checkbox, collapsible, command, dialog, dropdown-menu, hover-card, input-group, input, label, popover, progress, radio-group, scroll-area, select, separator, sheet, skeleton, slider, sonner, switch, table, tabs, textarea, toggle-group, toggle, tooltip
@@ -58,11 +62,22 @@ toast("Task deleted", { description: "Buy milk", action: { label: "Undo", onClic
 </ToggleGroup>
 
 // Anything using useState, events, localStorage or browser APIs needs "use client"
-// as the first line of its file. Read localStorage in useEffect, never during render.
+// as the first line of its file.
+
+// localStorage — read it in useEffect, never in render or a useState initializer:
+// the page is also rendered on the server, where localStorage does not exist.
+const [bill, setBill] = useState("");
+useEffect(() => { setBill(localStorage.getItem("bill") ?? ""); }, []);
+useEffect(() => { localStorage.setItem("bill", bill); }, [bill]);
+
+// next-themes — there is no "next-themes/dist/types". Import from "next-themes".
 ```
 
 ## Conventions
 
+- Components are named exports — `export function BillInput()` — imported with
+  braces: `import { BillInput } from "@/components/calculator/bill-input"`.
+  Only `page.tsx` and `layout.tsx` use `export default`.
 - One component per file, grouped by feature: `src/components/<feature>/`.
 - Shared types in `src/lib/types.ts`, helpers in `src/lib/`.
 - `cn()` from `@/lib/utils` to merge class names.

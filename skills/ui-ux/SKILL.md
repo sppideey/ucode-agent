@@ -286,8 +286,8 @@ because it was first to hand means you were not deciding.
 Run it (`npm run dev` starts in the background and returns the URL), then call
 `look_at_app` with that URL. It opens the app in a real browser at 375px and
 1440px, reports console errors, failed requests, overflow, broken images and
-unlabeled controls, and returns a designer's review of the screenshots. Fix what
-it finds and look again. Then check:
+unlabeled controls, and the first look returns a designer's review of the
+screenshots. Fix what it finds in one pass and look once more. Then check:
 
 1. **375px wide** — no horizontal scroll, nothing overlapping or clipped. If you
    wrote no responsive rules at all, you have not done this.
