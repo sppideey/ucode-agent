@@ -26,7 +26,8 @@ Follow it. Do not design as you go and tidy up afterwards.
 ## Scaffold without being asked questions
 
 Nothing you run has a keyboard. A scaffolder that stops to ask "Would you like
-to use TypeScript?" gets no answer and fails, so give it every answer up front:
+to use TypeScript?" gets no answer and fails, so give it every answer up front.
+These are known to run straight through:
 
 ```bash
 # Next.js — creates ./my-app; use . instead of a name to fill the current folder
@@ -37,8 +38,8 @@ npx shadcn@latest init -d -y
 npx shadcn@latest add button card input label badge progress separator skeleton sonner -y
 ```
 
-For any other scaffolder, find its flags for every question it would ask
-(`--help` lists them) before running it for real.
+For anything else, find its non-interactive flags before running it — `--help`
+costs one second; a scaffolder stopped on a question costs the whole step.
 
 `create-next-app` refuses a folder that already has files in it. If the current
 folder is not empty, scaffold into a named subfolder and pass that as `cwd` to

@@ -17,6 +17,41 @@ export const sky = chalk.hex('#8fbcff');    // secondary: labels that still matt
 export const deep = chalk.hex('#2f6fe0');   // pressed, quiet, behind
 export const dim = chalk.dim;
 
+/**
+ * The input box's own edge: the same blue, drawn bold.
+ *
+ * The input is the one thing on screen you act on, so it is the one box that
+ * gets the heavier line. Bold box-drawing renders brighter, and in most
+ * terminal fonts visibly thicker, which is enough to separate "where you type"
+ * from "what you are reading" without a second colour.
+ */
+export const edge = chalk.hex('#4d8dff').bold;
+
+/**
+ * The colour level to use for a stream, or null to leave chalk's guess alone.
+ *
+ * chalk decides from the environment, and some environments lie: TERM=dumb
+ * from an embedding shell, or a wrapper that strips COLORTERM. The result is a
+ * UI with every colour silently gone — a grey box where a blue one was drawn.
+ *
+ * The full-screen interface already depends on a terminal that understands VT
+ * sequences — it switches to the alternate screen and moves the cursor — and
+ * any terminal that handles those handles colour. So when that interface is
+ * running, the guess is overruled. NO_COLOR is still honoured, because that
+ * one is a person's explicit choice rather than an environment's accident.
+ */
+export function colourLevel(stream, env = process.env, current = chalk.level) {
+  if ('NO_COLOR' in env) return null;
+  if (!stream?.isTTY) return null;
+  if (current >= 2) return null;
+  return env.COLORTERM === 'truecolor' || env.COLORTERM === '24bit' || process.platform === 'win32' ? 3 : 2;
+}
+
+export function ensureColour(stream) {
+  const level = colourLevel(stream);
+  if (level !== null) chalk.level = level;
+}
+
 export const theme = {
   blue,
   sky,

@@ -84,6 +84,97 @@ export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
   );
 }
 
+/** At most this many files in one read_files call. */
+const MAX_BATCH = 20;
+
+/**
+ * Several files in one call.
+ *
+ * Reading from disk takes a millisecond. What makes reading slow is the round
+ * trip around it: every file read on its own is a whole request to the model,
+ * and on a reasoning model that is several seconds of thinking before it even
+ * asks for the next one. Reading the six files a change touches in one call
+ * turns six of those into one.
+ *
+ * The files are read in parallel, and a missing one is reported in its place
+ * rather than failing the rest — one wrong path should not cost the other five.
+ */
+export async function readFiles({ paths, limit = READ_LINES }) {
+  if (!Array.isArray(paths) || paths.length === 0) {
+    throw new ToolFailure({
+      kind: 'bad_args',
+      attempted: 'reading several files',
+      failed: 'The "paths" argument must be a non-empty array of file paths.',
+      fix: 'Pass paths as ["src/app.js", "src/lib/api.js", ...].',
+    });
+  }
+
+  const wanted = [...new Set(paths.map((p) => String(p ?? '').trim()).filter(Boolean))];
+  const batch = wanted.slice(0, MAX_BATCH);
+  const dropped = wanted.slice(MAX_BATCH);
+
+  const readOne = (p) => readFile({ path: p, limit }).then(
+    (out) => ({ p, out }),
+    (err) => ({ p, err })
+  );
+
+  // Anything outside the project needs a yes, and two questions cannot be
+  // asked at once — so those go one at a time. Everything else goes together.
+  const outside = batch.some((p) => !resolveIn(p, 'read_files', 'paths').inside);
+  const settled = [];
+  if (outside) {
+    for (const p of batch) settled.push(await readOne(p));
+  } else {
+    settled.push(...(await Promise.all(batch.map(readOne))));
+  }
+
+  // Two whole files' worth of output between them. Past that, the rest are
+  // named rather than silently cut, so the model knows to ask again.
+  const budget = MAX_FILE_OUTPUT * 2;
+  let used = 0;
+  let read = 0;
+  let failed = 0;
+  let lines = 0;
+  const blocks = [];
+  const deferred = [];
+
+  for (const { p, out, err } of settled) {
+    if (err) {
+      failed++;
+      blocks.push(`=== ${p} — could not be read ===\n${err.forModel ? err.forModel() : err.message}`);
+      continue;
+    }
+    const block = `=== ${p} (${out.summary}) ===\n${out.content}`;
+    if (read > 0 && used + block.length > budget) {
+      deferred.push(p);
+      continue;
+    }
+    blocks.push(block);
+    used += block.length;
+    read++;
+    // "42 lines" for a whole file, "lines 1-600 of 900" for a page of one.
+    const whole = /^(\d+) lines$/.exec(out.summary);
+    const page = /^lines (\d+)-(\d+)/.exec(out.summary);
+    lines += whole ? Number(whole[1]) : page ? Number(page[2]) - Number(page[1]) + 1 : 0;
+  }
+
+  const leftOver = [...deferred, ...dropped];
+  if (leftOver.length) {
+    blocks.push(
+      `[not included, to stay inside one reply: ${leftOver.join(', ')}. ` +
+      'Read those with another read_files call.]'
+    );
+  }
+
+  return result(
+    blocks.join('\n\n'),
+    `${read} file${read === 1 ? '' : 's'} · ${lines} lines` +
+      (failed ? ` · ${failed} missing` : '') +
+      (leftOver.length ? ` · ${leftOver.length} deferred` : ''),
+    budget + 2_000
+  );
+}
+
 /** Write one file, returning the rows that show what changed. */
 async function put(target, content, { diffMax = 16 } = {}) {
   const attempted = `writing ${target.show}`;

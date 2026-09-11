@@ -2,14 +2,17 @@
  * shell.js — running commands.
  *
  * Most of this file is about the ways a spawned command can go wrong in a way
- * that hurts the agent rather than the task: one that never exits, one that
- * kills the runtime the agent is running on, one whose grandchild holds the
- * pipe open so the close event never arrives. Each of those is handled
- * explicitly, because each of them has exactly one symptom from the outside —
- * the agent appears to freeze.
+ * that hurts the agent rather than the task: one that waits for a keyboard it
+ * will never get, one that never exits, one that kills the runtime the agent is
+ * running on, one whose grandchild holds the pipe open so the close event never
+ * arrives. Each is handled explicitly, because each has exactly one symptom from
+ * the outside — the agent appears to freeze.
  */
 
 import { spawn } from 'node:child_process';
+import { openSync, closeSync, readFileSync, mkdirSync, statSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
 import { resolveIn, guard, result, getRoot, MAX_OUTPUT } from './shared.js';
 
@@ -18,13 +21,15 @@ const MAX_TIMEOUT = 600_000;
 const LIVE_LINES = 200;
 
 /**
- * A dev server runs until something stops it, so waiting out the full default
- * spends a whole turn learning nothing. Anything that looks like one gets a
- * short leash and a hint to re-run it detached.
+ * Anything that looks like a dev server. These never finish on their own, so
+ * waiting for them to is a guaranteed timeout — they are started in the
+ * background instead, and watched only until they say they are ready.
  */
-const SERVER_TIMEOUT = 30_000;
 const LOOKS_LIKE_SERVER =
-  /(\bnpm run\s+(?:dev|start|serve|preview|watch)\b|\b(?:vite|next dev|nuxt dev|astro dev|webpack serve|svelte-kit dev|serve)\b|\buvicorn\b|\bgunicorn\b|\bflask run\b|\bdjango[\w-]* runserver\b|\brails server\b)/i;
+  /(\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview|watch)\b|\b(?:vite|next dev|next start|nuxt dev|astro dev|webpack serve|svelte-kit dev|serve)\b|\buvicorn\b|\bgunicorn\b|\bflask run\b|\bdjango[\w-]* runserver\b|\bmanage\.py runserver\b|\brails server\b|\bhttp\.server\b|\bhttp-server\b|\blive-server\b)/i;
+
+/** A foreground server that was explicitly asked for still gets a short leash. */
+const SERVER_TIMEOUT = 30_000;
 
 /**
  * Installs are slow and legitimately so: create-next-app pulls hundreds of
@@ -34,10 +39,7 @@ const LOOKS_LIKE_SERVER =
  */
 const INSTALL_TIMEOUT = 600_000;
 const LOOKS_LIKE_INSTALL =
-  /(\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|ci|create)\b|\bnpx\s+(?:create-|degit\b)|\bpip3?\s+install\b|\bpoetry\s+(?:install|add)\b|\bcargo\s+(?:build|install|fetch)\b|\bgo\s+(?:mod\s+download|get)\b|\bbundle\s+install\b|\bcomposer\s+(?:install|require)\b|\bgit\s+clone\b)/i;
-
-const SERVER_READY =
-  /(Local:|https?:\/\/localhost|listening\s+on|running\s+on|server(\s+is)?\s+(?:started|ready|running)|ready in|compiled successfully)/i;
+  /(\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|ci|create)\b|\bnpx\s+(?:create-|degit\b|shadcn)|\bpip3?\s+install\b|\bpoetry\s+(?:install|add)\b|\bcargo\s+(?:build|install|fetch)\b|\bgo\s+(?:mod\s+download|get)\b|\bbundle\s+install\b|\bcomposer\s+(?:install|require)\b|\bgit\s+clone\b)/i;
 
 /**
  * Commands that kill a whole class of process rather than one process.
@@ -54,6 +56,38 @@ const SERVER_READY =
 const KILLS_EVERYTHING =
   /(\btaskkill\b[^|;&]*\/IM\s+(?:node|node\.exe|cmd|cmd\.exe|powershell|powershell\.exe|pwsh|pwsh\.exe)\b|\b(?:killall|pkill)\s+(?:-\w+\s+)*(?:node|nodejs)\b|\bpkill\b[^|;&]*-f\s+(?:node|npm|pnpm)\b|\bStop-Process\b[^|;&]*-Name\s+["']?node)/i;
 
+// ---------------------------------------------------------------------------
+// The environment a command runs in
+// ---------------------------------------------------------------------------
+
+/**
+ * What every command inherits on top of the user's own environment.
+ *
+ * Each line removes a way for a command to be slow or to stall:
+ *
+ *   CI                  scaffolders use their defaults instead of asking,
+ *                       and test runners run once instead of watching forever
+ *   npm_config_yes      npx installs without its "Ok to proceed? (y)"
+ *   fund / audit        npm skips two network round trips on every install
+ *   update_notifier     and the version check on every invocation
+ *   NEXT_TELEMETRY      Next skips its telemetry notice and ping
+ *   NO_COLOR            output comes back as text rather than escape codes,
+ *                       which the model would otherwise have to read past
+ */
+export function childEnv(base = process.env) {
+  return {
+    ...base,
+    CI: '1',
+    npm_config_yes: 'true',
+    npm_config_fund: 'false',
+    npm_config_audit: 'false',
+    npm_config_update_notifier: 'false',
+    NEXT_TELEMETRY_DISABLED: '1',
+    NO_COLOR: '1',
+    FORCE_COLOR: '0',
+  };
+}
+
 /**
  * Kill a command and everything it started.
  *
@@ -61,7 +95,7 @@ const KILLS_EVERYTHING =
  * on Windows a surviving grandchild that inherited our stdio keeps the pipe
  * open — so 'close' never fires and the loop waits forever.
  */
-function killTree(pid) {
+export function killTree(pid) {
   if (!pid) return;
   if (process.platform === 'win32') {
     try {
@@ -69,13 +103,93 @@ function killTree(pid) {
     } catch { /* best effort */ }
     try { process.kill(pid); } catch { /* already gone */ }
   } else {
+    try { process.kill(-pid, 'SIGKILL'); } catch { /* not a group leader */ }
     try { process.kill(pid, 'SIGKILL'); } catch { /* already gone */ }
     try { spawn('pkill', ['-P', String(pid), '-9'], { stdio: 'ignore' }); } catch { /* best effort */ }
   }
 }
 
-function startDetached(command, workdir) {
+// ---------------------------------------------------------------------------
+// Servers
+// ---------------------------------------------------------------------------
+
+const LOG_DIR = path.join(os.tmpdir(), 'ucode-logs');
+
+/** How long to watch a server for a sign of life before handing back anyway. */
+const READY_WAIT = Number(process.env.UCODE_READY_WAIT_MS) || 45_000;
+
+/** Once a URL has been printed, how long to wait for it to also say "ready". */
+const URL_GRACE = 6_000;
+
+const POLL = 150;
+
+const stripAnsi = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '');
+
+const URL_IN_LOG = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1?\]|[\w.-]+\.local)(?::\d{2,5})?(?:\/[^\s'")\]]*)?/i;
+
+const READY_IN_LOG =
+  /(\bready in\b|✓\s*ready|\bready\b[^\n]*\d+(?:\.\d+)?\s?m?s\b|compiled successfully|compiled client and server|\blistening (?:on|at)\b|server (?:is )?(?:running|started|listening|ready)|\brunning (?:on|at)\b|started server on|application startup complete|development server is running|serving (?:http|at|on)|available on:)/i;
+
+/** The URL a person would type: 0.0.0.0 and [::] do not open on Windows. */
+function tidyUrl(url) {
+  return url
+    .replace(/:\/\/(?:0\.0\.0\.0|\[::1?\])/, '://localhost')
+    .replace(/\/$/, '');
+}
+
+function readLog(file) {
+  try {
+    const size = statSync(file).size;
+    const text = readFileSync(file, 'utf8');
+    // Only the recent part matters, and a chatty server can print a lot.
+    return stripAnsi(size > 65_536 ? text.slice(-65_536) : text);
+  } catch {
+    return '';
+  }
+}
+
+function tail(text, keep = 14) {
+  const lines = text.trim().split(/\r?\n/).filter(Boolean);
+  return lines.length <= keep ? lines : [`… ${lines.length - keep} earlier lines`, ...lines.slice(-keep)];
+}
+
+function stopHint(pid) {
+  return process.platform === 'win32' ? `taskkill /PID ${pid} /T /F` : `kill -- -${pid}`;
+}
+
+/**
+ * Start something long-running, and come back the moment it is usable.
+ *
+ * The old way was to start it and return after a fixed half second, which told
+ * the model nothing: not whether it had crashed, not which port it chose, not
+ * whether it was ready. The model then had to probe, usually too early, and a
+ * slow reasoning model spends most of a minute per probe.
+ *
+ * Instead its output goes to a log file — a file, not a pipe, because nobody
+ * will be reading a pipe once this returns and a full pipe stalls the server —
+ * and the log is watched until one of three things happens: it prints that it
+ * is ready, it exits, or the wait runs out. Whichever comes first is reported
+ * with the URL it is actually listening on.
+ */
+function startServer(command, workdir, { env } = {}) {
   return new Promise((resolve, reject) => {
+    let log;
+    let fd;
+    try {
+      mkdirSync(LOG_DIR, { recursive: true });
+      log = path.join(LOG_DIR, `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 6)}.log`);
+      fd = openSync(log, 'a');
+    } catch (err) {
+      reject(new ToolFailure({
+        kind: 'log_unwritable',
+        attempted: `starting "${command}" in the background`,
+        failed: `Could not create a log file in ${LOG_DIR}: ${err.message}`,
+        fix: 'Check that the temp directory is writable.',
+        cause: err,
+      }));
+      return;
+    }
+
     let child;
     try {
       child = spawn(command, {
@@ -83,9 +197,11 @@ function startDetached(command, workdir) {
         shell: true,
         windowsHide: true,
         detached: true,
-        stdio: 'ignore',
+        stdio: ['ignore', fd, fd],
+        env,
       });
     } catch (err) {
+      closeSync(fd);
       reject(new ToolFailure({
         kind: 'spawn_failed',
         attempted: `starting "${command}" in the background`,
@@ -96,28 +212,115 @@ function startDetached(command, workdir) {
       return;
     }
 
+    // The child holds its own handle to the log now.
+    closeSync(fd);
     child.unref();
-    child.on('error', (err) => {
-      reject(new ToolFailure({
-        kind: 'spawn_failed',
-        attempted: `starting "${command}" in the background`,
-        failed: `The command could not run: ${err.message}`,
-        fix: 'Check the executable name and your PATH.',
-        cause: err,
-      }));
-    });
 
-    // A moment to let it fail loudly if it is going to, then report the PID.
-    setTimeout(() => {
-      resolve(child.pid
-        ? result(
-            `Running in the background as PID ${child.pid}.\nCommand: ${command}\nDirectory: ${workdir.show}`,
-            `background · PID ${child.pid}`
-          )
-        : result(`It may not have started.\nCommand: ${command}`, 'background · no PID'));
-    }, 500);
+    const started = Date.now();
+    let exitCode = null;
+    let spawnError = null;
+    let urlSeenAt = null;
+    let done = false;
+
+    child.on('exit', (code) => { exitCode = code ?? -1; });
+    child.on('error', (err) => { spawnError = err; });
+
+    const finish = (build) => {
+      if (done) return;
+      done = true;
+      clearInterval(timer);
+      resolve(build());
+    };
+
+    const describeRun = (lines) => [
+      ...lines,
+      `Command: ${command}`,
+      `Directory: ${workdir.show}`,
+      `Output log: ${log}`,
+    ].join('\n');
+
+    const check = () => {
+      const text = readLog(log);
+      const seconds = ((Date.now() - started) / 1000).toFixed(1);
+
+      if (spawnError) {
+        finish(() => {
+          const out = result(
+            describeRun([`It could not start: ${spawnError.message}`]),
+            'failed to start'
+          );
+          out.output = tail(text);
+          return out;
+        });
+        return;
+      }
+
+      if (exitCode !== null) {
+        finish(() => {
+          const out = result(
+            describeRun([
+              `It exited with code ${exitCode} after ${seconds}s, before it was ready.`,
+              '',
+              text.trim() || '(it printed nothing)',
+            ]),
+            `exited ${exitCode} before it was ready`
+          );
+          out.exitCode = exitCode;
+          out.output = tail(text);
+          return out;
+        });
+        return;
+      }
+
+      const url = URL_IN_LOG.exec(text)?.[0]
+        ?? (/\bport\s+(\d{2,5})\b/i.exec(text) ? `http://localhost:${/\bport\s+(\d{2,5})\b/i.exec(text)[1]}` : null);
+      if (url && urlSeenAt === null) urlSeenAt = Date.now();
+      const ready = READY_IN_LOG.test(text);
+      const graceOver = urlSeenAt !== null && Date.now() - urlSeenAt >= URL_GRACE;
+
+      if ((ready && url) || graceOver || (ready && Date.now() - started > 1500)) {
+        finish(() => {
+          const where = url ? tidyUrl(url) : null;
+          return result(
+            describeRun([
+              `Running in the background as PID ${child.pid}, ready after ${seconds}s.`,
+              where ? `Open it at ${where}` : 'It did not print a URL; check the log for the port.',
+              `Stop it with: ${stopHint(child.pid)}`,
+              '',
+              'Do not start it again — it is already running.',
+            ]),
+            where ? `ready · ${where} · PID ${child.pid}` : `ready · PID ${child.pid}`
+          );
+        });
+        return;
+      }
+
+      if (Date.now() - started >= READY_WAIT) {
+        finish(() => {
+          const out = result(
+            describeRun([
+              `Still starting after ${Math.round(READY_WAIT / 1000)}s — running as PID ${child.pid}, ` +
+                'but it has not said it is ready yet.',
+              url ? `It mentioned ${tidyUrl(url)}.` : '',
+              `Stop it with: ${stopHint(child.pid)}`,
+              '',
+              text.trim() ? `Latest output:\n${tail(text).join('\n')}` : '(no output yet)',
+            ].filter((l) => l !== '')),
+            `still starting · PID ${child.pid}`
+          );
+          out.output = tail(text);
+          return out;
+        });
+      }
+    };
+
+    const timer = setInterval(check, POLL);
   });
 }
+
+// ---------------------------------------------------------------------------
+// run_command
+// ---------------------------------------------------------------------------
 
 export async function runCommand({ command, cwd, timeout_ms, background }, { onOutput } = {}) {
   if (typeof command !== 'string' || !command.trim()) {
@@ -149,19 +352,34 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
     : { abs: getRoot(), inside: true, show: '.' };
   await guard(workdir, `run a command in ${workdir.abs}`);
 
-  if (background) return startDetached(command, workdir);
+  const env = childEnv();
+  const server = LOOKS_LIKE_SERVER.test(command);
+
+  // A dev server is backgrounded whether or not the model remembered to ask.
+  // Only an explicit `background: false` keeps one in the foreground.
+  if (background || (server && background !== false)) {
+    return startServer(command, workdir, { env });
+  }
 
   let timeout = Math.min(Math.max(Number(timeout_ms) || DEFAULT_TIMEOUT, 1000), MAX_TIMEOUT);
   // An explicit timeout_ms is the caller's decision and is left alone. These
   // only adjust the default.
   if (!timeout_ms && LOOKS_LIKE_INSTALL.test(command)) timeout = INSTALL_TIMEOUT;
-  const server = LOOKS_LIKE_SERVER.test(command);
   if (!timeout_ms && server) timeout = Math.min(timeout, SERVER_TIMEOUT);
 
   return new Promise((resolve, reject) => {
     let child;
     try {
-      child = spawn(command, { cwd: workdir.abs, shell: true, windowsHide: true });
+      child = spawn(command, {
+        cwd: workdir.abs,
+        shell: true,
+        windowsHide: true,
+        // No stdin. A command that asks a question gets end-of-input at once
+        // and either takes its default or fails in a second — instead of
+        // waiting, on an open pipe nobody writes to, until the timeout.
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env,
+      });
     } catch (err) {
       reject(new ToolFailure({
         kind: 'spawn_failed',
@@ -190,7 +408,7 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
     let liveCapped = false;
 
     const take = (chunk) => {
-      const text = chunk.toString();
+      const text = stripAnsi(chunk.toString());
       // Collect more than will be shown, then trim once at the end.
       if (captured.length < MAX_OUTPUT * 4) captured += text;
       if (!live || liveCapped) return;
@@ -231,22 +449,22 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
       const body = captured.trim() || '(no output)';
       // What survives on screen: nothing when it worked and the user already
       // watched it, the tail when it did not.
-      const tail = (failed, keep = 14) => {
-        if (live && !failed && !liveCapped) return [];
-        const all = body.split(/\r?\n/);
-        return all.length <= keep ? all : [`… ${all.length - keep} earlier lines`, ...all.slice(-keep)];
-      };
+      const shown = (failed) => (live && !failed && !liveCapped ? [] : tail(body));
 
       if (timedOut) {
         let content = `Timed out after ${Math.round(timeout / 1000)}s and was killed.\n\n${body}`;
-        if (server || SERVER_READY.test(captured)) {
+        if (server || READY_IN_LOG.test(captured)) {
           content +=
-            '\n\nThat looks like a server rather than a command that finishes. Start it ' +
-            'again with background: true — the tool returns its PID straight away — and ' +
-            'then check it separately, e.g. curl http://localhost:PORT.';
+            '\n\nThat looks like a server rather than a command that finishes. Run it ' +
+            'again without background: false — ucode starts servers in the background ' +
+            'and reports the URL as soon as it is ready.';
+        } else if (/\?\s*›|\(y\/n\)|\[y\/N\]|press enter|select an option|use arrow keys/i.test(captured)) {
+          content +=
+            '\n\nIt looks like it stopped to ask a question. Nothing can answer it — pass ' +
+            'the non-interactive flag instead (--yes, -y, --defaults, or the option it asked about).';
         }
         const out = result(content, `timed out after ${Math.round(timeout / 1000)}s`);
-        out.output = tail(true);
+        out.output = shown(true);
         resolve(out);
         return;
       }
@@ -257,7 +475,7 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
         `exit ${code} · ${count} line${count === 1 ? '' : 's'}`
       );
       out.exitCode = code;
-      out.output = tail(code !== 0);
+      out.output = shown(code !== 0);
       resolve(out);
     };
 

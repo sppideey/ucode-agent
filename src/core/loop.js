@@ -52,7 +52,7 @@ const MAX_ARG_RETRIES = 2;
 const MAX_CONTINUATIONS = 3;
 
 /** Read-only tools whose result line adds nothing — the user saw the output. */
-const QUIET = new Set(['read_file', 'list_dir', 'glob', 'grep', 'web_search']);
+const QUIET = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search']);
 
 /** Skills reach the model as one extra tool, so bodies load only when wanted. */
 const loadSkillTool = {
@@ -100,8 +100,27 @@ function systemPrompt({ cwd, skills, mode, check }) {
     '  surrounding lines until it does.',
     '- read_file returns up to 600 lines. Read the whole file before editing it rather',
     '  than editing from a fragment; pass offset to continue a long one.',
-    '- Use batch_write to lay out several new files at once, and multi_edit for several',
-    '  changes to one file. One call beats five round trips.',
+    '',
+    '## Going fast',
+    '',
+    'Every tool call is a round trip to you, and the round trip — not the disk, not',
+    'the shell — is where the time goes. So:',
+    '',
+    '- Need more than one file? read_files, all of them in one call. Never read files',
+    '  one at a time when you already know which ones you want.',
+    '- Put independent calls in the same message — several greps, a glob and a read.',
+    '  Read-only calls in one message run at the same time.',
+    '- batch_write to lay out several new files at once, multi_edit for several changes',
+    '  to one file.',
+    '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',
+    '  would ask a question, or it fails instead of waiting: create-next-app --yes,',
+    '  npx shadcn@latest init -d -y, npx shadcn@latest add <names> -y, npm init -y.',
+    '- Dev servers start in the background by themselves, and the result tells you the',
+    '  URL once the server says it is ready. Do not start one twice, do not sleep while',
+    '  waiting for it, and do not curl it before that result comes back.',
+    '',
+    '## Safety',
+    '',
     '- run_command runs without asking. That is trust rather than licence: never run',
     '  anything destructive the user did not ask for.',
     '- Paths are relative to the working directory. Anything outside it needs the user',

@@ -8,7 +8,7 @@ import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
 import {
   resolveIn, guard, result, fsFailure, looksBinary, bytes, walk, globToRegExp,
-  SKIP, MAX_GLOB_HITS, MAX_GREP_HITS,
+  SKIP, MAX_GLOB_HITS, MAX_GREP_HITS, WALK_WIDTH,
 } from './shared.js';
 
 export async function listDir({ path: p = '.' }) {
@@ -23,25 +23,23 @@ export async function listDir({ path: p = '.' }) {
     throw fsFailure(err, attempted, target.show);
   }
 
-  const dirs = [];
-  const files = [];
+  const dirs = entries.filter((e) => e.isDirectory()).map((e) => `${e.name}/`);
 
-  for (const entry of entries) {
-    if (entry.isDirectory()) {
-      dirs.push(`${entry.name}/`);
-    } else if (entry.isFile()) {
-      let size = '';
-      try {
-        size = ` (${bytes((await fs.stat(path.join(target.abs, entry.name))).size)})`;
-      } catch {
-        // A file that disappeared between the listing and the stat is not
-        // worth failing the whole call over.
-      }
-      files.push(`${entry.name}${size}`);
-    } else {
-      files.push(`${entry.name} (link or device)`);
-    }
-  }
+  // Every size looked up at once rather than one stat after another.
+  const files = await Promise.all(
+    entries
+      .filter((e) => !e.isDirectory())
+      .map(async (entry) => {
+        if (!entry.isFile()) return `${entry.name} (link or device)`;
+        try {
+          return `${entry.name} (${bytes((await fs.stat(path.join(target.abs, entry.name))).size)})`;
+        } catch {
+          // A file that disappeared between the listing and the stat is not
+          // worth failing the whole call over.
+          return entry.name;
+        }
+      })
+  );
 
   dirs.sort();
   files.sort();
@@ -149,23 +147,28 @@ export async function grep({ pattern, path: p = '.', glob: filter, ignore_case =
   const hits = [];
   const inFiles = new Set();
 
-  for (const rel of candidates) {
-    if (hits.length >= MAX_GREP_HITS) break;
-    let buf;
-    try {
-      buf = await fs.readFile(path.join(base, rel));
-    } catch {
-      continue;
-    }
-    if (looksBinary(buf.subarray(0, 4096))) continue;
+  // Files are read a batch at a time rather than one after another — the
+  // search itself is instant, it is the waiting on each read that adds up. The
+  // batch is scanned in its original order, so the same search always lists
+  // its matches the same way.
+  for (let at = 0; at < candidates.length && hits.length < MAX_GREP_HITS; at += WALK_WIDTH) {
+    const batch = candidates.slice(at, at + WALK_WIDTH);
+    const read = await Promise.all(batch.map((rel) =>
+      fs.readFile(path.join(base, rel)).then((buf) => ({ rel, buf }), () => ({ rel, buf: null }))
+    ));
 
-    const lines = buf.toString('utf8').split(/\r?\n/);
-    for (let i = 0; i < lines.length && hits.length < MAX_GREP_HITS; i++) {
-      re.lastIndex = 0;
-      if (!re.test(lines[i])) continue;
-      inFiles.add(rel);
-      const text = lines[i].trim();
-      hits.push(`${rel}:${i + 1}: ${text.length > 200 ? `${text.slice(0, 200)}…` : text}`);
+    for (const { rel, buf } of read) {
+      if (hits.length >= MAX_GREP_HITS) break;
+      if (!buf || looksBinary(buf.subarray(0, 4096))) continue;
+
+      const lines = buf.toString('utf8').split(/\r?\n/);
+      for (let i = 0; i < lines.length && hits.length < MAX_GREP_HITS; i++) {
+        re.lastIndex = 0;
+        if (!re.test(lines[i])) continue;
+        inFiles.add(rel);
+        const text = lines[i].trim();
+        hits.push(`${rel}:${i + 1}: ${text.length > 200 ? `${text.slice(0, 200)}…` : text}`);
+      }
     }
   }
 

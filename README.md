@@ -85,7 +85,7 @@ long think are for. When the wait stops being worth it, switch.
 
 ## What it does
 
-**Eleven tools.** `read_file`, `write_file`, `batch_write`, `edit_file`,
+**Twelve tools.** `read_file`, `read_files`, `write_file`, `batch_write`, `edit_file`,
 `multi_edit`, `list_dir`, `glob`, `grep`, `run_command`, `run_commands`,
 `web_search`. Read-only calls run in parallel; anything that writes runs on its
 own, in order.

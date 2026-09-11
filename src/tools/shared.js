@@ -303,25 +303,41 @@ export function globToRegExp(pattern) {
  */
 export async function walk(base, { includeSkipped = false, limit = 20_000 } = {}) {
   const files = [];
-  const queue = [''];
+  let level = [''];
 
-  while (queue.length && files.length < limit) {
-    const relDir = queue.shift();
-    let entries;
-    try {
-      entries = await fs.readdir(path.join(base, relDir), { withFileTypes: true });
-    } catch {
-      continue;
-    }
-    for (const entry of entries) {
-      const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        if (!includeSkipped && SKIP.has(entry.name)) continue;
-        queue.push(rel);
-      } else if (entry.isFile()) {
-        files.push(rel);
+  // A level of the tree at a time, with every directory on that level read at
+  // once. Reading them one after another spends most of a large walk waiting
+  // on the disk for directories that did not depend on each other.
+  while (level.length && files.length < limit) {
+    const next = [];
+    for (let i = 0; i < level.length && files.length < limit; i += WALK_WIDTH) {
+      const slice = level.slice(i, i + WALK_WIDTH);
+      const listed = await Promise.all(slice.map((relDir) =>
+        fs.readdir(path.join(base, relDir), { withFileTypes: true }).then(
+          (entries) => ({ relDir, entries }),
+          () => ({ relDir, entries: [] })   // unreadable: step over it
+        )
+      ));
+
+      // Results are consumed in the order the directories were queued, so the
+      // walk comes out the same every time however the reads finished.
+      for (const { relDir, entries } of listed) {
+        for (const entry of entries) {
+          const rel = relDir ? `${relDir}/${entry.name}` : entry.name;
+          if (entry.isDirectory()) {
+            if (!includeSkipped && SKIP.has(entry.name)) continue;
+            next.push(rel);
+          } else if (entry.isFile()) {
+            files.push(rel);
+          }
+        }
       }
     }
+    level = next;
   }
-  return files;
+
+  return files.slice(0, limit);
 }
+
+/** How many directories, or files, are read at the same time. */
+export const WALK_WIDTH = 32;

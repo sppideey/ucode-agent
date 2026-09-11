@@ -13,15 +13,15 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { visLen, bare, padVis, clip, wrapAnsi, asLabel, BANNER, boxRow } from '../src/ui/theme.js';
+import { visLen, bare, padVis, clip, wrapAnsi, asLabel, BANNER, boxRow, colourLevel } from '../src/ui/theme.js';
 import { splitKeys, isLabel, Screen } from '../src/ui/screen.js';
 import {
   globToRegExp, toLines, changedRegion, renderDiff, renderNewFile, cap,
   setRoot, setConfirm, resolveIn, bytes,
 } from '../src/tools/shared.js';
-import { readFile, writeFile, editFile, multiEdit, batchWrite } from '../src/tools/files.js';
+import { readFile, readFiles, writeFile, editFile, multiEdit, batchWrite } from '../src/tools/files.js';
 import { listDir, glob, grep } from '../src/tools/search.js';
-import { runCommand } from '../src/tools/shell.js';
+import { runCommand, childEnv, killTree } from '../src/tools/shell.js';
 import { tools, runTool, describe, PARALLEL_SAFE, WRITES } from '../src/tools/index.js';
 import { parseSkill, autoLoadFor, catalogue, findSkill } from '../src/core/skills.js';
 import { titleFrom, newSession, save, load, list, removeAll } from '../src/core/history.js';
@@ -139,6 +139,19 @@ await test('a box row is exactly as wide as the box', () => {
   eq(visLen(boxRow('a very long line that will not fit at all', 20)), 20);
 });
 
+await test('colour is forced on in a real terminal that under-reports itself', () => {
+  const tty = { isTTY: true };
+  // A terminal claiming no colour, e.g. TERM=dumb from an embedding shell.
+  ok(colourLevel(tty, {}, 0) >= 2, 'a TTY at level 0 should be raised');
+  ok(colourLevel(tty, { COLORTERM: 'truecolor' }, 1) === 3, 'truecolor should get level 3');
+});
+
+await test('colour is left alone when it is already right, or not wanted', () => {
+  eq(colourLevel({ isTTY: true }, {}, 3), null, 'already full colour');
+  eq(colourLevel({ isTTY: false }, {}, 0), null, 'a pipe does not want colour');
+  eq(colourLevel({ isTTY: true }, { NO_COLOR: '' }, 0), null, 'NO_COLOR is a person asking');
+});
+
 section('the status row');
 
 /** A Screen wired to a fake terminal of a given size. */
@@ -221,6 +234,23 @@ await test('the frame is still exactly as tall as the terminal', () => {
     eq(painted.length, rows, `${cols}x${rows} painted the wrong number of rows`);
     for (const line of painted) eq(visLen(line), cols, `${cols}x${rows} has a row of the wrong width`);
   }
+});
+
+await test('there is always a clear row between the conversation and the input box', () => {
+  const { screen, written } = fakeScreen(100, 30);
+  // Fill the viewport completely, so nothing but the fixed gap can be blank.
+  for (let i = 0; i < 60; i++) screen.add(`output line ${i}`);
+  written.length = 0;
+  screen.render();
+  const rows = written.join('')
+    .replace(/\x1b\[\?25[lh]|\x1b\[H|\x1b\[K|\x1b\[\d+;\d+H/g, '')
+    .split('\n')
+    .map(bare);
+
+  const top = rows.findLastIndex((r) => r.startsWith('╭'));
+  ok(top > 0, 'the input box should be on screen');
+  eq(rows[top - 1].trim(), '', 'the row above the input box must be empty');
+  ok(rows[top - 2].includes('output line'), 'and the conversation runs right up to that gap');
 });
 
 await test('the caret sits on the typed line, not on the status row', () => {
@@ -476,6 +506,34 @@ await test('one bad edit in a set writes none of them', async () => {
   eq(await read('h.js'), 'alpha\nbeta\n', 'the file must be untouched');
 });
 
+await test('read_files reads several files in one call', async () => {
+  await write('r1.js', 'export const one = 1;\n');
+  await write('r2.js', 'export const two = 2;\nexport const three = 3;\n');
+  const out = await readFiles({ paths: ['r1.js', 'r2.js'] });
+  ok(out.content.includes('=== r1.js'), 'a header per file');
+  ok(out.content.includes('=== r2.js'));
+  ok(out.content.includes('1 | export const one = 1;'), 'the same numbered gutter as read_file');
+  ok(out.content.includes('2 | export const three = 3;'));
+  eq(out.summary, '2 files · 3 lines');
+});
+
+await test('a missing file is reported in place without losing the others', async () => {
+  const out = await readFiles({ paths: ['r1.js', 'not-there.js', 'r2.js'] });
+  ok(out.content.includes('not-there.js — could not be read'));
+  ok(out.content.includes('export const two = 2;'), 'the files after it still come back');
+  ok(out.summary.includes('1 missing'), `summary was: ${out.summary}`);
+});
+
+await test('the same path twice is read once', async () => {
+  const out = await readFiles({ paths: ['r1.js', 'r1.js', ' r1.js '] });
+  eq(out.content.match(/=== r1\.js/g).length, 1);
+});
+
+await test('read_files needs at least one path', async () => {
+  await throws(() => readFiles({ paths: [] }), 'bad_args');
+  await throws(() => readFiles({}), 'bad_args');
+});
+
 await test('batch_write creates parent directories', async () => {
   const out = await batchWrite({
     files: [
@@ -554,6 +612,74 @@ await test('a command that would kill the agent is refused', async () => {
   }
 });
 
+await test('a command that waits for input gets end-of-input instead of hanging', async () => {
+  // The stall this prevents: a scaffolder asking "Would you like TypeScript?"
+  // on an open pipe nobody writes to, sitting there until the timeout.
+  await write('stdin.js',
+    "let got = '';\n" +
+    "process.stdin.on('data', (d) => { got += d; });\n" +
+    "process.stdin.on('end', () => console.log('eof after ' + got.length + ' bytes'));\n" +
+    'process.stdin.resume();\n');
+  const started = Date.now();
+  const out = await runCommand({ command: 'node stdin.js', timeout_ms: 8000 });
+  ok(out.content.includes('eof after 0 bytes'), `got: ${out.content}`);
+  ok(Date.now() - started < 6000, 'it should finish at once, not wait out the timeout');
+});
+
+await test('commands run with the no-questions environment', async () => {
+  await write('env.js', "console.log([process.env.CI, process.env.npm_config_yes, process.env.NO_COLOR].join(','));\n");
+  const out = await runCommand({ command: 'node env.js' });
+  ok(out.content.includes('1,true,1'), `got: ${out.content}`);
+  // And it adds to the environment rather than replacing it.
+  eq(childEnv({ PATH: '/bin' }).PATH, '/bin');
+});
+
+await test('a background server comes back as soon as it says it is ready', async () => {
+  await write('server.js',
+    "const http = require('http');\n" +
+    'setTimeout(() => {\n' +
+    "  const s = http.createServer((q, r) => r.end('food-iq ok')).listen(0, () => {\n" +
+    "    console.log('listening on http://localhost:' + s.address().port);\n" +
+    '  });\n' +
+    '}, 300);\n');
+
+  const started = Date.now();
+  const out = await runCommand({ command: 'node server.js', background: true });
+  const pid = Number(/PID (\d+)/.exec(out.content)?.[1]);
+  try {
+    ok(out.summary.startsWith('ready'), `summary was: ${out.summary}`);
+    const url = /https?:\/\/localhost:\d+/.exec(out.content)?.[0];
+    ok(url, `no URL reported: ${out.content}`);
+    ok(Date.now() - started < 8000, 'ready should be reported within seconds');
+    // It really is up, at the URL it reported.
+    eq(await (await fetch(url)).text(), 'food-iq ok');
+  } finally {
+    killTree(pid);
+  }
+});
+
+await test('a dev server is backgrounded even when nobody asked', async () => {
+  await fs.mkdir(path.join(sandbox, 'srv'), { recursive: true });
+  await write('srv/package.json', JSON.stringify({ name: 'srv', private: true, scripts: { dev: 'node ../server.js' } }));
+  const out = await runCommand({ command: 'npm run dev', cwd: 'srv' });
+  const pid = Number(/PID (\d+)/.exec(out.content)?.[1]);
+  try {
+    ok(out.summary.startsWith('ready'), `summary was: ${out.summary}`);
+    ok(out.content.includes('Do not start it again'), 'the model is told it is already running');
+  } finally {
+    killTree(pid);
+  }
+});
+
+await test('a server that crashes on start is reported at once, with its output', async () => {
+  await write('crash.js', "console.error('boom: port in use'); process.exit(3);\n");
+  const started = Date.now();
+  const out = await runCommand({ command: 'node crash.js', background: true });
+  ok(out.summary.includes('exited 3'), `summary was: ${out.summary}`);
+  ok(out.content.includes('boom: port in use'), 'the crash output comes back');
+  ok(Date.now() - started < 8000, 'no waiting out the ready timer for a dead process');
+});
+
 await test('an ordinary kill is still allowed', async () => {
   const out = await runCommand({
     command: process.platform === 'win32' ? 'echo taskkill /pid 1234' : 'echo kill 1234',
@@ -588,6 +714,8 @@ await test('the wrong type is rejected', async () => {
 await test('the live label never ends in a full stop', () => {
   const calls = [
     ['read_file', { path: 'src/app.js' }],
+    ['read_files', { paths: ['a.js', 'b.js'] }],
+    ['read_files', { paths: Array.from({ length: 12 }, (_, i) => `src/components/file-${i}.tsx`) }],
     ['write_file', { path: 'index.html' }],
     ['batch_write', { files: [{ path: 'a' }, { path: 'b' }] }],
     ['edit_file', { path: 'a.js' }],
@@ -614,10 +742,13 @@ await test('the label names the thing being worked on', () => {
   eq(describe('list_dir', { path: '.' }), 'Listing the project root');
   eq(describe('read_file', { path: 'a.js' }), 'Reading a.js');
   eq(describe('batch_write', { files: [{ path: 'only.js' }] }), 'Writing only.js');
+  eq(describe('read_files', { paths: ['a.js', 'b.js'] }), 'Reading a.js, b.js');
+  eq(describe('read_files', { paths: Array.from({ length: 9 }, (_, i) => `src/components/part-${i}.tsx`) }), 'Reading 9 files');
 });
 
 await test('reads are parallel-safe and writes are not', () => {
-  for (const name of ['read_file', 'list_dir', 'glob', 'grep']) ok(PARALLEL_SAFE.has(name));
+  for (const name of ['read_file', 'read_files', 'list_dir', 'glob', 'grep']) ok(PARALLEL_SAFE.has(name));
+  ok(!WRITES.has('read_files'), 'reading stays available in plan mode');
   for (const name of ['write_file', 'edit_file', 'run_command']) {
     ok(!PARALLEL_SAFE.has(name), `${name} must not run in parallel`);
     ok(WRITES.has(name), `${name} must be withheld in plan mode`);

@@ -4,7 +4,7 @@
  */
 
 import { ToolFailure } from '../core/failure.js';
-import { readFile, writeFile, batchWrite, editFile, multiEdit } from './files.js';
+import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit } from './files.js';
 import { listDir, glob, grep } from './search.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
@@ -31,6 +31,26 @@ export const tools = [
         limit: int(`How many lines. Defaults to ${READ_LINES}.`),
       },
       required: ['path'],
+    },
+  },
+  {
+    name: 'read_files',
+    description:
+      'Read several text files in one call. Use this whenever you need more than one ' +
+      'file - it is one round trip instead of one per file, so it is much faster than ' +
+      'calling read_file repeatedly. Same numbered-line output as read_file, one block ' +
+      'per file. A missing file is reported in its place without failing the others.',
+    parameters: {
+      type: 'object',
+      properties: {
+        paths: {
+          type: 'array',
+          description: 'File paths, relative to the project root. Up to 20.',
+          items: { type: 'string' },
+        },
+        limit: int(`Lines per file. Defaults to ${READ_LINES}.`),
+      },
+      required: ['paths'],
     },
   },
   {
@@ -161,10 +181,11 @@ export const tools = [
     name: 'run_command',
     description:
       'Run a shell command and get back its output and exit code. It runs without ' +
-      'asking, so never run something destructive the user did not ask for. Anything ' +
-      'that looks like a dev server is stopped early with a hint — start those with ' +
-      'background: true instead, which returns immediately with a PID and leaves the ' +
-      'process running.',
+      'asking, so never run something destructive the user did not ask for. There is ' +
+      'no keyboard: pass the non-interactive flag to anything that would ask a question. ' +
+      'Dev servers (npm run dev, vite, next dev, uvicorn...) are started in the ' +
+      'background automatically and the result comes back as soon as the server says ' +
+      'it is ready, with the URL it is listening on - do not start one twice.',
     parameters: {
       type: 'object',
       properties: {
@@ -229,6 +250,7 @@ export const tools = [
 
 const run = {
   read_file: readFile,
+  read_files: readFiles,
   write_file: writeFile,
   batch_write: batchWrite,
   edit_file: editFile,
@@ -247,7 +269,7 @@ export const MUTATING = new Set([
 ]);
 
 /** Tools with no side effects, so several may run at the same time. */
-export const PARALLEL_SAFE = new Set(['read_file', 'list_dir', 'glob', 'grep', 'web_search']);
+export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search']);
 
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
@@ -334,6 +356,11 @@ export function describe(name, args = {}) {
   switch (name) {
     case 'read_file':
       return `Reading ${clip(args.path)}${args.offset > 1 ? ` from line ${args.offset}` : ''}`;
+    case 'read_files': {
+      const names = (args.paths ?? []).map((p) => String(p));
+      const joined = names.join(', ');
+      return names.length && joined.length <= 60 ? `Reading ${joined}` : `Reading ${names.length} files`;
+    }
     case 'write_file':
       return `Writing ${clip(args.path)}`;
     case 'batch_write': {

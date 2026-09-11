@@ -37,9 +37,9 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import {
-  theme, blue, sky, dim, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
+  theme, blue, sky, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel,
+  shortenPath, asLabel, ensureColour,
 } from './theme.js';
 import { renderer, render, polish } from './markdown.js';
 
@@ -92,10 +92,10 @@ const at = (row, col) => `${ESC}[${row};${col}H`;
 const title = (t) => `${ESC}]0;${t}\x07`;
 
 /**
- * Fixed rows below the header: the gap under it, the input box's two borders,
- * the blank row inside it, and the status row.
+ * Fixed rows below the header: the gap under it, the gap above the input box,
+ * the input box's two borders, the blank row inside it, and the status row.
  */
-const CHROME_BELOW = 5;
+const CHROME_BELOW = 6;
 
 /** The wordmark only earns its place with room for the facts column beside it. */
 const WORDMARK_NEEDS = BANNER_WIDTH + 30;
@@ -138,6 +138,7 @@ export class Screen {
   // -- lifecycle -----------------------------------------------------------
 
   async start() {
+    ensureColour(this.output);
     this.output.write(ALT_ON + MOUSE_ON + HIDE + title(`ucode — ${path.basename(this.cwd)}`));
     this.input.setRawMode?.(true);
     this.input.resume();
@@ -533,18 +534,18 @@ export class Screen {
     const { rows } = this.inputLines();
     const painted = rows.map((row, i) =>
       i === 0
-        ? boxRow(` ${blue('›')}${row.slice(1)}`, width)      // the caret, coloured
-        : boxRow(` ${row}`, width)
+        ? boxRow(` ${blue('›')}${row.slice(1)}`, width, edge)      // the caret, coloured
+        : boxRow(` ${row}`, width, edge)
     );
     return [
-      boxTop(width),
+      boxTop(width, edge),
       ...painted,
       // A blank row between the two. Sitting directly under the caret, the
       // status read as a second line of the thing being typed; one row of air
       // separates what you are writing from what you are writing it with.
-      boxRow('', width),
-      boxRow(this.statusRow(), width),
-      boxBottom(width),
+      boxRow('', width, edge),
+      boxRow(this.statusRow(), width, edge),
+      boxBottom(width, edge),
     ];
   }
 
@@ -619,7 +620,7 @@ export class Screen {
     const [row, col] = this.caret();
     this.output.write(
       HIDE +
-      at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(), this.width()) +
+      at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(), this.width(), edge) +
       at(row, col) + SHOW
     );
   }
@@ -998,6 +999,10 @@ export class Screen {
       ...this.headerLines(),
       '',
       ...window,
+      // Always one clear row between the last thing said and the box you type
+      // in. Without it the newest line of output sits against the border and
+      // reads as part of the input rather than as the answer above it.
+      '',
       ...this.inputBox(),
     ];
 
