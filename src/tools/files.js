@@ -15,6 +15,7 @@ import {
   changedRegion, renderDiff, renderNewFile, READ_LINES, MAX_FILE_OUTPUT,
 } from './shared.js';
 import { packageJsonWritten } from './shell.js';
+import { parse as parseSource } from '@babel/parser';
 
 export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
   const target = resolveIn(p, 'read_file');
@@ -92,6 +93,71 @@ export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
  */
 function written(target, content) {
   if (path.basename(target.abs) === 'package.json') packageJsonWritten(target.abs, content);
+}
+
+const PARSEABLE = /\.(?:[cm]?[jt]sx?)$/i;
+
+/**
+ * Does this source parse? Checked the moment a file is written.
+ *
+ * Measured on a real build: a JSX typo sat unnoticed until `npm run build`,
+ * which takes up to a minute, failed on it — then the fix, then another full
+ * build. Parsing the file takes milliseconds, so the error comes back in the
+ * same step that wrote it, with the line, while the model still has the file
+ * in front of it. Syntax only: types are checked at the end of the turn.
+ */
+export function syntaxProblem(file, text) {
+  if (!PARSEABLE.test(file)) return null;
+  const ext = path.extname(file).toLowerCase();
+  const plugins = ext === '.tsx'
+    ? ['typescript', 'jsx']
+    : /^\.[cm]?ts$/.test(ext) ? ['typescript'] : ['jsx'];
+  const where = (loc) => (loc ? `line ${loc.line}, column ${loc.column + 1}` : 'somewhere in the file');
+  const clean = (m) => String(m).replace(/\s*\(\d+:\d+\)\s*$/, '');
+  try {
+    const ast = parseSource(text, {
+      sourceType: 'unambiguous',
+      plugins: [...plugins, 'decorators-legacy'],
+      errorRecovery: true,
+      allowReturnOutsideFunction: true,
+      allowAwaitOutsideFunction: true,
+    });
+    const first = ast.errors?.[0];
+    return first ? `${where(first.loc)}: ${clean(first.message)}` : null;
+  } catch (err) {
+    return `${where(err.loc)}: ${clean(err.message)}`;
+  }
+}
+
+/** The warning appended to a result when a file does not parse. */
+const brokenNote = (show, problem) =>
+  `\n\n⚠ ${show} does not parse — ${problem}. Fix it now: the build will fail on it.`;
+
+/** A file this short comes back whole after an edit; longer ones show the part around the change. */
+const SHOW_WHOLE = 250;
+const AROUND = 15;
+
+/**
+ * The file as it stands after an edit, with the same line-number gutter as
+ * read_file.
+ *
+ * Measured on a real build: the model read the same component thirteen times
+ * in one turn, because an edit's result showed only the lines it replaced and
+ * the next edit needed the file as it now was. Sending the current text back
+ * with the edit costs the same tokens the re-read would have, and saves the
+ * round trip every time.
+ */
+function nowReads(show, text, at, span) {
+  const lines = toLines(text);
+  const whole = lines.length <= SHOW_WHOLE;
+  const from = whole ? 1 : Math.max(1, at - AROUND);
+  const to = whole ? lines.length : Math.min(lines.length, at + span + AROUND);
+  const width = String(to).length;
+  const body = lines.slice(from - 1, to).map((l, i) => `${String(from + i).padStart(width)} | ${l}`).join('\n');
+  const heading = whole
+    ? `${show} now reads (all ${lines.length} lines`
+    : `${show} now reads, lines ${from}-${to} of ${lines.length}`;
+  return `\n\n${heading} — this is the current text, so there is no need to read it again):\n${body}`;
 }
 
 /** At most this many files in one read_files call. */
@@ -216,6 +282,7 @@ async function put(target, content, { diffMax = 16 } = {}) {
     existed,
     lineCount,
     diff,
+    problem: syntaxProblem(target.abs, content),
     line: `${existed ? 'Overwrote' : 'Created'} ${target.show} ` +
       `(${lineCount} lines, ${bytes(Buffer.byteLength(content))})`,
   };
@@ -234,7 +301,10 @@ export async function writeFile({ path: p, content }) {
   await guard(target, `write ${target.abs}`);
 
   const written = await put(target, content);
-  const out = result(`${written.line}.`, `${written.existed ? 'overwrote' : 'created'} · ${written.lineCount} lines`);
+  const out = result(
+    `${written.line}.${written.problem ? brokenNote(target.show, written.problem) : ''}`,
+    `${written.existed ? 'overwrote' : 'created'} · ${written.lineCount} lines${written.problem ? ' · does not parse' : ''}`
+  );
   out.diff = written.diff;
   return out;
 }
@@ -258,6 +328,7 @@ export async function batchWrite({ files }) {
   const lines = [];
   const diff = [];
   let created = 0;
+  let broken = 0;
 
   for (const [index, file] of files.entries()) {
     const { path: p, content } = file ?? {};
@@ -277,13 +348,14 @@ export async function batchWrite({ files }) {
     // would bury the reply under three hundred lines of gutter.
     const written = await put(target, content, { diffMax: 6 });
     if (!written.existed) created++;
-    lines.push(written.line);
+    lines.push(written.line + (written.problem ? brokenNote(target.show, written.problem) : ''));
+    if (written.problem) broken++;
     diff.push(`~${target.show}`, ...written.diff);
   }
 
   const out = result(
     lines.join('\n'),
-    `${files.length} file${files.length === 1 ? '' : 's'} · ${created} new`
+    `${files.length} file${files.length === 1 ? '' : 's'} · ${created} new${broken ? ` · ${broken} do not parse` : ''}`
   );
   out.diff = diff;
   return out;
@@ -462,9 +534,13 @@ export async function editFile({ path: p, old_string, new_string }) {
   const change = delta === 0 ? 'same line count' : `${delta > 0 ? '+' : ''}${delta} lines`;
   const how = loose ? ', matched ignoring whitespace and re-indented to fit' : '';
 
+  const span = toLines(new_string).length;
   const out = result(
-    `Replaced one occurrence in ${target.show} at line ${at} (${change}${how}).`,
-    `1 change at line ${at} · ${change}${loose ? ' · whitespace-tolerant' : ''}`
+    `Replaced one occurrence in ${target.show} at line ${at} (${change}${how}).` +
+      (syntaxProblem(target.abs, text) ? brokenNote(target.show, syntaxProblem(target.abs, text)) : '') +
+      nowReads(target.show, text, at, span),
+    `1 change at line ${at} · ${change}${loose ? ' · whitespace-tolerant' : ''}${syntaxProblem(target.abs, text) ? ' · does not parse' : ''}`,
+    MAX_FILE_OUTPUT
   );
   // The replacement is diffed on its own and offset to where it landed, so
   // the gutter shows the file's line numbers rather than 1, 2, 3.
@@ -531,8 +607,11 @@ export async function multiEdit({ path: p, edits }) {
   const change = delta === 0 ? 'same line count' : `${delta > 0 ? '+' : ''}${delta} lines`;
 
   const out = result(
-    `Applied ${edits.length} edits to ${target.show} (${change}).`,
-    `${edits.length} edits · ${change}`
+    `Applied ${edits.length} edits to ${target.show} (${change}).` +
+      (syntaxProblem(target.abs, text) ? brokenNote(target.show, syntaxProblem(target.abs, text)) : '') +
+      nowReads(target.show, text, 1, toLines(text).length),
+    `${edits.length} edits · ${change}`,
+    MAX_FILE_OUTPUT
   );
   out.diff = diff;
   return out;
@@ -615,7 +694,11 @@ export async function editFiles({ files }) {
 
   const edits = planned.reduce((n, p) => n + p.count, 0);
   const out = result(
-    planned.map((p) => `Edited ${p.target.show} (${p.count} change${p.count === 1 ? '' : 's'})`).join('\n'),
+    planned.map((p) => {
+      const problem = syntaxProblem(p.target.abs, p.text);
+      return `Edited ${p.target.show} (${p.count} change${p.count === 1 ? '' : 's'})` +
+        (problem ? brokenNote(p.target.show, problem) : '');
+    }).join('\n'),
     `${planned.length} files · ${edits} edits`
   );
   out.diff = planned.flatMap((p) => p.diff);

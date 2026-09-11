@@ -41,7 +41,7 @@ export const tools = [
   {
     name: 'read_file',
     description:
-      'Read a text file. Comes back as numbered lines — the numbers are for you to ' +
+      'Read one text file - for two or more, use read_files instead. Comes back as numbered lines — the numbers are for you to ' +
       'refer to and must never appear in an edit_file argument. Long files arrive in ' +
       'pages; pass offset to keep going.',
     parameters: {
@@ -120,7 +120,8 @@ export const tools = [
       'Replace one exact piece of text in a file. old_string must match the file ' +
       'character for character, including indentation, and must occur exactly once — ' +
       'the edit is refused on zero matches and on two. This is the normal way to ' +
-      'change existing code.',
+      'change existing code. The result shows the file as it now stands, so do not ' +
+      'read it again afterwards.',
     parameters: {
       type: 'object',
       properties: {

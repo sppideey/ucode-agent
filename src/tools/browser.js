@@ -187,14 +187,17 @@ export async function lookAtApp({ url, paths = ['/'], review: wantReview = true 
       const target = `${base}${pagePath}`;
       let loadError = null;
       try {
-        // A dev server compiles a page on its first request, which can take a
-        // while; networkidle then waits for the page's own data to arrive.
-        await page.goto(target, { waitUntil: 'networkidle', timeout: 60_000 });
+        // 'load', not 'networkidle': a dev server holds a hot-reload
+        // connection open and polls, so the network may never go quiet and
+        // 'networkidle' would wait out its whole timeout on every page, at
+        // every width. 'load' covers the first-request compile; the page's own
+        // data then gets a short, bounded chance to settle.
+        await page.goto(target, { waitUntil: 'load', timeout: 90_000 });
+        await page.waitForLoadState('networkidle', { timeout: 2_500 }).catch(() => {});
       } catch (err) {
-        try { await page.goto(target, { waitUntil: 'load', timeout: 30_000 }); }
-        catch (err2) { loadError = String(err2.message).split('\n')[0]; }
+        loadError = String(err.message).split('\n')[0];
       }
-      await page.waitForTimeout(600); // let entrance animations settle
+      await page.waitForTimeout(400); // let entrance animations settle
 
       const file = path.join(shotsDir, `${safeName(pagePath)}-${size.name}.jpg`);
       let facts = null;

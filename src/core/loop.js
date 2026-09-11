@@ -12,6 +12,8 @@
  */
 
 import path from 'node:path';
+import os from 'node:os';
+import { appendFileSync } from 'node:fs';
 import { readFile, access } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
@@ -76,6 +78,76 @@ const MAX_FAILOVERS = 8;
 const COOLDOWN = 5 * 60_000;
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/**
+ * UCODE_TRACE=1 writes one JSON line per model call and per tool to
+ * ~/.ucode/trace.jsonl (or to the path UCODE_TRACE names): how long it took,
+ * tokens in and out, what was called. It is how "it feels slow" becomes a
+ * number with a cause attached.
+ */
+const TRACE_FILE = process.env.UCODE_TRACE
+  ? (process.env.UCODE_TRACE === '1' ? path.join(os.homedir(), '.ucode', 'trace.jsonl') : process.env.UCODE_TRACE)
+  : null;
+
+/** Tool results worth re-sending in full only while they are recent. */
+const THIN_RESULTS = new Set([
+  'read_file', 'read_files', 'grep', 'glob', 'list_dir', 'run_command', 'run_commands',
+  'look_at_app', 'web_search', 'edit_file', 'multi_edit', 'edit_files',
+]);
+
+/** Replace long strings in old tool arguments with a note of their size. */
+function thinArgs(value) {
+  if (typeof value === 'string') {
+    return value.length > 400
+      ? `[${value.length} characters, already applied — read the file if you need its current text]`
+      : value;
+  }
+  if (Array.isArray(value)) return value.map(thinArgs);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, thinArgs(v)]));
+  }
+  return value;
+}
+
+/**
+ * The conversation as sent, with bulky history thinned.
+ *
+ * Every file the model writes travels inside its own tool call, so a
+ * thirty-file app is re-sent in full on every later step — tens of thousands
+ * of tokens the provider has to read before it can answer, growing with
+ * each file. Beyond the last few steps that text is replaced by a note of its
+ * size; the files are on disk, and the model re-reads one when it needs it.
+ * Call ids and results stay paired, and the saved session keeps everything.
+ */
+export function lean(messages, keep = 3) {
+  let seen = 0;
+  let cut = -1;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    if (messages[i].role === 'assistant' && messages[i].toolCalls?.length && ++seen === keep) { cut = i; break; }
+  }
+  if (cut <= 0) return messages;
+  return messages.map((m, i) => {
+    if (i >= cut) return m;
+    if (m.role === 'assistant' && m.toolCalls?.length) {
+      return { ...m, toolCalls: m.toolCalls.map((c) => ({ ...c, args: thinArgs(c.args) })) };
+    }
+    if (m.role === 'tool' && THIN_RESULTS.has(m.name) && (m.content?.length ?? 0) > 1500) {
+      return {
+        ...m,
+        content: `${m.content.slice(0, 300)}
+… [${m.content.length} characters from an earlier step, trimmed ` +
+          'to keep the conversation fast — run the tool again if you need this now]',
+      };
+    }
+    return m;
+  });
+}
+
+function trace(event) {
+  if (!TRACE_FILE) return;
+  try { appendFileSync(TRACE_FILE, `${JSON.stringify({ at: Date.now(), ...event })}
+`); } catch { /* never fatal */ }
+}
 
 /** Parallel workers at once, and how many steps each may take. */
 const MAX_WORKERS = 3;
@@ -238,11 +310,15 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '- Need more than one file? read_files, all of them in one call. Never read files',
     '  one at a time when you already know which ones you want.',
+    '- An edit result shows the file as it now stands. Do not read a file again after',
+    '  editing it - you already have its current text.',
     '- Put independent calls in the same message — several greps, a glob and a read.',
     '  Read-only calls in one message run at the same time.',
     '- New Next.js app? create_app - one step, never create-next-app or shadcn init. It',
     '  copies a starter that already builds and installs it in the background.',
-    '- batch_write to lay out several new files at once, multi_edit for several changes',
+    '- batch_write to lay out several new files at once - but at most about four per',
+    '  call: one slip in a huge call throws the whole call away.',
+    '- multi_edit for several changes',
     '  to one file, edit_files for a change that spans several files.',
     '- For work with three or more steps, keep a short plan with update_plan - at most',
     '  six items of a few words - and tick items off as they finish. Skip it for small jobs.',
@@ -262,6 +338,15 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '- Dev servers start in the background by themselves, and the result tells you the',
     '  URL once the server says it is ready. Do not start one twice, do not sleep while',
     '  waiting for it, and do not curl it before that result comes back.',
+    '',
+    '## When something fails',
+    '',
+    '- A failed build names the problem. Fix exactly that, then build again. Never go',
+    '  exploring inside node_modules: a missing component or package is one install away.',
+    '- Never delete an app folder to start over. Fix it where it is - starting again throws',
+    '  away the install and everything already written.',
+    '- Run an app\'s commands with cwd set to its folder, and keep paths inside those',
+    '  commands relative to that folder.',
     '',
     '## Safety',
     '',
@@ -601,12 +686,14 @@ export class Agent {
     this.busy = true;
     this.abort = new AbortController();
 
+    const turnStarted = Date.now();
     try {
       await this.run();
     } catch (err) {
       if (err?.kind === 'aborted' || this.abort.signal.aborted) this.ui.write(dim('  turn cancelled'));
       else throw err;
     } finally {
+      trace({ kind: 'turn', ms: Date.now() - turnStarted });
       this.busy = false;
       this.abort = null;
       this.ui.stopSpinner();
@@ -671,6 +758,7 @@ export class Agent {
           };
         }
 
+        var asked = Date.now();
         reply = await ask(
           [
             {
@@ -684,7 +772,7 @@ export class Agent {
                 memory: this.memory,
               }),
             },
-            ...this.working,
+            ...lean(this.working),
           ],
           available,
           opts
@@ -721,6 +809,11 @@ export class Agent {
       this.ui.thinkingEnd();
       this.ui.stopSpinner();
       this.record(reply.usage);
+      trace({
+        kind: 'model', who: 'lead', model: model(), ms: Date.now() - asked,
+        in: reply.usage.promptTokens, out: reply.usage.outputTokens,
+        calls: reply.toolCalls.map((c) => c.name),
+      });
 
       // Streamed text is already on screen; turn it into rendered markdown.
       // Text that turns out to be narration ahead of a tool call folds into a
@@ -917,6 +1010,12 @@ export class Agent {
   }
 
   reportResult(call, out) {
+    // A build or type check that just passed already verified everything
+    // changed so far; the automatic check at the end would only repeat it.
+    if (call.name === 'run_command' && out.exitCode === 0 &&
+        /(?:next build|npm run build|pnpm (?:run )?build|tsc)/.test(call.args?.command ?? '')) {
+      this.sinceCheck?.clear();
+    }
     if (!QUIET.has(call.name)) this.ui.toolResult(out.summary);
     if (out.diff?.length) this.ui.diff(out.diff);
     if (out.output?.length) this.ui.commandOutput(out.output);
@@ -996,7 +1095,11 @@ export class Agent {
 
   /** Run a call and settle to { out } or { err } — never throws. */
   execute(call) {
-    return this.dispatch(call).then((out) => ({ out }), (err) => ({ err }));
+    const started = Date.now();
+    return this.dispatch(call).then(
+      (out) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started }); return { out }; },
+      (err) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started, err: err?.kind }); return { err }; }
+    );
   }
 
   updatePlan(items) {
@@ -1082,6 +1185,7 @@ export class Agent {
       if (this.abort?.signal.aborted) break;
 
       let reply;
+      const asked = Date.now();
       try {
         reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel });
       } catch (err) {
@@ -1099,6 +1203,11 @@ export class Agent {
         throw err;
       }
       this.record(reply.usage);
+      trace({
+        kind: 'model', who: name, model: workerModel, ms: Date.now() - asked,
+        in: reply.usage.promptTokens, out: reply.usage.outputTokens,
+        calls: reply.toolCalls.map((c) => c.name),
+      });
 
       if (!reply.toolCalls.length) {
         this.ui.toolResult(`${name} finished`);

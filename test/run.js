@@ -29,8 +29,9 @@ import { titleFrom, newSession, save, load, list, removeAll } from '../src/core/
 import { usage, tooBig, fold, forSummary } from '../src/core/window.js';
 import {
   MODELS, DEFAULT_MODEL, setModel, model, modelName, modelList,
-  estimateTokens, estimateConversation, contextLimit, explain, fallbackFor, FALLBACKS,
+  estimateTokens, estimateConversation, contextLimit, explain, fallbackFor, FALLBACKS, readCall,
 } from '../src/core/provider.js';
+import { lean } from '../src/core/loop.js';
 import { newer } from '../src/core/updater.js';
 import { Failure, ToolFailure, Declined, isFailure } from '../src/core/failure.js';
 
@@ -1148,6 +1149,46 @@ await test('a bad key says exactly what to check', () => {
 await test('an abort is not reported as a failure of the model', () => {
   const err = Object.assign(new Error('The operation was aborted'), { name: 'AbortError' });
   eq(explain(err, DEFAULT_MODEL).kind, 'aborted');
+});
+
+section('speed');
+
+await test('a tool call with a missing comma is repaired, not thrown away', () => {
+  const raw = '{"files": [{"path": "a.ts", "content": "x"} {"path": "b.ts", "content": "y"}]}';
+  const call = readCall({ id: '1', name: 'batch_write', raw });
+  ok(!call.parseError, `still failed: ${call.parseError}`);
+  eq(call.args.files.length, 2, 'both files survive the repair');
+  ok(call.repaired);
+});
+
+await test('output cut off at the limit is never repaired into half a file', () => {
+  const raw = '{"path": "a.ts", "content": "export const half = ';
+  const call = readCall({ id: '1', name: 'write_file', raw, cutOff: true });
+  ok(call.parseError, 'a truncated call must stay an error');
+});
+
+await test('old file bodies stop being re-sent, recent steps stay whole', () => {
+  const big = 'x'.repeat(5000);
+  const history = [{ role: 'user', content: 'build it' }];
+  for (let i = 0; i < 5; i++) {
+    history.push({ role: 'assistant', content: '', toolCalls: [{ id: `c${i}`, name: 'write_file', args: { path: `f${i}.ts`, content: big } }] });
+    history.push({ role: 'tool', toolCallId: `c${i}`, name: 'read_file', content: big });
+  }
+  const sent = lean(history);
+  eq(sent.length, history.length, 'nothing is dropped, only thinned');
+  ok(sent[1].toolCalls[0].args.content.startsWith('[5000 characters'), 'an old write is replaced by its size');
+  eq(sent[1].toolCalls[0].id, 'c0', 'the call id survives, so results stay paired');
+  eq(sent[1].toolCalls[0].args.path, 'f0.ts', 'short arguments are kept');
+  ok(sent[2].content.length < 600, 'an old long result is trimmed');
+  eq(sent[sent.length - 2].toolCalls[0].args.content, big, 'the latest steps are untouched');
+  eq(history[1].toolCalls[0].args.content, big, 'the saved history itself is never changed');
+});
+
+await test('an edit hands back the file as it now stands', async () => {
+  await write('now.ts', 'const a = 1;\nconst b = 2;\n');
+  const out = await editFile({ path: 'now.ts', old_string: 'const b = 2;', new_string: 'const b = 3;' });
+  ok(out.content.includes('now reads'), 'the current text is in the result');
+  ok(out.content.includes('2 | const b = 3;'), 'with the same gutter as read_file');
 });
 
 section('failures');

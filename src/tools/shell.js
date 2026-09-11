@@ -461,6 +461,50 @@ async function awaitInstall(command, workdir, onOutput) {
 }
 
 // ---------------------------------------------------------------------------
+// What a failed build is really asking for
+// ---------------------------------------------------------------------------
+
+/**
+ * Plain next steps for the build failures that send a model down a hole.
+ *
+ * Measured: a missing shadcn component failed the build, and instead of
+ * adding it the model spent a dozen steps listing node_modules, then deleted
+ * the app and started over. The error names exactly what is missing; this
+ * turns that into the one command that fixes it.
+ */
+export function buildHints(output) {
+  const hints = [];
+  const seen = new Set();
+  const add = (key, text) => {
+    if (seen.has(key)) return;
+    seen.add(key);
+    hints.push(text);
+  };
+
+  const UI = /(?:Can't resolve|Cannot find module) '@\/components\/ui\/([\w-]+)'/g;
+  for (const m of output.matchAll(UI)) {
+    add(`ui:${m[1]}`, `The shadcn component "${m[1]}" is not in this project. Add it with ` +
+      `\`npx shadcn@latest add ${m[1]} -y\` (cwd: the app folder), then build again. ` +
+      'Do not look inside node_modules.');
+  }
+
+  const PKG = /(?:Can't resolve|Cannot find module) '((?:@[\w.-]+\/)?[\w.-]+)(?:\/[^']*)?'/g;
+  for (const m of output.matchAll(PKG)) {
+    const pkg = m[1];
+    if (pkg.startsWith('.')) continue;
+    add(`pkg:${pkg}`, `The package "${pkg}" is not installed. Install it with ` +
+      `\`npm install ${pkg}\` (cwd: the app folder), then build again.`);
+  }
+
+  if (/Parsing ecmascript source code failed|Expression expected|Unexpected token/.test(output)) {
+    add('syntax', 'A file does not parse. Open the file and line the error names, fix that ' +
+      'syntax, then build again.');
+  }
+
+  return hints;
+}
+
+// ---------------------------------------------------------------------------
 // run_command
 // ---------------------------------------------------------------------------
 
@@ -618,8 +662,10 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
       }
 
       const count = captured.trim() ? captured.trim().split(/\r?\n/).length : 0;
+      const hints = code !== 0 ? buildHints(captured) : [];
+      const advice = hints.length ? `\n\nWhat to do:\n${hints.map((h) => `- ${h}`).join('\n')}` : '';
       const out = result(
-        `exit code: ${code}\n\n${body}`,
+        `exit code: ${code}\n\n${body}${advice}`,
         `exit ${code} · ${count} line${count === 1 ? '' : 's'}`
       );
       out.exitCode = code;

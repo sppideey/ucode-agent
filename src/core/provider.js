@@ -22,6 +22,7 @@ import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
 import OpenAI from 'openai';
+import { jsonrepair } from 'jsonrepair';
 import { Failure } from './failure.js';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -710,7 +711,7 @@ async function streamed(request, opts, id) {
 
   const toolCalls = [];
   for (const [index, slot] of partial) {
-    toolCalls.push(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args }));
+    toolCalls.push(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, cutOff: finishReason === 'length' }));
   }
 
   return {
@@ -734,7 +735,7 @@ async function streamed(request, opts, id) {
  * back to the model, which usually fixes its own JSON on the next step —
  * cheaper than failing the whole turn over a stray comma.
  */
-function readCall({ id, name, raw }) {
+export function readCall({ id, name, raw, cutOff = false }) {
   const call = { id, name, args: {} };
   const text = String(raw ?? '').trim();
   if (!text) return call;
@@ -743,6 +744,21 @@ function readCall({ id, name, raw }) {
     if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) call.args = parsed;
     else call.parseError = `arguments must be a JSON object, got ${Array.isArray(parsed) ? 'array' : typeof parsed}`;
   } catch (err) {
+    // A missing comma or a stray control character in a 3,000-token
+    // batch_write used to throw the whole step away — half a minute of output
+    // discarded over one character. Repair the usual slips instead. Never when
+    // the reply was cut off at the output limit, though: repairing that would
+    // close the string and quietly write half a file.
+    if (!cutOff) {
+      try {
+        const fixed = JSON.parse(jsonrepair(text));
+        if (fixed && typeof fixed === 'object' && !Array.isArray(fixed)) {
+          call.args = fixed;
+          call.repaired = true;
+          return call;
+        }
+      } catch { /* beyond repair — fall through */ }
+    }
     call.parseError = `${err.message} — the raw arguments were: ${text.slice(0, 300)}`;
   }
   return call;
@@ -753,7 +769,7 @@ function normalize(data, id) {
   const message = choice?.message ?? {};
 
   const toolCalls = (message.tool_calls ?? []).map((c) =>
-    readCall({ id: c.id, name: c.function?.name, raw: c.function?.arguments })
+    readCall({ id: c.id, name: c.function?.name, raw: c.function?.arguments, cutOff: choice?.finish_reason === 'length' })
   );
 
   const u = data?.usage ?? {};
