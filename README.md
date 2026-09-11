@@ -145,6 +145,35 @@ where the time actually went:
 `UCODE_TRACE=1` writes every model call and tool, with its duration, to
 `~/.ucode/trace.jsonl`.
 
+**Deploy in one line.** Say "deploy it", or type `/deploy [folder]`, and the app
+goes live on Vercel. ucode picks a short project name that fits the app and is
+free (`food-iq`, else `food-iq-app`…), copies the app's `.env` keys to Vercel as
+encrypted variables, refuses code with a secret written into it (and says how to
+move it to a server route), and gives you the link. Deploying again updates the
+same link. Needs a token from vercel.com/account/tokens in `~/.ucode/.env` as
+`VERCEL_TOKEN=...`.
+
+**A look for every app.** `create_app` takes a design preset — ocean, grove,
+sunset, graphite, violet or citrus — each a full light and dark palette with its
+own font, so apps stop looking like the same default blue.
+
+**It notices when it is going round in circles.** The same failing edit, an edit
+that changes nothing, or a build failing on the same errors three times gets a
+firm, specific note; if that does not work, the turn moves to another model.
+
+**It never dies at the daily limit.** When the free daily limit runs out mid-build,
+ucode counts down to the reset and carries on by itself.
+
+**You can see it working.** The status row shows the current step with a light
+sweeping across it, the step count and the time, and each answer ends with
+`✓ Done in 6m 12s · 25 steps`. When a dev server comes up, the app opens in your
+browser (`UCODE_OPEN=0` turns that off).
+
+**`/stats` and `ucode doctor`.** `/stats` shows the session's time, steps, tokens,
+files and builds. `ucode doctor` (or `/doctor`) checks Node, npm, git, the API
+key and today's free requests left, the browser, the Vercel token and the
+version, with the fix for anything wrong.
+
 **Parallel workers.** When a build splits into parts that touch different files
 — the API route, the upload component, the results view — the model hands them
 to up to three workers that build at the same time, each line in the transcript

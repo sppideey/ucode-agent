@@ -64,7 +64,65 @@ async function copyTree(from, to, fill) {
  * @param {string} [o.template]
  * @param {boolean} [o.install]   start the background install (tests turn it off)
  */
-export async function createApp({ folder, name, description, template = 'next-shadcn', install = true }) {
+/**
+ * Give the new app its look: one of the hand-picked presets in the starter's
+ * presets/ folder — a full light and dark palette and a font — written into
+ * globals.css and layout.tsx. Apps stop looking like the same default blue.
+ * Returns the preset used, or null when the starter has none.
+ */
+export async function applyDesign(appDir, design) {
+  const dir = path.join(appDir, 'presets');
+  const names = (await fs.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
+  if (!names.length) return null;
+  const presets = await Promise.all(names.map(async (f) => JSON.parse(await fs.readFile(path.join(dir, f), 'utf8'))));
+  await fs.rm(dir, { recursive: true, force: true }); // the app needs the result, not the catalogue
+  const preset = presets.find((p) => p.name === design) ?? presets.find((p) => p.default) ?? presets[0];
+
+  const cssFile = path.join(appDir, 'src', 'app', 'globals.css');
+  let css = await fs.readFile(cssFile, 'utf8').catch(() => null);
+  if (css !== null) {
+    const retint = (selector, tokens) => {
+      const block = new RegExp(`(${selector}\\s*\\{)([\\s\\S]*?)(\\n\\})`);
+      css = css.replace(block, (all, open, body, close) => {
+        const seen = new Set();
+        let next = body.replace(/(\n\s*)--([\w-]+):\s*[^;]+;/g, (line, lead, key) => {
+          if (!(key in tokens)) return line;
+          seen.add(key);
+          return `${lead}--${key}: ${tokens[key]};`;
+        });
+        for (const [key, value] of Object.entries(tokens)) if (!seen.has(key)) next += `\n  --${key}: ${value};`;
+        return open + next + close;
+      });
+    };
+    retint(':root', { radius: preset.radius, ...preset.light });
+    retint('\\.dark', preset.dark);
+    await fs.writeFile(cssFile, css);
+  }
+
+  const sans = preset.fonts?.sans;
+  const layoutFile = path.join(appDir, 'src', 'app', 'layout.tsx');
+  if (sans && sans !== 'Geist') {
+    const id = sans.replace(/\s+/g, '_');
+    const layout = await fs.readFile(layoutFile, 'utf8').catch(() => null);
+    if (layout !== null) {
+      await fs.writeFile(layoutFile, layout
+        .replace('import { Geist, Geist_Mono } from "next/font/google";', `import { ${id}, Geist_Mono } from "next/font/google";`)
+        .replace('const sans = Geist({', `const sans = ${id}({`));
+    }
+  }
+
+  const guide = path.join(appDir, 'TEMPLATE.md');
+  const text = await fs.readFile(guide, 'utf8').catch(() => null);
+  if (text !== null) {
+    await fs.writeFile(guide, `${text.trimEnd()}\n\n## Design\n\nThis app uses the **${preset.name}** preset — ` +
+      `${preset.summary}. Font: ${sans ?? 'Geist'}. The palette lives in globals.css (light and dark): ` +
+      'build with the tokens (bg-primary, text-muted-foreground, border, ...) rather than raw colours, ' +
+      'so every screen stays in one look.\n');
+  }
+  return preset;
+}
+
+export async function createApp({ folder, name, description, template = 'next-shadcn', design, install = true }) {
   if (!TEMPLATE_NAMES.includes(template)) {
     throw new ToolFailure({
       kind: 'bad_args',
@@ -110,6 +168,7 @@ export async function createApp({ folder, name, description, template = 'next-sh
 
   const files = await copyTree(path.join(TEMPLATES, template), target.abs, fill);
   await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
+  const look = await applyDesign(target.abs, design);
 
   if (install) {
     const pkg = path.join(target.abs, 'package.json');
@@ -120,6 +179,7 @@ export async function createApp({ folder, name, description, template = 'next-sh
 
   return result(
     `Created ${target.show} from the ${template} starter — ${files.length} files, already known to build.\n` +
+      (look ? `Design: the ${look.name} preset (${look.summary}), font ${look.fonts?.sans ?? 'Geist'}.\n` : '') +
       (install
         ? `Its packages are installing in the background right now. Keep writing: any command you run in ` +
           `${target.show} waits for that install first, so there is no need to run npm install.\n`

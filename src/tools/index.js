@@ -10,6 +10,7 @@ import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
 import { lookAtApp } from './browser.js';
 import { createApp } from './scaffold.js';
+import { deploy } from './deploy.js';
 import { clip, READ_LINES } from './shared.js';
 
 export { setRoot, setConfirm, getRoot } from './shared.js';
@@ -24,8 +25,8 @@ export const tools = [
     description:
       'Start a new Next.js + shadcn/ui app from the ready-made ucode starter. This is how every ' +
       'Next.js app begins - never run create-next-app or shadcn init. It copies a project that ' +
-      'is already known to build (Next.js 16, TypeScript, Tailwind 4, shadcn with 25 common ' +
-      'components, light/dark mode, toasts, a considered theme) into a new empty folder, and ' +
+      'is already known to build (Next.js 16, TypeScript, Tailwind 4, shadcn with 33 common ' +
+      'components, light/dark mode, toasts, a design preset of colours and fonts) into a new empty folder, and ' +
       'starts installing its packages in the background so you can write components at once. ' +
       'The result lists everything included.',
     parameters: {
@@ -34,8 +35,37 @@ export const tools = [
         folder: str('A new, empty folder for the app, relative to the project root, e.g. "stride".'),
         name: str('The display name of the app, e.g. "Stride".'),
         description: str('One line about the app, used in the page metadata.'),
+        design: {
+          type: 'string',
+          enum: ['ocean', 'grove', 'sunset', 'graphite', 'violet', 'citrus'],
+          description:
+            'The look: colours and fonts, light and dark. Pick the one that fits the app. ' +
+            'ocean - calm blue, for dashboards, finance, productivity (default). ' +
+            'grove - fresh green, for health, habits, food, nature. ' +
+            'sunset - warm coral with a serif, for travel, recipes, journaling, lifestyle. ' +
+            'graphite - monochrome and crisp, for developer tools, docs, portfolios. ' +
+            'violet - vivid violet, for AI tools, creative apps, music, learning. ' +
+            'citrus - bright lime and bold, for games, sport, kids, social.',
+        },
       },
       required: ['folder', 'name'],
+    },
+  },
+  {
+    name: 'deploy',
+    description:
+      'Put an app online on Vercel and get its live link - use it when the user asks to deploy, ' +
+      'publish, host or share the app. ucode picks a short free project name, copies the app\'s ' +
+      '.env keys to Vercel as encrypted variables, refuses code with a secret written into it ' +
+      '(move it to .env.local and a server route, then deploy again), and builds on Vercel. ' +
+      'Run the local build first so errors show up here. Deploying again updates the same link.',
+    parameters: {
+      type: 'object',
+      properties: {
+        folder: str('The app folder, relative to the project root, e.g. "food-iq". Defaults to ".".'),
+        name: str('Optional: a project name to use instead of the one ucode would choose.'),
+      },
+      required: [],
     },
   },
   {
@@ -346,11 +376,12 @@ const run = {
   web_search: webSearch,
   look_at_app: lookAtApp,
   create_app: createApp,
+  deploy,
 };
 
 /** Tools that change the project or execute code. */
 export const MUTATING = new Set([
-  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands',
+  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands', 'deploy',
 ]);
 
 /** Tools with no side effects, so several may run at the same time. */
@@ -359,7 +390,7 @@ export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'gl
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
   'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands',
-  'delegate', 'create_app',
+  'delegate', 'create_app', 'deploy',
 ]);
 
 /** Tools that change files on disk, which parallel workers take turns at. */
@@ -482,6 +513,8 @@ export function describe(name, args = {}) {
       return `Running ${clip(args.command, 70)}${args.background ? ' in the background' : ''}`;
     case 'run_commands':
       return `Running ${args.commands?.length ?? 0} commands together`;
+    case 'deploy':
+      return `Deploying ${clip(args.folder || '.', 30)} to Vercel`;
     case 'create_app':
       return `Creating ${clip(args.name || args.folder, 30)} from the Next.js starter`;
     case 'look_at_app':

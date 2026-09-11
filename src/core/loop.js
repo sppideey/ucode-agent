@@ -36,6 +36,11 @@ import { Screen, isLabel } from '../ui/screen.js';
 import { Plain } from '../ui/plain.js';
 import { theme, blue, sky, dim, formatTokens, relativeTime, shortenPath, clip } from '../ui/theme.js';
 import { Failure, ToolFailure, Declined } from './failure.js';
+import { StuckWatch, eventFor, describeHit } from './stuck.js';
+import { serversReadySince } from '../tools/shell.js';
+import { formatDuration } from '../ui/activity.js';
+import { runDoctor } from './doctor.js';
+import { deploy } from '../tools/deploy.js';
 
 /**
  * Tool calls allowed in one turn.
@@ -149,6 +154,49 @@ function trace(event) {
   if (!TRACE_FILE) return;
   try { appendFileSync(TRACE_FILE, `${JSON.stringify({ at: Date.now(), ...event })}
 `); } catch { /* never fatal */ }
+}
+
+/** What /stats reports, counted as the session goes. */
+function newStats() {
+  return {
+    started: Date.now(), workMs: 0, turns: 0, steps: 0, tokensIn: 0, tokensOut: 0,
+    tools: {}, failed: 0, written: 0, edited: 0, commands: 0, builds: 0, stuck: 0,
+  };
+}
+
+const BUILD_COMMAND = /\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?build\b|\bnext\s+build\b|\bvite\s+build\b/;
+
+function countTool(stats, call, out, err) {
+  stats.tools[call.name] = (stats.tools[call.name] ?? 0) + 1;
+  if (err) { stats.failed++; return; }
+  const a = call.args ?? {};
+  if (call.name === 'write_file') stats.written++;
+  if (call.name === 'batch_write') stats.written += a.files?.length ?? 0;
+  if (call.name === 'edit_file' || call.name === 'multi_edit') stats.edited++;
+  if (call.name === 'edit_files') stats.edited += new Set((a.edits ?? []).map((e) => e.path)).size || 1;
+  if (call.name === 'run_command') {
+    stats.commands++;
+    if (BUILD_COMMAND.test(a.command ?? '')) stats.builds++;
+  }
+  if (call.name === 'run_commands') stats.commands += a.commands?.length ?? 0;
+}
+
+/** The /stats box. */
+export function statsLines(st, messages) {
+  const n = (v) => Number(v).toLocaleString();
+  const top = Object.entries(st.tools).sort((x, y) => y[1] - x[1]).slice(0, 6)
+    .map(([k, v]) => `${k} ${v}`).join(' · ') || 'none yet';
+  const plural = (v, w) => `${v} ${w}${v === 1 ? '' : 's'}`;
+  const rows = [
+    ['Session', `${formatDuration(Date.now() - st.started)} open · ${formatDuration(st.workMs)} working · ${plural(st.turns, 'request')}`],
+    ['Model', `${n(st.steps)} steps · ${formatTokens(st.tokensIn)} in · ${formatTokens(st.tokensOut)} out`],
+    ['Tools', top],
+    ['Files', `${st.written} written · ${st.edited} edited`],
+    ['Commands', `${st.commands} run · ${plural(st.builds, 'build')}${st.failed ? ` · ${plural(st.failed, 'tool call')} failed` : ''}`],
+    ['Context', `${messages} messages${st.stuck ? ` · ${plural(st.stuck, 'loop')} caught` : ''}`],
+  ];
+  const w = Math.max(...rows.map(([k]) => k.length));
+  return ['', `  ${blue('Stats')}`, ...rows.map(([k, v]) => `  ${dim(k.padEnd(w))}  ${v}`), ''];
 }
 
 /** Parallel workers at once, and how many steps each may take. */
@@ -335,6 +383,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  reports - errors, layout that overflows a phone, the review points worth fixing -',
     '  in one pass, then look once more. A clean second look means it is done: report',
     '  back instead of polishing in circles. Never call an interface finished unlooked at.',
+    '- Asked to deploy, publish, host or share the app? Use the deploy tool - it picks the',
+    '  name, handles keys and returns the live link. Build locally first.',
     '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',
     '  would ask a question, or it fails instead of waiting: create-next-app --yes,',
     '  npx shadcn@latest init -d -y, npx shadcn@latest add <names> -y, npm init -y.',
@@ -416,6 +466,7 @@ export class Agent {
     // CI and `echo ... | ucode` get the line-based interface instead.
     this.full = Boolean(process.stdout.isTTY && process.stdin.isTTY);
     this.ui = this.full ? new Screen({ cwd }) : new Plain({ cwd });
+    this.stats = newStats();
     this.skills = [];
     this.session = newSession(cwd, model());
     this.working = [];
@@ -693,18 +744,35 @@ export class Agent {
     this.abort = new AbortController();
 
     const turnStarted = Date.now();
+    let finished = false;
+    this.ui.turnStart?.();
     try {
-      await this.run();
+      for (;;) {
+        try {
+          await this.run();
+          break;
+        } catch (err) {
+          // The daily free cap mid-build: wait for the reset and carry on,
+          // rather than leaving a half-built app for the user to restart.
+          if (err?.detail?.daily && !this.abort.signal.aborted && (await this.waitForReset(err))) continue;
+          throw err;
+        }
+      }
+      finished = true;
     } catch (err) {
       if (err?.kind === 'aborted' || this.abort.signal.aborted) this.ui.write(dim('  turn cancelled'));
       else throw err;
     } finally {
       trace({ kind: 'turn', ms: Date.now() - turnStarted });
+      this.stats.workMs += Date.now() - turnStarted;
+      this.stats.turns++;
       this.busy = false;
       this.abort = null;
       this.ui.stopSpinner();
+      this.ui.turnEnd?.({ ok: finished });
       await this.persist();
       if (this.full) this.showHeader({ clear: false });
+      if (finished) this.openWhenReady(turnStarted);
     }
   }
 
@@ -726,6 +794,7 @@ export class Agent {
     this.failovers = 0;
     this.tried = new Set([model()]);
 
+    this.stuck = new StuckWatch();
     this.touched = new Set();
     this.sinceCheck = new Set();
     this.ranSomething = false;
@@ -815,6 +884,10 @@ export class Agent {
       this.ui.thinkingEnd();
       this.ui.stopSpinner();
       this.record(reply.usage);
+      this.ui.step?.();
+      this.stats.steps++;
+      this.stats.tokensIn += reply.usage.promptTokens ?? 0;
+      this.stats.tokensOut += reply.usage.outputTokens ?? 0;
       trace({
         kind: 'model', who: 'lead', model: model(), ms: Date.now() - asked,
         in: reply.usage.promptTokens, out: reply.usage.outputTokens,
@@ -1015,6 +1088,101 @@ export class Agent {
     return badArgs;
   }
 
+  /**
+   * Check a finished call against the stuck patterns (see stuck.js) and return
+   * the note to add to its result. A nudge that did not work hands the turn to
+   * another model.
+   */
+  stuckNote(call, outcome) {
+    if (!this.stuck) return '';
+    const verdict = this.stuck.observe(eventFor(call, outcome));
+    if (!verdict) return '';
+    this.stats.stuck++;
+    if (verdict.action === 'switch') {
+      const next = fallbackFor(model(), this.tried ?? new Set([model()]));
+      if (next) {
+        this.tried?.add(next);
+        this.ui.note(`${modelName(model())} kept ${describeHit(verdict.hit)} — handing over to ${modelName(next)}`);
+        setModel(next);
+        this.cooldownUntil = Date.now() + COOLDOWN;
+        if (this.full) this.showHeader({ clear: false });
+      }
+    }
+    return verdict.text ? `\n\n${verdict.text}` : '';
+  }
+
+  /**
+   * The daily free cap was hit mid-turn: keep the session, count down to the
+   * reset, and carry on by itself. Esc stops the wait like any other turn.
+   */
+  async waitForReset(err) {
+    const resetAt = err.detail?.resetAt;
+    if (!Number.isFinite(resetAt)) return false;
+    const at = resetAt + 30_000;
+    const clock = new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    this.ui.stopSpinner();
+    this.ui.note(`Daily limit reached — ucode carries on by itself at ${clock}. Esc to stop`);
+    await this.persist();
+    let lastNote = Date.now();
+    while (Date.now() < at) {
+      if (this.abort?.signal.aborted) return false;
+      const left = formatDuration(at - Date.now());
+      if (this.full) this.ui.startSpinner(`daily limit · carrying on at ${clock} (in ${left})`);
+      else if (Date.now() - lastNote > 30 * 60_000) { this.ui.note(`still waiting for the daily limit — ${left} to go`); lastNote = Date.now(); }
+      await new Promise((r) => setTimeout(r, Math.min(1000, Math.max(0, at - Date.now()))));
+    }
+    this.ui.stopSpinner();
+    this.ui.note('Daily limit has reset — carrying on');
+    return true;
+  }
+
+  /** A dev server came up during this turn: open it in the browser, once. */
+  openWhenReady(since) {
+    if (!this.full || process.env.UCODE_OPEN === '0') return;
+    const server = serversReadySince(since).at(-1);
+    if (!server || (this.opened ??= new Set()).has(server.url)) return;
+    this.opened.add(server.url);
+    const [cmd, args] = process.platform === 'win32'
+      ? ['cmd', ['/c', 'start', '', server.url]]
+      : [process.platform === 'darwin' ? 'open' : 'xdg-open', [server.url]];
+    try {
+      spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true }).unref();
+      this.ui.note(`Opened ${server.url} in your browser`);
+    } catch { /* no browser to open — the link is in the answer */ }
+  }
+
+  cmdStats() {
+    for (const line of statsLines(this.stats, this.working?.length ?? 0)) this.ui.write(line);
+  }
+
+  async cmdDoctor() {
+    this.ui.startSpinner('checking your setup');
+    try {
+      const lines = await runDoctor();
+      this.ui.stopSpinner();
+      for (const line of lines) this.ui.write(line);
+    } finally {
+      this.ui.stopSpinner();
+    }
+  }
+
+  /** /deploy [folder] — the same tool the model calls, run directly. */
+  async cmdDeploy(arg) {
+    const folder = (arg ?? '').trim() || '.';
+    this.ui.toolCall(`Deploying ${folder}`);
+    this.ui.startSpinner('getting ready to deploy');
+    try {
+      const out = await deploy({ folder }, { onOutput: (lines) => this.ui.updateSpinner(lines.at(-1)) });
+      this.ui.stopSpinner();
+      this.ui.toolResult(out.summary);
+      this.ui.write(out.content.split('\n').map((l) => `  ${l}`).join('\n'));
+    } catch (err) {
+      this.ui.stopSpinner();
+      if (err instanceof ToolFailure) this.ui.error(err);
+      else throw err;
+    }
+  }
+
   reportResult(call, out) {
     // A build or type check that just passed already verified everything
     // changed so far; the automatic check at the end would only repeat it.
@@ -1025,7 +1193,7 @@ export class Agent {
     if (!QUIET.has(call.name)) this.ui.toolResult(out.summary);
     if (out.diff?.length) this.ui.diff(out.diff);
     if (out.output?.length) this.ui.commandOutput(out.output);
-    this.push({ role: 'tool', toolCallId: call.id, name: call.name, content: out.content });
+    this.push({ role: 'tool', toolCallId: call.id, name: call.name, content: out.content + this.stuckNote(call, { out }) });
   }
 
   /** Show a tool failure, hand it to the model, and say if it was bad arguments. */
@@ -1039,7 +1207,7 @@ export class Agent {
       role: 'tool',
       toolCallId: call.id,
       name: call.name,
-      content: err.forModel(),
+      content: err.forModel() + (err instanceof Declined ? '' : this.stuckNote(call, { err })),
     });
     return err.kind === 'bad_args';
   }
@@ -1103,8 +1271,8 @@ export class Agent {
   execute(call) {
     const started = Date.now();
     return this.dispatch(call).then(
-      (out) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started }); return { out }; },
-      (err) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started, err: err?.kind }); return { err }; }
+      (out) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started }); countTool(this.stats, call, out); return { out }; },
+      (err) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started, err: err?.kind }); countTool(this.stats, call, null, err); return { err }; }
     );
   }
 
@@ -1405,6 +1573,9 @@ export class Agent {
       case '/clear':    this.showHeader(); return;
       case '/search':   return this.cmdSearch(arg);
       case '/copy':     return this.cmdCopy();
+      case '/stats':    return this.cmdStats();
+      case '/doctor':   return this.cmdDoctor();
+      case '/deploy':   return this.cmdDeploy(arg);
       case '/exit':
       case '/quit':     return 'exit';
 
@@ -1417,6 +1588,9 @@ export class Agent {
   cmdHelp() {
     const rows = [
       ['/help', 'this list'],
+      ['/stats', 'time, steps and tokens this session'],
+      ['/doctor', 'check that everything ucode needs is working'],
+      ['/deploy [folder]', 'put the app online and get its link'],
       ['/model', 'show the models and switch between them'],
       ['/resume', 'pick up an earlier conversation'],
       ['/new', 'save this one and start fresh'],

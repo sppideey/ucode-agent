@@ -15,6 +15,7 @@ import {
   theme, blue, sky, dim, boxTop, boxBottom, boxRow,
   BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine,
 } from './theme.js';
+import { formatDuration, doneLine } from './activity.js';
 import { renderer, render } from './markdown.js';
 
 const COMMANDS = [
@@ -227,9 +228,11 @@ export class Plain {
   }
 
   paintSpinner() {
-    const secs = Math.round((Date.now() - this.since) / 1000);
-    const line = `  ${blue(SPINNER[this.frame])} ${dim(this.spinnerText)}` +
-      (secs >= 2 ? dim(` ${secs}s`) : '');
+    const since = this.turn?.start ?? this.since;
+    const secs = Math.round((Date.now() - since) / 1000);
+    const meta = [this.turn?.steps ? `step ${this.turn.steps}` : '', secs >= 2 ? formatDuration(secs * 1000) : '']
+      .filter(Boolean).join(' · ');
+    const line = `  ${blue(SPINNER[this.frame])} ${dim(this.spinnerText)}` + (meta ? dim(` · ${meta}`) : '');
     this.output.write(`\r\x1b[K${padVis(line, this.width() - 1)}`);
   }
 
@@ -244,6 +247,22 @@ export class Plain {
     clearInterval(this.timer);
     this.timer = null;
     this.output.write('\r\x1b[K');
+  }
+
+  // -- the turn in flight ----------------------------------------------------
+
+  turnStart() {
+    this.turn = { start: Date.now(), steps: 0 };
+  }
+
+  step() {
+    if (this.turn) this.turn.steps++;
+  }
+
+  turnEnd({ ok = true } = {}) {
+    const t = this.turn;
+    this.turn = null;
+    if (t && ok && Date.now() - t.start >= 2000) this.write(`  ${doneLine(Date.now() - t.start, t.steps)}`);
   }
 
   // -- input ---------------------------------------------------------------

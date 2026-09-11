@@ -41,6 +41,7 @@ import {
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare,
 } from './theme.js';
+import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
 
@@ -58,6 +59,7 @@ export function isLabel(text) {
 export const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
   '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
+  '/stats', '/doctor', '/deploy',
 ];
 
 // ANSI ----------------------------------------------------------------------
@@ -135,6 +137,8 @@ export class Screen {
     this.onInterrupt = null;
     this.onModeChange = null;
     this.spinTimer = null;
+    this.activity = null; // the turn in flight: when it began, how many steps
+    this.tick = 0;        // animation frames painted, for the spinner
     this.pendingPrompt = null;
 
     this.cols = output.columns || 80;
@@ -164,7 +168,9 @@ export class Screen {
   }
 
   stop() {
+    this.activity = null;
     this.stopSpinner();
+    this.stopTimer();
     this.output.off?.('resize', this.onResize);
     this.input.setRawMode?.(false);
     this.input.pause();
@@ -633,14 +639,23 @@ export class Screen {
     let middle = '';
     if (this.flashText) {
       middle = dim(clip(this.flashText, between - 2));
-    } else if (this.status.busy) {
-      const frame = blue(SPINNER[this.status.frame]);
-      const secs = Math.round((Date.now() - (this.status.since || Date.now())) / 1000);
-      const elapsed = secs >= 2 ? dim(` ${secs}s`) : '';
-      const room = between - 20;
-      middle = room > 8
-        ? `${frame} ${dim(clip(this.status.text, room))}${elapsed}  ${dim('esc to stop')}`
-        : `${frame}${elapsed}`;
+    } else if (this.status.busy || this.activity) {
+      // The whole turn, not just the current tool: the timer and step count
+      // keep going through the gaps between calls, so a long build never
+      // looks like it has stopped.
+      const now = Date.now();
+      const a = this.activity;
+      const since = a?.start ?? this.status.since ?? now;
+      const meta = [];
+      if (a?.steps) meta.push({ text: `step ${a.steps}`, paint: stepPaint(now - a.movedAt < 900) });
+      if (now - since >= 1000) meta.push({ text: formatDuration(now - since), keep: true });
+      middle = fitActivity({
+        glyph: spinnerGlyph(this.tick, now),
+        label: this.status.busy ? this.status.text : 'working',
+        meta,
+        hint: 'esc to stop',
+        paint: (s) => shimmer(s, now),
+      }, between - 3);
     }
 
     // The percentage is pinned to the right border whatever is in the middle,
@@ -700,13 +715,7 @@ export class Screen {
     // `since` is what makes a long think legible: the label may not change for
     // a minute, so the seconds beside it are the proof it is still alive.
     this.status = { busy: true, text: asLabel(text), frame: 0, since: Date.now() };
-    if (!this.spinTimer) {
-      this.spinTimer = setInterval(() => {
-        this.status.frame = (this.status.frame + 1) % SPINNER.length;
-        this.paintStatus();
-      }, 80);
-      this.spinTimer.unref?.();
-    }
+    this.startTimer();
     this.paintStatus();
   }
 
@@ -717,14 +726,51 @@ export class Screen {
   }
 
   stopSpinner() {
-    if (this.spinTimer) {
-      clearInterval(this.spinTimer);
-      this.spinTimer = null;
-    }
+    if (!this.activity) this.stopTimer();
     if (this.status.busy) {
       this.status = { busy: false, text: '', frame: 0, since: 0 };
       this.paintStatus();
     }
+  }
+
+  // -- the turn in flight ----------------------------------------------------
+
+  /** A turn begins: the timer and step count run until turnEnd(). */
+  turnStart() {
+    this.activity = { start: Date.now(), steps: 0, movedAt: 0 };
+    this.startTimer();
+  }
+
+  /** One more model step in this turn. */
+  step() {
+    if (!this.activity) return;
+    this.activity.steps++;
+    this.activity.movedAt = Date.now();
+  }
+
+  /** The turn is over: leave "✓ Done in 6m 12s · 25 steps" under the answer. */
+  turnEnd({ ok = true } = {}) {
+    const a = this.activity;
+    this.activity = null;
+    if (!this.status.busy) this.stopTimer();
+    if (a && ok && Date.now() - a.start >= 2000) this.push(`  ${doneLine(Date.now() - a.start, a.steps)}`);
+    this.paintStatus();
+  }
+
+  /** The animation clock: only the status row repaints, about twelve times a second. */
+  startTimer() {
+    if (this.spinTimer) return;
+    this.spinTimer = setInterval(() => {
+      this.tick++;
+      this.paintStatus();
+    }, FRAME_MS);
+    this.spinTimer.unref?.();
+  }
+
+  stopTimer() {
+    if (!this.spinTimer) return;
+    clearInterval(this.spinTimer);
+    this.spinTimer = null;
   }
 
   // -- input ---------------------------------------------------------------

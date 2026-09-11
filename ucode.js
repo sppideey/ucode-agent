@@ -49,7 +49,8 @@ function usage() {
     '        --plan         start in plan mode: read and research, change nothing\n' +
     '        --debug        print stack traces when something breaks\n' +
     '    -v, --version      print the version\n' +
-    '    -h, --help         this message\n\n' +
+    '    -h, --help         this message\n' +
+    '    doctor             check that everything ucode needs is working\n\n' +
     `  ${sky('Models')}\n${models}\n\n` +
     `  Needs UCODE_API_KEY in the environment or in ${ENV_FILE}\n` +
     '  Free keys: https://openrouter.ai/keys\n\n'
@@ -60,6 +61,12 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) return usage();
+
+  if (process.argv[2] === 'doctor') {
+    const { runDoctor } = await import('./src/core/doctor.js');
+    process.stdout.write(`${(await runDoctor()).join('\n')}\n`);
+    return;
+  }
 
   if (args.version) {
     process.stdout.write(`${VERSION}\n`);

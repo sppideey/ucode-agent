@@ -175,6 +175,14 @@ function stopHint(pid) {
  * is ready, it exits, or the wait runs out. Whichever comes first is reported
  * with the URL it is actually listening on.
  */
+/** Dev servers that said they were ready, newest last — for opening the app when a turn ends. */
+const readyServers = [];
+
+/** Servers that became ready at or after `since` (epoch ms). */
+export function serversReadySince(since = 0) {
+  return readyServers.filter((s) => s.at >= since);
+}
+
 function startServer(command, workdir, { env } = {}) {
   return new Promise((resolve, reject) => {
     let log;
@@ -292,6 +300,7 @@ function startServer(command, workdir, { env } = {}) {
       if ((ready && url) || graceOver || (ready && Date.now() - started > 1500)) {
         finish(() => {
           const where = url ? tidyUrl(url) : null;
+          if (where) readyServers.push({ url: where, pid: child.pid, at: Date.now() });
           return result(
             describeRun([
               `Running in the background as PID ${child.pid}, ready after ${seconds}s.`,
@@ -545,6 +554,11 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
       fix: 'Pass the whole command line as one string.',
     });
   }
+
+  // `sleep 3 && curl localhost:3000` after the server already reported ready
+  // is a wait for nothing. Measured on a real build; the sleep is dropped.
+  const napping = /^\s*(?:sleep\s+\d+(?:\.\d+)?|timeout\s+\/t\s+\d+(?:\s+\/nobreak)?)\s*(?:&&|;)\s*/i.exec(command);
+  if (napping && readyServers.length) command = command.slice(napping[0].length);
 
   if (KILLS_EVERYTHING.test(command)) {
     throw new ToolFailure({
