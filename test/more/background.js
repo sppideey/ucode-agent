@@ -1,15 +1,22 @@
 // ucode paints its own ground, whatever colour the terminal is set to.
-import { BG_ON, BG_OFF, BACKGROUND, onBackground } from '../../src/ui/theme.js';
+import { BG_ON, BG_OFF, BG_WINDOW, BG_WINDOW_OFF, BACKGROUND, onBackground } from '../../src/ui/theme.js';
 
 export default async function ({ test, section, ok, eq }) {
   section('the background');
 
-  await test('it is a real 24-bit colour, and near-black rather than black', () => {
+  await test('it is a real 24-bit black', () => {
     const m = /^\x1b\[48;2;(\d+);(\d+);(\d+)m$/.exec(BG_ON);
     ok(m, JSON.stringify(BG_ON));
     const [r, g, b] = m.slice(1).map(Number);
-    ok(r + g + b > 0, 'a true black is a hole in a lit room');
-    ok(r < 60 && g < 60 && b < 60, `${BACKGROUND} is not dark`);
+    ok(r < 40 && g < 40 && b < 40, `${BACKGROUND} is not dark`);
+  });
+
+  await test('the terminal itself is told, so the colour reaches the window edges', () => {
+    // Painting rows covers the rows ucode draws; the margin past them is the
+    // terminal's own, and only the terminal can colour it.
+    ok(BG_WINDOW.startsWith('\x1b]11;'), JSON.stringify(BG_WINDOW));
+    ok(BG_WINDOW.includes(BACKGROUND), 'the window and the rows must agree');
+    eq(BG_WINDOW_OFF, '\x1b]111\x07', 'and it is handed back on the way out');
   });
 
   await test('leaving hands the terminal its own colours back', () => {

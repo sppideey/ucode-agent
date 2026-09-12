@@ -286,11 +286,13 @@ export function planLine(items) {
  * So ucode paints its own ground for as long as it is running, and the
  * alternate screen gives it back untouched on exit.
  *
- * Near-black rather than black: a true #000 against a bright room is a hole,
- * and the box edges lose their softness. This is the shade a code editor
- * settles on for the same reason.
+ * Two things are needed, not one. Painting each row covers the rows ucode
+ * draws; it cannot reach the margin a terminal keeps below the last line or
+ * beside the last column, which stays the old colour and shows as a border of
+ * the wrong shade. So the terminal is also told, once, what its own background
+ * is — and told to put it back on the way out.
  */
-export const BACKGROUND = process.env.UCODE_BG || '#131316';
+export const BACKGROUND = process.env.UCODE_BG || '#000000';
 
 const rgb = (hex) => {
   const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
@@ -303,6 +305,21 @@ export const BG_ON = (() => {
   const [r, g, b] = rgb(BACKGROUND);
   return `\x1b[48;2;${r};${g};${b}m`;
 })();
+
+/**
+ * Tell the terminal what its own background is.
+ *
+ * Painting each row covers the rows ucode draws, and nothing else. It cannot
+ * reach the margin a terminal keeps below the last line or beside the last
+ * column, which stays the old colour and reads as a border in the wrong
+ * shade. OSC 11 sets the window's background itself, which does reach those
+ * edges. A terminal that does not know the sequence ignores it in silence,
+ * and the per-row painting still covers everything ucode draws.
+ */
+export const BG_WINDOW = BG_ON ? `\x1b]11;${BACKGROUND}\x07` : '';
+
+/** Put the terminal's own background back, exactly as it was. */
+export const BG_WINDOW_OFF = BG_ON ? '\x1b]111\x07' : '';
 
 /** Hand the terminal its own colours back. */
 export const BG_OFF = BG_ON ? '\x1b[0m' : '';
