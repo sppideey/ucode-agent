@@ -74,6 +74,7 @@ export default async function ({ test, section, ok, eq }) {
   });
 
   await liveSuite({ test, section, ok, eq });
+  await thinkingSuite({ test, section, ok, eq });
 
   await test('a failure is never folded away', () => {
     const s = screen();
@@ -143,5 +144,65 @@ export async function liveSuite({ test, section, ok, eq }) {
     s.tick = 99;
     s.paintLiveRun();
     eq(s.lines[0], settled, 'nothing above the current step twitches');
+  });
+}
+
+export async function thinkingSuite({ test, section, ok, eq }) {
+  const chalk = (await import('chalk')).default;
+  const { Screen } = await import('../../src/ui/screen.js');
+
+  section('the live thought');
+
+  const make = () => {
+    chalk.level = 3;
+    const s = new Screen({ output: { write() {}, columns: 80, rows: 24, isTTY: true, on() {}, off() {} }, cwd: '.' });
+    s.render = () => {};
+    return s;
+  };
+  const bare = (l) => String(l ?? '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+
+  await test('reasoning reaches the screen as it arrives', () => {
+    const s = make();
+    s.thinkingDelta('I need to build a tasks app. ');
+    eq(bare(s.lines[0]), 'I need to build a tasks app.');
+  });
+
+  await test('it rewrites one line rather than filling the page', () => {
+    const s = make();
+    s.thinkingDelta('First thought. ');
+    s.thinkingDelta('Second thought. ');
+    s.thinkingDelta('Third thought.');
+    eq(s.lines.length, 1, s.lines.map(bare).join(' | '));
+    eq(bare(s.lines[0]), 'Third thought.');
+  });
+
+  await test('a part-written sentence still shows, rather than waiting for the full stop', () => {
+    const s = make();
+    s.thinkingDelta('Done. Now I am hal');
+    eq(bare(s.lines[0]), 'Now I am hal');
+  });
+
+  await test('it comes off the screen when the real reply starts', () => {
+    const s = make();
+    s.thinkingDelta('thinking about it.');
+    eq(s.lines.length, 1);
+    s.thinkingEnd();
+    eq(s.lines.length, 0, 'the thought is the wait, not the record');
+  });
+
+  await test('removing it does not leave the run lines pointing at the wrong row', () => {
+    const s = make();
+    s.toolCall('Reading files');
+    const at = s.run.at;
+    s.thinkingDelta('a thought.');
+    s.thinkingEnd();
+    eq(s.run.at, at, 'the run still points at its own line');
+    ok(bare(s.lines[s.run.at]).includes('Reading files'), s.lines[s.run.at]);
+  });
+
+  await test('an empty delta never creates a line of nothing', () => {
+    const s = make();
+    s.thinkingDelta('');
+    eq(s.lines.length, 0);
   });
 }

@@ -532,17 +532,54 @@ export class Screen {
   // than silence. The spinner counts the seconds so the wait is visibly alive,
   // and the transcript gets one line afterwards saying how long it took.
 
-  thinkingDelta() {
+  /**
+   * The model's reasoning, live, one line at a time.
+   *
+   * Models reach for a tool before they say anything, so the first words of a
+   * step were arriving a minute after it began — while the reasoning channel
+   * had been streaming words the whole time and we were throwing them away to
+   * keep a timer. Its latest sentence now shows on one line that rewrites
+   * itself, which is something to read from the first second.
+   *
+   * It is scaffolding, not the answer: it shimmers while it is live and it is
+   * taken off the screen the moment the real reply starts.
+   */
+  thinkingDelta(text = '') {
     if (this.thoughtSince === undefined) this.thoughtSince = Date.now();
+    if (!text) return;
+
+    this.thought = ((this.thought ?? '') + text).slice(-2000);
+    // The last sentence it has finished, or what it has written of the next.
+    const parts = this.thought.split(/(?<=[.!?])\s+/).filter((p) => p.trim());
+    const latest = (parts[parts.length - 1] ?? '').replace(/\s+/g, ' ').trim();
+    if (!latest) return;
+
+    const line = `  ${shimmer(clip(latest, Math.max(20, this.width() - 6)), this.tick * FRAME_MS)}`;
+    if (this.thinkAt === undefined || this.lines[this.thinkAt] === undefined) {
+      this.thinkAt = this.lines.length;
+      this.push(line);
+    } else {
+      this.lines[this.thinkAt] = line;
+      this.render();
+    }
+  }
+
+  /** Keep the live thought moving between deltas. */
+  paintLiveThought() {
+    if (this.thinkAt !== undefined && this.lines[this.thinkAt] !== undefined) this.thinkingDelta('');
   }
 
   thinkingEnd() {
-    if (this.thoughtSince === undefined) return;
-    const seconds = Math.round((Date.now() - this.thoughtSince) / 1000);
-    // How long it thought is not what the reader is here for, and a line of it
-    // between every step broke every run of steps into singletons — which is
-    // why nothing folded. The time is still on the status row while it runs.
-    void seconds;
+    // The thought was the wait; once there is a reply it has nothing to add,
+    // so it comes off the screen rather than settling into the transcript.
+    if (this.thinkAt !== undefined) {
+      this.lines.splice(this.thinkAt, 1);
+      if (this.run && this.run.at > this.thinkAt) this.run.at--;
+      for (const run of this.segment?.values() ?? []) if (run.at > this.thinkAt) run.at--;
+      this.thinkAt = undefined;
+      this.render();
+    }
+    this.thought = '';
     this.thoughtSince = undefined;
   }
 
@@ -886,6 +923,7 @@ export class Screen {
     this.spinTimer = setInterval(() => {
       this.tick++;
       this.paintLiveRun();
+      this.paintLiveThought();
       this.paintStatus();
     }, FRAME_MS);
     this.spinTimer.unref?.();

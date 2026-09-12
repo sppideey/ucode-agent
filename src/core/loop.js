@@ -434,6 +434,23 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '## How to work',
     '',
+    'Before building anything, turn the request into a list of what it must do — every',
+    'feature named, and the ones any user would expect whether or not they were named',
+    '(an empty state, an error state, the keyboard doing the obvious thing, working on',
+    'a phone). Keep it as the plan. Build against it, then go through it one item at a',
+    'time before you say a word about being finished. Most of what gets missed was',
+    'never written down.',
+    '',
+    'Do not put code in your reply. Not a snippet, not "here is the key part", not a',
+    'summary of the file. It is already in the file and the user can open it; pasting',
+    'it again buries the one or two sentences that actually matter. Say what it does',
+    'and what to try.',
+    '',
+    'Do not claim it is done while anything is still running or unchecked. "I have',
+    'built it" said before the build finishes is worse than saying nothing: the user',
+    'believes you, looks, and finds it broken. Finish, check, then say so — and if',
+    'something is incomplete, say which part and why.',
+    '',
     'FIRST, EVERY TIME: one short line saying what you are about to do, then the tool',
     'calls. Never open a turn with a tool call and no words. "Right, the HTML',
     'structure first." / "Now the state and the render loop." / "That is the layout',
@@ -986,7 +1003,7 @@ export class Agent {
         };
         // Only a real terminal has somewhere to stream into.
         if (this.full) {
-          opts.onThinking = () => this.ui.thinkingDelta();
+          opts.onThinking = (delta) => this.ui.thinkingDelta(delta);
           opts.onText = (delta) => {
             if (!streaming) {
               streaming = true;
