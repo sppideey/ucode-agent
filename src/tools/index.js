@@ -6,6 +6,7 @@
 import { ToolFailure } from '../core/failure.js';
 import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFiles } from './files.js';
 import { listDir, glob, grep } from './search.js';
+import { findSymbol, outline } from './symbols.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
 import { lookAtApp } from './browser.js';
@@ -267,6 +268,36 @@ export const tools = [
     },
   },
   {
+    name: 'find_symbol',
+    description:
+      'Find where a function, component, class or type is declared. Use this instead of ' +
+      'grep when you want the definition: grep returns every line that mentions a name, ' +
+      'nearly all of which are uses. Returns file:line, what kind of thing it is, and the ' +
+      'declaring line. Falls back to near matches when the exact name is not found.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: str('The name to look for, e.g. "calculateTip" or "Button".'),
+        kind: str('Optional filter: function, component, class or type.'),
+        path: str('Directory to look under. Defaults to the project root.'),
+      },
+      required: ['name'],
+    },
+  },
+  {
+    name: 'outline',
+    description:
+      'The shape of the code without reading all of it: what each file declares, and the ' +
+      'URL any Next.js page answers on. Pass a file for its declarations in order, or a ' +
+      'folder for a map of it. Good for getting your bearings in an unfamiliar project.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: str('File or directory. Defaults to the project root.'),
+      },
+    },
+  },
+  {
     name: 'run_command',
     description:
       'Run a shell command and get back its output and exit code. It runs without ' +
@@ -371,6 +402,8 @@ const run = {
   list_dir: listDir,
   glob,
   grep,
+  find_symbol: findSymbol,
+  outline,
   run_command: runCommand,
   run_commands: runCommands,
   web_search: webSearch,
@@ -385,7 +418,7 @@ export const MUTATING = new Set([
 ]);
 
 /** Tools with no side effects, so several may run at the same time. */
-export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search']);
+export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search', 'find_symbol', 'outline']);
 
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
@@ -507,6 +540,12 @@ export function describe(name, args = {}) {
         : `Listing ${clip(args.path)}`;
     case 'glob':
       return `Finding ${clip(args.pattern)}`;
+    case 'find_symbol':
+      return `Looking up ${clip(args.name, 40)}`;
+    case 'outline':
+      return !args.path || args.path === '.'
+        ? 'Mapping the project'
+        : `Mapping ${clip(args.path)}`;
     case 'grep':
       return `Searching for ${clip(args.pattern, 40)}${args.glob ? ` in ${clip(args.glob, 20)}` : ''}`;
     case 'run_command':
