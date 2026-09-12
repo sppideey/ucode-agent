@@ -9,6 +9,7 @@ import { listDir, glob, grep } from './search.js';
 import { findSymbol, outline } from './symbols.js';
 import { renameSymbol } from './rename.js';
 import { addBlock, BLOCK_NAMES } from './blocks.js';
+import { typeOf } from './types.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
 import { lookAtApp } from './browser.js';
@@ -335,6 +336,24 @@ export const tools = [
     },
   },
   {
+    name: 'type_of',
+    description:
+      'Ask the TypeScript this project has installed what something actually is: the exact ' +
+      'type or signature of a function, prop, variable or import, the docs written on it, ' +
+      'and where it is defined. Use this instead of guessing at an API or reading the ' +
+      'source of a package — the answer comes from the same compiler and tsconfig the ' +
+      'build uses, so it is what the build will say. Costs milliseconds.',
+    parameters: {
+      type: 'object',
+      properties: {
+        path: str('The file the name appears in, e.g. "src/app/page.tsx".'),
+        symbol: str('The name to ask about, e.g. "useRouter" or "user".'),
+        line: int('Optional: which line it is on, when the name appears more than once.'),
+      },
+      required: ['path', 'symbol'],
+    },
+  },
+  {
     name: 'run_command',
     description:
       'Run a shell command and get back its output and exit code. It runs without ' +
@@ -443,6 +462,7 @@ const run = {
   outline,
   rename_symbol: renameSymbol,
   add_block: addBlock,
+  type_of: typeOf,
   run_command: runCommand,
   run_commands: runCommands,
   web_search: webSearch,
@@ -458,7 +478,7 @@ export const MUTATING = new Set([
 ]);
 
 /** Tools with no side effects, so several may run at the same time. */
-export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search', 'find_symbol', 'outline']);
+export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search', 'find_symbol', 'outline', 'type_of']);
 
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
@@ -580,6 +600,8 @@ export function describe(name, args = {}) {
         : `Listing ${clip(args.path)}`;
     case 'glob':
       return `Finding ${clip(args.pattern)}`;
+    case 'type_of':
+      return `Asking what ${clip(args.symbol, 30)} is`;
     case 'add_block':
       return args.name ? `Adding the ${clip(args.name, 30)} block` : 'Listing the ready-made blocks';
     case 'rename_symbol':

@@ -53,5 +53,8 @@
     "marked-terminal": "^7.3.0",
     "openai": "^7.4.0",
     "playwright-core": "^1.63.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3"
   }
 }
