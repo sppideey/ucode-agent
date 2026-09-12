@@ -408,6 +408,12 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '## How to work',
     '',
+    'Before you guess at an API, ask: type_of gives the exact signature from the',
+    'TypeScript this project has installed, and find_symbol says where something is declared without',
+    'reading five files to find it. Rename with rename_symbol rather than edit_file — a',
+    'find-and-replace that matches too much is the most common broken edit. Reach for',
+    'add_block before writing a table, an empty state or a dashboard by hand.',
+    '',
     ...(mode === 'plan' ? [
       'You are in PLAN MODE. Reading, searching and research are available; every tool',
       'that writes a file or runs a command has been withheld. Investigate, then set out',

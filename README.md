@@ -111,11 +111,31 @@ chosen model gets another go a few minutes later.
 
 ## What it does
 
-**Fifteen tools.** `create_app`, `read_file`, `read_files`, `write_file`,
-`batch_write`, `edit_file`, `multi_edit`, `edit_files`, `list_dir`, `glob`,
-`grep`, `run_command`, `run_commands`, `look_at_app`, `web_search`. Read-only calls run in parallel,
-and start the moment the model finishes writing them — while the rest of its
-reply is still arriving. Anything that writes runs on its own, in order.
+**Twenty-one tools.** `create_app`, `read_file`, `read_files`, `write_file`,
+`batch_write`, `edit_file`, `multi_edit`, `edit_files`, `rename_symbol`,
+`find_symbol`, `outline`, `type_of`, `add_block`, `list_dir`, `glob`, `grep`,
+`run_command`, `run_commands`, `look_at_app`, `web_search`, `deploy`. Read-only
+calls run in parallel, and start the moment the model finishes writing them —
+while the rest of its reply is still arriving. Anything that writes runs on its
+own, in order.
+
+**It asks rather than guesses.** `type_of` opens a language service on the
+TypeScript the project itself has installed and gives back the exact signature,
+the JSDoc, and where a thing is defined — inferred types included. `find_symbol`
+answers "where is this declared", which is the question `grep` is usually being
+asked badly. `rename_symbol` renames by code shape, knowing where strings and
+comments begin, because a find-and-replace that matched too much is the most
+common broken edit.
+
+**It checks itself as it goes.** After a change: an incremental type check that
+answers in about a second rather than a cold minute, then the tests that reach
+the files just changed, then anything the running dev server has complained
+about since the last look. All three come back the way an error does, so the
+model fixes them without being told.
+
+**New apps are ready in seconds.** A starter installed once is kept and
+hard-linked into the next app — the same files under another name, so it costs
+no extra disk and skips the wait entirely.
 
 **Apps start from a ready-made starter.** Setting up Next.js and shadcn from
 nothing takes about four minutes — `create-next-app` and the shadcn CLI measured
@@ -343,7 +363,7 @@ src/core/window.js    folding a long conversation to fit
 src/core/skills.js    loading skills, and deciding which load themselves
 src/core/context.js   the project map and project memory
 src/core/failure.js   one error shape: what, why, what next
-src/tools/            the eleven tools, plus their shared plumbing
+src/tools/            the twenty-one tools, plus their shared plumbing
 src/ui/screen.js      the full-screen interface
 src/ui/plain.js       the same interface for when there is no terminal
 src/ui/theme.js       colour, boxes, and the string maths behind both
