@@ -262,7 +262,7 @@ export class Plain {
   turnEnd({ ok = true } = {}) {
     const t = this.turn;
     this.turn = null;
-    if (t && ok && Date.now() - t.start >= 2000) this.write(`  ${doneLine(Date.now() - t.start, t.steps)}`);
+    if (t && Date.now() - t.start >= 2000) this.write(`  ${doneLine(Date.now() - t.start, t.steps, { ok })}`);
   }
 
   // -- input ---------------------------------------------------------------

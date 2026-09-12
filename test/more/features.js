@@ -45,7 +45,12 @@ export default async function ({ test, section, ok, eq, sandbox }) {
     ok(full.includes('Writing 4 files') && full.includes('step 3') && full.includes('1m 02s') && full.includes('esc'));
     const tight = bare(fitActivity({ glyph: '*', label: 'Writing 4 files', meta: [{ text: 'step 3' }, { text: '1m 02s', keep: true }] }, 12));
     ok(tight.includes('1m 02s') && tight.length <= 12, tight);
-    ok(bare(doneLine(372_000, 25)).includes('Done in 6m 12s · 25 steps'));
+    // The step count went: it says nothing about whether the thing asked for
+    // exists, and /stats has it for anyone who wants it.
+    ok(bare(doneLine(372_000, 25)).includes('Done in 6m 12s'), 'the time is what is worth saying');
+    ok(!bare(doneLine(372_000, 25)).includes('25 steps'), 'the count is bookkeeping');
+    ok(bare(doneLine(372_000, 25, { ok: false })).includes('without finishing'),
+      'a turn that gave up must never read as done');
   });
 
   section('deploy');

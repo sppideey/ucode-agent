@@ -639,7 +639,11 @@ export function describe(name, args = {}) {
     case 'deploy':
       return `Deploying ${clip(args.folder || '.', 30)} to Vercel`;
     case 'create_app':
-      return `Creating ${clip(args.name || args.folder, 30)} from the Next.js starter`;
+      // Say which starter it actually is. Hardcoding one of them meant a plain
+      // HTML app announced itself as Next.js, which is a line that is simply
+      // untrue on screen while the opposite happens on disk.
+      return `Creating ${clip(args.name || args.folder, 30)} from the ` +
+        `${args.template === 'plain-html' ? 'HTML' : 'Next.js'} starter`;
     case 'look_at_app':
       return `Looking at ${clip(args.url, 40)} on a phone and a desktop`;
     case 'web_search':

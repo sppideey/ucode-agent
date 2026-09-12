@@ -912,7 +912,9 @@ export class Screen {
     const a = this.activity;
     this.activity = null;
     if (!this.status.busy) this.stopTimer();
-    if (a && ok && Date.now() - a.start >= 2000) this.push(`  ${doneLine(Date.now() - a.start, a.steps)}`);
+    // A turn that stopped without finishing says so. Dropping the line entirely
+    // left the transcript looking like the work was still going.
+    if (a && Date.now() - a.start >= 2000) this.push(`  ${doneLine(Date.now() - a.start, a.steps, { ok })}`);
     this.paintStatus();
   }
 

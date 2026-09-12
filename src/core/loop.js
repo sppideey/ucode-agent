@@ -937,6 +937,7 @@ export class Agent {
 
     this.busy = true;
     this.abort = new AbortController();
+    this.endedSilently = false;
 
     const turnStarted = Date.now();
     let finished = false;
@@ -962,6 +963,7 @@ export class Agent {
       this.stats.workMs += Date.now() - turnStarted;
       this.stats.turns++;
       if (!finished) this.closeInterrupted();
+      const ok = finished && !this.endedSilently;
       this.busy = false;
       this.abort = null;
       this.ui.stopSpinner();
@@ -972,7 +974,7 @@ export class Agent {
       if (finished) this.openWhenReady(turnStarted);
       // Last, so "Done" is the last thing that happens rather than the last
       // thing said before several more things happen.
-      this.ui.turnEnd?.({ ok: finished });
+      this.ui.turnEnd?.({ ok });
     }
   }
 
@@ -1169,14 +1171,21 @@ export class Agent {
           this.push({
             role: 'user',
             content:
-              'You finished without saying anything. In one or two sentences: what did ' +
-              'you change, and does it work? No preamble, no repeating the diffs.',
+              'You stopped without saying anything. If the thing I asked for is not ' +
+              'built yet, carry on and build it. If it is, tell me in one or two ' +
+              'sentences what it does and how to try it. No preamble, no diffs.',
           });
           continue;
         }
 
         this.push({ role: 'assistant', content: reply.text });
-        if (!reply.text?.trim()) this.ui.note('the model ended the turn without a reply');
+        if (!reply.text?.trim()) {
+          // Silence after being asked to speak is not a finished turn. Saying
+          // "Done" here is the worst thing available: the user believes it,
+          // looks, and finds the thing they asked for was never built.
+          this.ui.note('the model stopped without saying anything — the work may be unfinished');
+          this.endedSilently = true;
+        }
         return;
       }
 

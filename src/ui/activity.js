@@ -192,9 +192,12 @@ export function fitActivity({ glyph, label = '', meta = [], hint = '', paint = d
  * theme; the rest dim, because it is a footnote to the answer above it rather
  * than something to read first.
  */
-export function doneLine(ms, steps) {
-  const count = steps > 0 ? ` · ${steps} step${steps === 1 ? '' : 's'}` : '';
-  return `${theme.ok('✓')} ${dim(`Done in ${formatDuration(ms)}${count}`)}`;
+export function doneLine(ms, steps, { ok = true } = {}) {
+  // The step count is bookkeeping: it tells the reader nothing about whether
+  // the thing they asked for exists. /stats has it for anyone who wants it.
+  void steps;
+  if (!ok) return `${theme.warn('!')} ${dim(`Stopped after ${formatDuration(ms)} without finishing`)}`;
+  return `${theme.ok('✓')} ${dim(`Done in ${formatDuration(ms)}`)}`;
 }
 
 /** The step count, brighter for a moment right after it goes up. */
