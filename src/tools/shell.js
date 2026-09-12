@@ -183,6 +183,11 @@ export function serversReadySince(since = 0) {
   return readyServers.filter((s) => s.at >= since);
 }
 
+/** Every server started this session, for reading what they have logged. */
+export function runningServers() {
+  return readyServers.slice();
+}
+
 function startServer(command, workdir, { env } = {}) {
   return new Promise((resolve, reject) => {
     let log;
@@ -300,7 +305,7 @@ function startServer(command, workdir, { env } = {}) {
       if ((ready && url) || graceOver || (ready && Date.now() - started > 1500)) {
         finish(() => {
           const where = url ? tidyUrl(url) : null;
-          if (where) readyServers.push({ url: where, pid: child.pid, at: Date.now() });
+          if (where) readyServers.push({ url: where, pid: child.pid, at: Date.now(), log, command, cwd: workdir });
           return result(
             describeRun([
               `Running in the background as PID ${child.pid}, ready after ${seconds}s.`,

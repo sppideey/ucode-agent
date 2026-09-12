@@ -16,6 +16,8 @@ import os from 'node:os';
 import { appendFileSync } from 'node:fs';
 import { readFile, access, mkdir } from 'node:fs/promises';
 import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
+import { LogWatch } from './livelog.js';
+import { runningServers } from '../tools/shell.js';
 import { spawn } from 'node:child_process';
 
 import {
@@ -872,6 +874,7 @@ export class Agent {
     this.stuck = new StuckWatch();
     this.touched = new Set();
     this.sinceCheck = new Set();
+    this.logWatch = new LogWatch();
     this.ranSomething = false;
 
     for (let step = 0; step < MAX_STEPS; step++) {
@@ -1565,7 +1568,25 @@ export class Agent {
       if (failed) problems.push(failed);
     }
 
+    const live = await this.liveErrors();
+    if (live) problems.push(live);
+
     return problems.length ? problems.join('\n\n') : null;
+  }
+
+  /**
+   * Anything the running app has complained about since the last look. A dev
+   * server knows about a broken import the moment it happens; without this
+   * nobody reads that until a build, or until the user says the page is blank.
+   */
+  async liveErrors() {
+    try {
+      const found = await this.logWatch.since(runningServers());
+      if (found) this.ui.toolFailed('the running app reported an error');
+      return found;
+    } catch {
+      return null; // reading a log must never be what breaks a turn
+    }
   }
 
   /**
