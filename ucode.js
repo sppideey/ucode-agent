@@ -50,7 +50,8 @@ function usage() {
     '        --debug        print stack traces when something breaks\n' +
     '    -v, --version      print the version\n' +
     '    -h, --help         this message\n' +
-    '    doctor             check that everything ucode needs is working\n\n' +
+    '    doctor             check that everything ucode needs is working\n' +
+    '    login <key>        save your key for every folder on this machine\n\n' +
     `  ${sky('Models')}\n${models}\n\n` +
     `  Needs UCODE_API_KEY in the environment or in ${ENV_FILE}\n` +
     '  Free keys: https://openrouter.ai/keys\n\n'
@@ -61,6 +62,13 @@ async function main() {
   const args = parseArgs(process.argv.slice(2));
 
   if (args.help) return usage();
+
+  if (process.argv[2] === 'login') {
+    const { saveKey } = await import('./src/core/login.js');
+    process.stdout.write(`${await saveKey(process.argv[3])}
+`);
+    return;
+  }
 
   if (process.argv[2] === 'doctor') {
     const { runDoctor } = await import('./src/core/doctor.js');
