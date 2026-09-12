@@ -57,10 +57,10 @@ const PEAK_RGB = [0xe6, 0xf0, 0xff];
 const BAND = 3;
 
 /** How fast the band travels, in characters a second. */
-const SPEED = 24;
+const SPEED = 46;
 
 /** Characters' worth of dark between one pass and the next. */
-const PAUSE = 18;
+const PAUSE = 10;
 
 /** Brightness steps. Neighbouring letters that land on the same step share one escape code. */
 const STEPS = 8;

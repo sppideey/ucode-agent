@@ -119,6 +119,7 @@ export default async function ({ test, section, ok, eq }) {
 
   await inputSuite({ test, section, ok, eq });
   await planSuite({ test, section, ok, eq });
+  await replySuite({ test, section, ok, eq });
 }
 
 export async function inputSuite({ test, section, ok, eq }) {
@@ -227,5 +228,41 @@ export async function planSuite({ test, section, ok, eq }) {
   await test('and it is still there to be asked for', async () => {
     const m = await import('../../src/tools/index.js');
     ok(m.lookAtAppTool?.name === 'look_at_app', 'the schema is kept for /look');
+  });
+}
+
+export async function replySuite({ test, section, ok, eq }) {
+  const { withoutCodeBlocks } = await import('../../src/ui/theme.js');
+
+  section('code stays in the file');
+
+  const fence = (n, lang = 'js') =>
+    '```' + lang + '\n' + Array.from({ length: n }, (_, i) => `line ${i}`).join('\n') + '\n```';
+
+  await test('a long pasted block becomes a note, and the prose survives', () => {
+    const out = withoutCodeBlocks(`Built it.\n\n${fence(40)}\n\nTry it.`);
+    ok(!out.includes('line 20'), 'the code went');
+    ok(/40 lines of js code/.test(out), out);
+    ok(out.includes('Built it.') && out.includes('Try it.'), 'the sentences stayed');
+  });
+
+  await test('a short block is left alone: a command to run belongs in the answer', () => {
+    const out = withoutCodeBlocks('Run:\n\n```bash\nnpm start\n```');
+    ok(out.includes('npm start'), out);
+  });
+
+  await test('several blocks are each handled', () => {
+    const out = withoutCodeBlocks(`${fence(30, 'css')}\nand\n${fence(25, 'html')}`);
+    ok(/30 lines of css code/.test(out), out);
+    ok(/25 lines of html code/.test(out), out);
+  });
+
+  await test('a block with no language named still reads properly', () => {
+    ok(/\d+ lines of code/.test(withoutCodeBlocks(fence(20, ''))));
+  });
+
+  await test('an answer with no code at all is untouched', () => {
+    const plain = 'I built the tasks app. Open index.html to try it.';
+    eq(withoutCodeBlocks(plain), plain);
   });
 }

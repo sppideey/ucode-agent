@@ -376,3 +376,24 @@ export function runLine({ label, count = 1, targets = [], added = 0, removed = 0
   if (!g) return `${label} (+${count - 1} more)${counts}`;
   return `${g[0]} ${count} ${count === 1 ? g[1] : g[2]}${counts}`;
 }
+
+/**
+ * The reply, with any pasted code taken out of it.
+ *
+ * The model is asked not to paste code into its answer, and mostly does not.
+ * When it does, a fenced block of forty lines pushes the two sentences worth
+ * reading off the screen — and the code is already in the file it just wrote.
+ * A fence becomes a note of what it was, and the prose stays.
+ *
+ * A short block is left alone: three lines showing a command to run, or the
+ * one line that changed, is the kind of thing worth having in the answer.
+ */
+export function withoutCodeBlocks(text, keepLines = 4) {
+  const FENCE = /```([A-Za-z0-9+-]*)\n([\s\S]*?)```/g;
+  return String(text ?? '').replace(FENCE, (all, lang, body) => {
+    const lines = body.replace(/\n+$/, '').split('\n');
+    if (lines.length <= keepLines) return all;
+    const what = lang ? `${lang} ` : '';
+    return `_[${lines.length} lines of ${what}code — it is in the file, not worth repeating here]_`;
+  });
+}

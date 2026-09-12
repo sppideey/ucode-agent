@@ -76,11 +76,12 @@ export default async function ({ test, section, ok, eq }) {
   await liveSuite({ test, section, ok, eq });
   await thinkingSuite({ test, section, ok, eq });
 
-  await test('a failure is never folded away', () => {
+  await test('a failure goes to the model, not onto the screen', () => {
     const s = screen();
     s.toolCall('Running a'); s.toolResult('ok');
     s.toolCall('Running b'); s.toolFailed('it broke');
-    ok(s.lines.some((l) => bare(l).includes('it broke')), 'the failure is on screen');
+    ok(!s.lines.some((l) => bare(l).includes('it broke')),
+      'machinery going wrong reads as the tool being broken; the model fixes it instead');
     s.toolCall('Running c');
     ok(!s.lines.some((l) => /Ran 3/.test(bare(l))), 'and it did not get counted into a run');
     s.restore();
@@ -173,7 +174,18 @@ export async function thinkingSuite({ test, section, ok, eq }) {
     s.thinkingDelta('Second thought. ');
     s.thinkingDelta('Third thought.');
     eq(s.lines.length, 1, s.lines.map(bare).join(' | '));
-    eq(bare(s.lines[0]), 'Third thought.');
+  });
+
+  await test('a sentence holds long enough to read before the next takes the line', () => {
+    const s = make();
+    s.thinkingDelta('First thought. ');
+    eq(bare(s.lines[0]), 'First thought.');
+    s.thinkingDelta('Second thought.');
+    eq(bare(s.lines[0]), 'First thought.', 'replaced instantly, it would only flash');
+    s.shownAt = Date.now() - 5000;   // long enough to have been read
+    s.thinkingDelta('');
+    s.thinkingDelta('Third thought.');
+    eq(bare(s.lines[0]), 'Third thought.', 'then it moves on');
   });
 
   await test('a part-written sentence still shows, rather than waiting for the full stop', () => {

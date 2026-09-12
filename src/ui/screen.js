@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, withoutCodeBlocks } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -101,7 +101,10 @@ const title = (t) => `${ESC}]0;${t}\x07`;
  * Fixed rows below the header: the gap under it, the gap above the input box,
  * the input box's two borders, the blank row inside it, and the status row.
  */
-const CHROME_BELOW = 6;
+const CHROME_BELOW = 8;
+
+/** How long one sentence of reasoning holds the line before the next takes it. */
+const THOUGHT_HOLD_MS = 1100;
 
 /** The wordmark only earns its place with room for the facts column beside it. */
 const WORDMARK_NEEDS = BANNER_WIDTH + 30;
@@ -252,7 +255,7 @@ export class Screen {
     if (!text?.trim()) return;
     this.endRun();
     this.add('');
-    this.add(render(this.md, text));
+    this.add(render(this.md, withoutCodeBlocks(text)));
     this.add('');
     this.render();
   }
@@ -392,10 +395,17 @@ export class Screen {
     if (this.run) this.paintRun({ live: false });
   }
 
-  toolFailed(summary) {
-    // A failure is never folded away.
+  /**
+   * Something went wrong, and the model is the one who can do anything about it.
+   *
+   * A red line of machinery — a failed edit, a command that exited non-zero —
+   * reads as the tool being broken, when almost always it is a step the model
+   * corrects on its own a second later. It goes to the model; the screen stays
+   * for what is being built. Whatever is genuinely unrecoverable surfaces as
+   * the model saying so in words, which is the form worth reading.
+   */
+  toolFailed() {
     this.endRun();
-    this.push(`${dim('  └ ')}${theme.error(summary)}`);
   }
 
   /**
@@ -550,11 +560,21 @@ export class Screen {
 
     this.thought = ((this.thought ?? '') + text).slice(-2000);
     // The last sentence it has finished, or what it has written of the next.
-    const parts = this.thought.split(/(?<=[.!?])\s+/).filter((p) => p.trim());
+    const parts = this.thought.split(/(?<=[.!?])\s+|(?<=[.!?])(?=[A-Z])/).filter((p) => p.trim());
     const latest = (parts[parts.length - 1] ?? '').replace(/\s+/g, ' ').trim();
     if (!latest) return;
 
-    const line = `  ${shimmer(clip(latest, Math.max(20, this.width() - 6)), this.tick * FRAME_MS)}`;
+    // A sentence that is replaced the instant the next one arrives cannot be
+    // read — it flashes. Each one holds the line for long enough to take in,
+    // and whatever arrived meanwhile shows when its turn comes.
+    const now = Date.now();
+    if (latest !== this.shownThought) {
+      if (this.shownThought !== undefined && now - (this.shownAt ?? 0) < THOUGHT_HOLD_MS) return;
+      this.shownThought = latest;
+      this.shownAt = now;
+    }
+
+    const line = `  ${shimmer(clip(this.shownThought, Math.max(20, this.width() - 6)), this.tick * FRAME_MS)}`;
     if (this.thinkAt === undefined || this.lines[this.thinkAt] === undefined) {
       this.thinkAt = this.lines.length;
       this.push(line);
@@ -580,6 +600,8 @@ export class Screen {
       this.render();
     }
     this.thought = '';
+    this.shownThought = undefined;
+    this.shownAt = undefined;
     this.thoughtSince = undefined;
   }
 
@@ -1338,6 +1360,8 @@ export class Screen {
       // reads as part of the input rather than as the answer above it.
       '',
       ...this.inputBox(),
+      '',
+      '',
     ];
 
     // The cursor is hidden for the duration of the paint. Without this it is
