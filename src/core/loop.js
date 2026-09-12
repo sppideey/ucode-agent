@@ -15,6 +15,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { appendFileSync } from 'node:fs';
 import { readFile, access, mkdir } from 'node:fs/promises';
+import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { spawn } from 'node:child_process';
 
 import {
@@ -1499,7 +1500,50 @@ export class Agent {
       problems.push(`${f.rel}:\n${out.content.split('\n').slice(0, 20).join('\n')}`);
     }
 
+    // Only once it compiles: a failing test on code that does not build tells
+    // the model nothing it does not already know from the errors above.
+    if (!problems.length) {
+      const failed = await this.runRelatedTests(root, changed);
+      if (failed) problems.push(failed);
+    }
+
     return problems.length ? problems.join('\n\n') : null;
+  }
+
+  /**
+   * Run the tests that reach the files just changed, and return their
+   * failures as text — or null when they pass, or when this project has no
+   * runner that can be asked which tests matter.
+   */
+  async runRelatedTests(root, changed) {
+    const runner = await testRunnerFor(root);
+    if (!runner) return null;
+
+    const existing = [];
+    for (const rel of changed) if (await exists(path.resolve(root, rel))) existing.push(rel);
+    const command = relatedCommand(runner, existing);
+    if (!command) return null;
+
+    const label = `Running the ${runner} tests that cover this`;
+    this.ui.toolCall(label);
+    this.ui.startSpinner(label);
+    const { out, err } = await this.execute({
+      id: 'tests', name: 'run_command',
+      args: { command, cwd: '.', timeout_ms: 180_000 },
+    });
+    this.ui.stopSpinner();
+
+    if (err) { this.ui.toolResult('tests skipped'); return null; }
+    if (out.exitCode === 0) { this.ui.toolResult('tests pass'); return null; }
+
+    // A runner that is not installed is not a failing test; npx says so.
+    if (/could not determine executable|not found|Cannot find module/i.test(out.content)) {
+      this.ui.toolResult('no test runner installed');
+      return null;
+    }
+
+    this.ui.toolFailed('tests fail');
+    return `The tests covering your change fail (${runner}):\n${summariseFailures(runner, out.content)}`;
   }
 
   loadSkill(name) {
