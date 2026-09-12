@@ -92,6 +92,8 @@ const HIDE = `${ESC}[?25l`;
 const SHOW = `${ESC}[?25h`;
 const HOME = `${ESC}[H`;
 const CLEAR_LINE = `${ESC}[K`;
+/** Written out rather than inline, so no edit can turn it into a real break. */
+const NEWLINE = String.fromCharCode(10);
 const at = (row, col) => `${ESC}[${row};${col}H`;
 const title = (t) => `${ESC}]0;${t}\x07`;
 
@@ -603,15 +605,47 @@ export class Screen {
   // -- input box -----------------------------------------------------------
 
   /** The typed line, wrapped to the inside of a box `width` characters across. */
+  /**
+   * The typed text, laid out as rows inside the box.
+   *
+   * A line break in the buffer is a row of its own before any wrapping is
+   * considered. Slicing the text into fixed widths without looking for one
+   * put the newline into the frame instead, and the terminal obeyed it — the
+   * pasted text walked out of the box and over the transcript beside it.
+   *
+   * `starts` records where each row begins in the text, so the caret can be
+   * placed by looking up rather than by counting characters a second way and
+   * hoping the two agree.
+   */
   inputLines(width = this.inner()) {
     const prefix = this.pendingPrompt ? `${this.pendingPrompt} ` : '› ';
     const full = prefix + this.buffer;
 
     const rows = [];
-    for (let i = 0; i < full.length; i += width) rows.push(full.slice(i, i + width));
-    if (rows.length === 0) rows.push(prefix);
+    const starts = [];
+    let at = 0;
 
-    return { rows, prefix, width };
+    for (const para of full.split(NEWLINE)) {
+      let i = 0;
+      do {
+        rows.push(para.slice(i, i + width));
+        starts.push(at + i);
+        i += width;
+      } while (i < para.length);
+      at += para.length + 1; // the newline itself
+    }
+
+    if (rows.length === 0) { rows.push(prefix); starts.push(0); }
+    return { rows, prefix, width, starts };
+  }
+
+  /** Which row the caret sits on, and how far along it. */
+  caretAt(width) {
+    const { rows, prefix, starts } = this.inputLines(width);
+    const index = prefix.length + this.cursor;
+    let row = 0;
+    while (row + 1 < starts.length && starts[row + 1] <= index) row++;
+    return { row, col: Math.min(index - starts[row], rows[row].length), rows };
   }
 
   viewportHeight() {
@@ -1255,17 +1289,13 @@ export class Screen {
   caret() {
     if (this.welcoming()) {
       const g = this.welcomeGeometry();
-      const { rows, prefix, width } = this.inputLines(g.boxWidth - 4);
-      const index = prefix.length + this.cursor;
-      const row = Math.min(Math.floor(index / width), rows.length - 1);
+      const { row, col } = this.caretAt(g.boxWidth - 4);
       // g.boxTop is 0-based and the typed lines start one below the border.
-      return [g.boxTop + 2 + row, g.left + 3 + (index % width)];
+      return [g.boxTop + 2 + row, g.left + 3 + col];
     }
 
-    const { rows, prefix, width } = this.inputLines();
-    const index = prefix.length + this.cursor;
-    const row = Math.min(Math.floor(index / width), rows.length - 1);
-    const col = 3 + (index % width);
+    const { row, col: at, rows } = this.caretAt();
+    const col = 3 + at;
     // Counting up from the bottom: the box border is the last row, the status
     // row is above it, then the blank row, then the typed lines.
     const firstRow = this.rows - 2 - rows.length;

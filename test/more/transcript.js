@@ -116,4 +116,70 @@ export default async function ({ test, section, ok, eq }) {
     eq(s.buffer, 'a\nb');
     s.restore();
   });
+
+  await inputSuite({ test, section, ok, eq });
+}
+
+export async function inputSuite({ test, section, ok, eq }) {
+  const chalk = (await import('chalk')).default;
+  const { Screen } = await import('../../src/ui/screen.js');
+
+  section('multi-line input');
+
+  const NL = String.fromCharCode(10);
+  const screen = (buffer = '') => {
+    chalk.level = 0;
+    const s = new Screen({ output: { write() {}, columns: 80, rows: 24, isTTY: true, on() {}, off() {} }, cwd: '.' });
+    s.render = () => {};
+    s.buffer = buffer;
+    s.cursor = buffer.length;
+    return s;
+  };
+
+  await test('a line break becomes a row, and never reaches the frame', () => {
+    const s = screen(`one${NL}two${NL}three`);
+    const { rows } = s.inputLines(60);
+    eq(rows.length, 3);
+    ok(!rows.some((r) => r.includes(NL)), 'a raw newline in a row walks out of the box');
+    ok(rows[0].endsWith('one'), rows[0]);
+    eq(rows[2], 'three');
+  });
+
+  await test('a long line still wraps, and a wrapped line keeps its own rows', () => {
+    const s = screen(`${'a'.repeat(50)}${NL}short`);
+    const { rows } = s.inputLines(20);
+    ok(rows.length >= 4, `${rows.length} rows`);
+    eq(rows[rows.length - 1], 'short', 'the second line did not get swept into the first');
+    ok(rows.every((r) => r.length <= 20), 'nothing is wider than the box');
+  });
+
+  await test('the caret lands on the row the cursor is actually in', () => {
+    const s = screen(`one${NL}two${NL}three`);
+    s.cursor = 0;
+    eq(s.caretAt(60).row, 0, 'the start is on the first row');
+    s.cursor = 4; // just after the first newline
+    eq(s.caretAt(60).row, 1, 'and the second line is on the second row');
+    s.cursor = s.buffer.length;
+    eq(s.caretAt(60).row, 2, 'the end is on the last row');
+  });
+
+  await test('the caret column is measured from the start of its own row', () => {
+    const s = screen(`one${NL}twelve`);
+    s.cursor = 4 + 3; // three characters into "twelve"
+    const { row, col } = s.caretAt(60);
+    eq(row, 1);
+    eq(col, 3, 'not counted from the top of the whole text');
+  });
+
+  await test('an empty input is one row, not none', () => {
+    const s = screen('');
+    eq(s.inputLines(60).rows.length, 1);
+    eq(s.caretAt(60).row, 0);
+  });
+
+  await test('a pasted block sizes the box to hold it', () => {
+    const s = screen('');
+    s.onData(`\x1b[200~a${NL}b${NL}c${NL}d\x1b[201~`);
+    eq(s.inputLines(60).rows.length, 4, 'four pasted lines, four rows');
+  });
 }
