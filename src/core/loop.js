@@ -143,6 +143,64 @@ function thinArgs(value) {
  * size; the files are on disk, and the model re-reads one when it needs it.
  * Call ids and results stay paired, and the saved session keeps everything.
  */
+/** Tools whose result is the contents of one named thing, so re-reads repeat. */
+const RE_READ = new Set(['read_file', 'read_files', 'list_dir', 'grep', 'glob']);
+
+/** The thing a call was about, when two calls for it return the same text. */
+function subjectOf(call) {
+  if (!RE_READ.has(call?.name)) return null;
+  const a = call.args ?? {};
+  const what = a.path ?? (Array.isArray(a.paths) ? a.paths.join('|') : null) ?? a.pattern;
+  if (typeof what !== 'string' || !what) return null;
+  // grep and glob also depend on what was asked, not only where.
+  const extra = call.name === 'grep' || call.name === 'glob' ? `|${a.pattern ?? ''}|${a.glob ?? ''}` : '';
+  return `${call.name}:${what}${extra}`;
+}
+
+/**
+ * Send each file once.
+ *
+ * Reading a file four times over a long task puts four copies of it in the
+ * conversation, and the first three are worth nothing: the model reads the
+ * newest and the older ones only cost tokens and invite it to answer from a
+ * stale copy. Every superseded copy becomes a line saying where the current
+ * one is. The newest is always kept whole, so nothing the model needs is
+ * taken away, and the saved session still holds the lot.
+ */
+export function dedupe(messages) {
+  const subject = new Map(); // toolCallId -> subject
+  for (const m of messages) {
+    if (m.role !== 'assistant' || !m.toolCalls?.length) continue;
+    for (const c of m.toolCalls) {
+      const s = subjectOf(c);
+      if (s) subject.set(c.id, s);
+    }
+  }
+  if (!subject.size) return messages;
+
+  const newest = new Map(); // subject -> index of the last result for it
+  messages.forEach((m, i) => {
+    if (m.role !== 'tool') return;
+    const s = subject.get(m.toolCallId);
+    if (s) newest.set(s, i);
+  });
+
+  return messages.map((m, i) => {
+    if (m.role !== 'tool') return m;
+    const s = subject.get(m.toolCallId);
+    if (!s || newest.get(s) === i) return m;
+    // Short results are not worth a note in place of themselves.
+    if ((m.content?.length ?? 0) < 400) return m;
+    const what = s.slice(s.indexOf(':') + 1).split('|')[0];
+    return {
+      ...m,
+      content:
+        `[${m.content.length} characters. This was read again later, and the current ` +
+        `contents of ${what} are further down this conversation — use those, not this.]`,
+    };
+  });
+}
+
 export function lean(messages, keep = 3) {
   let seen = 0;
   let cut = -1;
@@ -864,7 +922,7 @@ export class Agent {
                 memory: this.memory,
               }),
             },
-            ...lean(this.working),
+            ...dedupe(lean(this.working)),
           ],
           available,
           opts
