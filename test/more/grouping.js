@@ -201,6 +201,17 @@ export async function thinkingSuite({ test, section, ok, eq }) {
     eq(bare(s.lines[1]), 'Second turn opening sentence.');
   });
 
+  await test('what the model says is full strength, not backdrop', () => {
+    const level = chalk.level;
+    chalk.level = 3;
+    const s = make();
+    chalk.level = 3;
+    s.thinkingDelta('I will build Tide as a single HTML file.');
+    ok(!s.lines[0].includes('[2m'), 'the model talking is the thing worth reading');
+    ok(s.lines[0].includes('[37m'), 'it is painted, not left to the terminal default');
+    chalk.level = level;
+  });
+
   await test('a throwaway opener is not worth a line', () => {
     const s = make();
     s.thinkingDelta('Okay.');

@@ -571,7 +571,9 @@ export class Screen {
     if (line.length < 12) return;   // "Okay." tells nobody anything
 
     this.openedWith = line;
-    this.push(narration('  ' + clip(line, Math.max(30, this.width() - 6))));
+    // Full strength: this is the model talking, and it is the thing on the page
+    // worth reading. The dimmed lines around it are the machinery.
+    this.push('  ' + chalk.white(clip(line, Math.max(30, this.width() - 6))));
   }
 
   thinkingEnd() {
