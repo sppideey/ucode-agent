@@ -81,6 +81,31 @@ async function main() {
     return;
   }
 
+  // Update before the session starts, not after it ends.
+  //
+  // Installing in the background and taking effect "next time" means the run
+  // you are doing now — the one that might be a demo — is the old one, and you
+  // have no way to know. So if there is something newer, it goes on now and
+  // this process hands over to it. The wait is a few seconds, once per
+  // release; every other launch pays one quick question to the registry.
+  if (!args.version && process.argv[2] !== 'login' && process.argv[2] !== 'doctor') {
+    const { pendingUpdate, installNow } = await import('./src/core/updater.js');
+    const waiting = await pendingUpdate();
+    if (waiting) {
+      process.stdout.write(`  updating to v${waiting}…\n`);
+      if (await installNow(waiting)) {
+        const { spawnSync } = await import('node:child_process');
+        const run = spawnSync(process.execPath, [process.argv[1], ...process.argv.slice(2)], {
+          stdio: 'inherit',
+          env: { ...process.env, UCODE_NO_UPDATE: '1' }, // the new one must not check again
+        });
+        process.exit(run.status ?? 0);
+      }
+      // It did not take. Carry on with the version already here rather than
+      // making a failed update the reason ucode will not start.
+    }
+  }
+
   if (args.model) {
     try {
       setModel(args.model);

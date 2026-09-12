@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -246,6 +246,7 @@ export class Screen {
 
   assistant(text) {
     if (!text?.trim()) return;
+    this.endRun();
     this.add('');
     this.add(render(this.md, text));
     this.add('');
@@ -291,9 +292,30 @@ export class Screen {
   toolCall(label) {
     // U+25CF, not U+23FA: the latter carries emoji presentation, which Windows
     // Terminal draws as a white circle on a blue tile.
-    this.push(`${narrationMark()} ${narration(asLabel(label))}`);
+    const kind = groupKind(label);
+    const run = this.run;
+    // The run's own line is either the last one, or the last but one with its
+    // result underneath. Anything further down means something else was said
+    // in between, and the run is over.
+    const gap = run ? this.lines.length - 1 - run.at : Infinity;
+
+    // A second step of the same kind rewrites the line the first one wrote,
+    // rather than adding another almost-identical one beneath it.
+    if (run && run.kind === kind && gap <= 1) {
+      if (gap === 1) this.lines.pop();   // its single result line, now counted
+      run.count++;
+      run.label = label;
+      this.lines[run.at] = `${narrationMark()} ${narration(asLabel(groupLabel(label, run.count)))}`;
+      this.render();
+    } else {
+      this.push(`${narrationMark()} ${narration(asLabel(label))}`);
+      this.run = { kind, count: 1, at: this.lines.length - 1, label };
+    }
     this.updateSpinner(label);
   }
+
+  /** Anything that is not another step of the same kind ends the run. */
+  endRun() { this.run = null; }
 
   /** The checklist, when the model updates it. One line, wrapped if it must. */
   plan(items) {
@@ -302,10 +324,15 @@ export class Screen {
   }
 
   toolResult(summary) {
+    // Inside a run, the count on the line above already says what happened;
+    // a result line per step is the noise this is meant to remove.
+    if (this.run && this.run.count > 1) return;
     this.push(dim(`  └ ${summary}`));
   }
 
   toolFailed(summary) {
+    // A failure is never folded away.
+    this.endRun();
     this.push(`${dim('  └ ')}${theme.error(summary)}`);
   }
 

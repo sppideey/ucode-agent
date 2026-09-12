@@ -408,6 +408,11 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '## How to work',
     '',
+    'Say what you are about to do, in one short line, before you do it — "now the',
+    'tests", "wiring this into the loop". A line like that before a group of actions is',
+    'what makes the work readable. Keep it to a sentence: the narration is not the',
+    'answer, and three sentences of intent before every step reads as stalling.',
+    '',
     'Before you guess at an API, ask: type_of gives the exact signature from the',
     'TypeScript this project has installed, and find_symbol says where something is declared without',
     'reading five files to find it. Rename with rename_symbol rather than edit_file — a',
@@ -566,6 +571,42 @@ export class Agent {
     this.working.push(message);
   }
 
+  /**
+   * Answer every tool call a stopped turn never got to.
+   *
+   * An assistant message ends by asking for tools, and each of those asks
+   * needs an answer. Abandon them and the conversation is left mid-sentence,
+   * so the next time the model reads it the only sensible thing to do is
+   * carry on where it left off — which is exactly what the user pressed stop
+   * to prevent. Saying "this did not happen" for each one ends the sentence,
+   * and a line from the user ends the task.
+   */
+  closeInterrupted() {
+    const answered = new Set(this.working.filter((m) => m.role === 'tool').map((m) => m.toolCallId));
+    const missing = [];
+    for (const m of this.working) {
+      if (m.role !== 'assistant' || !m.toolCalls?.length) continue;
+      for (const call of m.toolCalls) {
+        if (!answered.has(call.id)) missing.push(call);
+      }
+    }
+    for (const call of missing) {
+      this.push({
+        role: 'tool',
+        toolCallId: call.id,
+        name: call.name,
+        content: 'The user stopped the turn before this ran. It did not happen, and it must not be retried.',
+      });
+    }
+    if (missing.length) {
+      this.push({
+        role: 'user',
+        content: 'I stopped that. Drop it and wait for what I ask next — do not pick it back up.',
+      });
+    }
+    return missing.length;
+  }
+
   async persist() {
     try {
       this.session.model = model();
@@ -607,6 +648,7 @@ export class Agent {
         if (this.busy && this.abort) {
           this.abort.abort();
           this.ui.stopSpinner();
+          this.ui.stopTimer?.();
           this.ui.note('interrupted');
         }
       };
@@ -849,9 +891,12 @@ export class Agent {
       trace({ kind: 'turn', ms: Date.now() - turnStarted });
       this.stats.workMs += Date.now() - turnStarted;
       this.stats.turns++;
+      if (!finished) this.closeInterrupted();
       this.busy = false;
       this.abort = null;
       this.ui.stopSpinner();
+      this.ui.stopTimer?.();
+      this.activity = null;
       this.ui.turnEnd?.({ ok: finished });
       await this.persist();
       if (this.full) this.showHeader({ clear: false });

@@ -291,3 +291,40 @@ export const narration = (text) => chalk.dim(text);
 
 /** The bullet beside a narration line: present, not loud. */
 export const narrationMark = () => chalk.dim(deep('●'));
+
+/**
+ * How a run of the same kind of step reads once it is over.
+ *
+ * While it happens, "Running npm test" is the useful thing to show. Once
+ * three of them have happened, three near-identical lines are just noise
+ * between the reader and the answer, so they fold into one: "Ran 3 commands".
+ * The present tense belongs to the thing happening now; the past tense to the
+ * summary of what did.
+ */
+const GROUPS = {
+  Running: ['Ran', 'command', 'commands'],
+  Reading: ['Read', 'file', 'files'],
+  Searching: ['Searched', 'time', 'times'],
+  Finding: ['Found', 'pattern', 'patterns'],
+  Listing: ['Listed', 'directory', 'directories'],
+  Writing: ['Wrote', 'file', 'files'],
+  Editing: ['Edited', 'file', 'files'],
+  Checking: ['Checked', 'thing', 'things'],
+  Looking: ['Looked up', 'name', 'names'],
+  Asking: ['Asked about', 'name', 'names'],
+  Mapping: ['Mapped', 'folder', 'folders'],
+  Adding: ['Added', 'block', 'blocks'],
+  Renaming: ['Renamed', 'name', 'names'],
+};
+
+/** The first word of a label, which is what decides whether two steps match. */
+export const groupKind = (label) => String(label ?? '').trim().split(/\s+/)[0] ?? '';
+
+/** One line standing in for `count` steps that all began with the same word. */
+export function groupLabel(label, count) {
+  if (count <= 1) return String(label ?? '');
+  const g = GROUPS[groupKind(label)];
+  if (!g) return `${label} (+${count - 1} more)`;
+  const [past, one, many] = g;
+  return `${past} ${count} ${count === 1 ? one : many}`;
+}

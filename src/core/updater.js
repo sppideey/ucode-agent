@@ -12,7 +12,7 @@
  */
 
 import { spawn } from 'node:child_process';
-import { existsSync, promises as fs } from 'node:fs';
+import { existsSync, rmSync, promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -48,14 +48,69 @@ async function latestVersion() {
   return (await res.json())?.version ?? null;
 }
 
+/** Is that process still running? A lock held by a dead one is not a lock. */
+function alive(pid) {
+  if (!pid) return false;
+  try { process.kill(pid, 0); return true; } catch (err) { return err.code === 'EPERM'; }
+}
+
+/**
+ * Take the update lock, unless a live process holds it.
+ *
+ * The lock used to be dropped by the parent watching the installer exit — but
+ * the installer is detached and ucode usually leaves first, so the handler
+ * never ran and the lock sat there blocking every update until it aged out.
+ * Now the holder is checked for a pulse, so a lock left by a process that has
+ * gone is simply taken over.
+ */
 async function takeLock() {
   try {
     const stat = await fs.stat(LOCK);
-    if (Date.now() - stat.mtimeMs < LOCK_TTL) return false;   // someone else is on it
+    const holder = parseInt(await fs.readFile(LOCK, 'utf8').catch(() => ''), 10);
+    if (alive(holder) && Date.now() - stat.mtimeMs < LOCK_TTL) return false;
   } catch { /* no lock — good */ }
   await fs.mkdir(HOME, { recursive: true });
   await fs.writeFile(LOCK, String(process.pid));
   return true;
+}
+
+export async function releaseLock() {
+  await fs.rm(LOCK, { force: true }).catch(() => {});
+}
+
+/**
+ * Install the newer version and return true once it is on disk.
+ *
+ * This one waits. It is used at startup, where waiting a few seconds once per
+ * release is the whole point: the alternative is being told an update exists
+ * and running the old one anyway.
+ */
+export async function installNow(version) {
+  if (!(await takeLock())) return false;
+  try {
+    const done = await new Promise((resolve) => {
+      const child = spawn(`npm install -g ${PACKAGE}@${version} --no-audit --no-fund --silent`, {
+        shell: true, windowsHide: true, stdio: 'ignore',
+      });
+      child.on('exit', (code) => resolve(code === 0));
+      child.on('error', () => resolve(false));
+      setTimeout(() => resolve(false), 90_000);
+    });
+    return done;
+  } finally {
+    await releaseLock();
+  }
+}
+
+/** The newest version on the registry, if it is newer than this one. */
+export async function pendingUpdate() {
+  try {
+    if (process.env.UCODE_NO_UPDATE || isDevCheckout() || !VERSION) return null;
+    const latest = await latestVersion();
+    return latest && newer(latest, VERSION) ? latest : null;
+  } catch {
+    return null;
+  }
 }
 
 /**
@@ -81,13 +136,15 @@ export async function autoUpdate({ onUpdated } = {}) {
     await log.close();
     child.unref();
 
+    // The lock is cleared by whoever took it. This process may well be gone
+    // before npm finishes, so it cannot be left to an exit handler here.
     child.on('exit', async (code) => {
-      await fs.rm(LOCK, { force: true }).catch(() => {});
+      await releaseLock();
       if (code === 0) onUpdated?.(latest);
     });
-    child.on('error', async () => {
-      await fs.rm(LOCK, { force: true }).catch(() => {});
-    });
+    child.on('error', async () => { await releaseLock(); });
+    // And if this process leaves first, release it on the way out.
+    process.once('exit', () => { try { rmSync(LOCK, { force: true }); } catch {} });
   } catch {
     // An update check must never be the reason ucode misbehaves. Offline,
     // registry down, no permission to install globally: all silently skipped.
