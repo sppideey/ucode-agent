@@ -73,6 +73,8 @@ export default async function ({ test, section, ok, eq }) {
     s.restore();
   });
 
+  await liveSuite({ test, section, ok, eq });
+
   await test('a failure is never folded away', () => {
     const s = screen();
     s.toolCall('Running a'); s.toolResult('ok');
@@ -81,5 +83,65 @@ export default async function ({ test, section, ok, eq }) {
     s.toolCall('Running c');
     ok(!s.lines.some((l) => /Ran 3/.test(bare(l))), 'and it did not get counted into a run');
     s.restore();
+  });
+}
+
+export async function liveSuite({ test, section, ok, eq }) {
+  const chalk = (await import('chalk')).default;
+  const { Screen } = await import('../../src/ui/screen.js');
+  const { describe } = await import('../../src/tools/index.js');
+
+  section('one line per kind, and the live one moves');
+
+  const make = () => {
+    chalk.level = 3;
+    const s = new Screen({ output: { write() {}, columns: 100, rows: 30, isTTY: true, on() {}, off() {} }, cwd: '.' });
+    s.render = () => {};
+    return s;
+  };
+  const bare = (l) => String(l).replace(/\x1b\[[0-9;]*m/g, '');
+  const step = (s, n, a, d) => { s.toolCall(describe(n, a)); s.toolResult('ok'); if (d) s.diffStat(d); };
+
+  await test('reads and writes interleaved keep one line each, not six', () => {
+    const s = make();
+    step(s, 'read_files', { paths: ['a'] });
+    step(s, 'write_file', { path: 'a' }, { added: 27, removed: 24 });
+    step(s, 'read_file', { path: 'b' });
+    step(s, 'edit_file', { path: 'a' }, { added: 9, removed: 9 });
+    step(s, 'read_file', { path: 'c' });
+    const shown = s.lines.filter((l) => l.trim());
+    eq(shown.length, 2, shown.map(bare).join(' | '));
+    ok(bare(shown[0]).includes('Read files'), shown[0]);
+    ok(bare(shown[1]).includes('+36 -33'), 'the writes kept adding up');
+  });
+
+  await test('the model speaking starts the next piece of work afresh', () => {
+    const s = make();
+    step(s, 'read_file', { path: 'a' });
+    s.assistant('Now the animations.');
+    step(s, 'read_file', { path: 'b' });
+    eq(s.lines.filter((l) => bare(l).includes('eading files')).length, 2,
+      'a new segment gets its own line');
+  });
+
+  await test('the step in flight animates, and stops when it is done', () => {
+    const s = make();
+    s.toolCall('Reading files');
+    const first = s.lines[0];
+    s.tick = 40;
+    s.paintLiveRun();
+    ok(s.lines[0] !== first, 'it moved between frames');
+    s.toolResult('ok');
+    ok(s.lines[0].includes('\x1b[2m'), 'and settled to plain dim');
+  });
+
+  await test('a finished line does not keep animating', () => {
+    const s = make();
+    s.toolCall('Reading files');
+    s.toolResult('ok');
+    const settled = s.lines[0];
+    s.tick = 99;
+    s.paintLiveRun();
+    eq(s.lines[0], settled, 'nothing above the current step twitches');
   });
 }

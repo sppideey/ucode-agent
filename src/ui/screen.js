@@ -297,38 +297,64 @@ export class Screen {
     // U+25CF, not U+23FA: the latter carries emoji presentation, which Windows
     // Terminal draws as a white circle on a blue tile.
     const kind = groupKind(label);
-    const run = this.run;
-    // The run's own line is either the last one, or the last but one with its
-    // result underneath. Anything further down means something else was said
-    // in between, and the run is over.
-    const gap = run ? this.lines.length - 1 - run.at : Infinity;
+    // One line per kind of work for as long as the model is working on one
+    // thing. Reading, writing and reading again used to draw six lines that
+    // said three things; now the "Reading files" line it already has is the
+    // one that counts up, wherever it sits.
+    const run = (this.segment ??= new Map()).get(kind);
 
-    // A second step of the same kind rewrites the line the first one wrote,
-    // rather than adding another almost-identical one beneath it.
-    if (run && run.kind === kind && gap <= 1) {
-      if (gap === 1) this.lines.pop();   // its single result line, now counted
+    if (run && this.lines[run.at] !== undefined) {
       run.count++;
       run.label = label;
       run.targets.push(groupTarget(label));
-      this.paintRun();
+      this.run = run;
+      this.paintRun({ live: true });
     } else {
       this.push(`${narrationMark()} ${narration(asLabel(label))}`);
       this.run = {
         kind, count: 1, at: this.lines.length - 1, label,
         targets: [groupTarget(label)], added: 0, removed: 0,
       };
+      this.segment.set(kind, this.run);
+      this.paintRun({ live: true });
     }
     this.updateSpinner(label);
   }
 
-  /** Anything that is not another step of the same kind ends the run. */
-  endRun() { this.run = null; }
+  /**
+   * The model speaking — or a plan, or a failure — ends the segment.
+   *
+   * Up to that point a kind of work keeps one line and counts up on it. After
+   * it, the next read is a new piece of work and deserves its own line, which
+   * is what makes the transcript read as a sequence of things done rather
+   * than a set of running totals.
+   */
+  endRun() {
+    if (this.run) this.paintRun({ live: false });
+    this.run = null;
+    this.segment = new Map();
+  }
 
   /** Redraw the run's single line from what it has accumulated. */
-  paintRun() {
+  /**
+   * Redraw the run's single line from what it has accumulated.
+   *
+   * While its step is still running the text shimmers, which is the only
+   * thing on screen saying "this is happening now" once the per-step result
+   * lines are gone. It settles to plain dim the moment the step finishes, so
+   * the finished ones above stay quiet.
+   */
+  paintRun({ live = this.run?.live } = {}) {
     if (!this.run) return;
-    this.lines[this.run.at] = `${narrationMark()} ${narration(asLabel(runLine(this.run)))}`;
+    const text = asLabel(runLine(this.run));
+    this.run.live = live;
+    this.lines[this.run.at] = `${narrationMark()} ${live ? shimmer(text, this.tick * FRAME_MS) : narration(text)}`;
     this.render();
+  }
+
+  /** Let the line in flight animate, one frame per tick. */
+  paintLiveRun() {
+    if (this.run?.live && this.lines[this.run.at] !== undefined) this.paintRun({ live: true });
   }
 
   /**
@@ -361,7 +387,10 @@ export class Screen {
    * already names the step, and a change adds its numbers to that same line.
    * Only a failure earns a line of its own.
    */
-  toolResult() {}
+  toolResult() {
+    // The step is over: the line stops moving and joins the quiet ones above.
+    if (this.run) this.paintRun({ live: false });
+  }
 
   toolFailed(summary) {
     // A failure is never folded away.
@@ -856,6 +885,7 @@ export class Screen {
     if (this.spinTimer) return;
     this.spinTimer = setInterval(() => {
       this.tick++;
+      this.paintLiveRun();
       this.paintStatus();
     }, FRAME_MS);
     this.spinTimer.unref?.();

@@ -434,12 +434,24 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '## How to work',
     '',
-    '- Say what you are about to do before you do it, in one short line, every time you',
-    '  pick up a new piece of work: "Right, the HTML structure first.", "Now the state',
-    '  and the render loop.", "That is the layout done - onto the animations." Without',
-    '  it the screen is a list of file operations and the user cannot tell what you are',
-    '  building or why. One sentence, in your own voice, then the actions. Not three',
-    '  sentences, and not a restatement of the request.',
+    'FIRST, EVERY TIME: one short line saying what you are about to do, then the tool',
+    'calls. Never open a turn with a tool call and no words. "Right, the HTML',
+    'structure first." / "Now the state and the render loop." / "That is the layout',
+    'done - onto the animations." / "Let me see what is there." One sentence, your own',
+    'voice, before the actions - not after them, not instead of them, not a',
+    'restatement of the request. The user watches this scroll past, and without those',
+    'lines it is a list of file operations they cannot read intent from.',
+    '',
+    'FIRST, EVERY TIME: write one short line saying what you are about to do, then',
+    'make the tool calls. Never open a turn with a tool call and no words. Examples:',
+    '"Right, the HTML structure first." / "Now the state and the render loop." /',
+    '"That is the layout done - onto the animations." / "Let me see what is there."',
+    'One sentence, your own voice, before the actions - not after them, not instead',
+    'of them, and not a restatement of what was asked. The user is watching this',
+    'scroll past; without those lines it is a list of file operations and they cannot',
+    'tell what you are building. This matters as much as the code.',
+    '',
+
     '',
     'Before you guess at an API, ask: type_of gives the exact signature from the',
     'TypeScript this project has installed, and find_symbol says where something is declared without',
@@ -1370,9 +1382,13 @@ export class Agent {
   reportFailure(call, err) {
     if (!(err instanceof ToolFailure)) throw err;
 
-    this.ui.toolFailed(
-      err instanceof Declined ? 'declined' : `${err.kind}: ${err.failed}`
-    );
+    // Bad arguments are the model talking to itself. "old_string and new_string
+    // are identical" is a correction it will make on the next step, and it means
+    // nothing to whoever is watching except that something went wrong. It goes
+    // to the model, which can act on it, and not to the screen. A refusal the
+    // user made, and anything that actually failed, still shows.
+    if (err instanceof Declined) this.ui.toolFailed('declined');
+    else if (err.kind !== 'bad_args') this.ui.toolFailed(`${err.kind}: ${err.failed}`);
     this.push({
       role: 'tool',
       toolCallId: call.id,
