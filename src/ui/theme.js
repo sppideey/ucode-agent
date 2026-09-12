@@ -278,62 +278,16 @@ export function planLine(items) {
 }
 
 /**
- * The background ucode paints behind itself.
+ * Narration: what the agent is doing, as opposed to what it has to say.
  *
- * A terminal's own background is whatever the person set it to years ago:
- * white, solarized, a photograph. The interface was drawn for a dark one, and
- * on a light terminal the dim greys it relies on turn to near-invisible smoke.
- * So ucode paints its own ground for as long as it is running, and the
- * alternate screen gives it back untouched on exit.
- *
- * Two things are needed, not one. Painting each row covers the rows ucode
- * draws; it cannot reach the margin a terminal keeps below the last line or
- * beside the last column, which stays the old colour and shows as a border of
- * the wrong shade. So the terminal is also told, once, what its own background
- * is — and told to put it back on the way out.
+ * These lines are scaffolding — "Reading screen.js", "Checking types". They
+ * are worth seeing and not worth reading, and at full strength they compete
+ * with the answer, which is the thing the user is actually here for. A
+ * terminal has no smaller size to set, so the only axis available is weight:
+ * faint, and a step down in colour. The answer stays at full strength and
+ * wins the page by contrast rather than by shouting.
  */
-export const BACKGROUND = process.env.UCODE_BG || '#000000';
+export const narration = (text) => chalk.dim(text);
 
-const rgb = (hex) => {
-  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i.exec(hex.trim());
-  return m ? [parseInt(m[1], 16), parseInt(m[2], 16), parseInt(m[3], 16)] : [19, 19, 22];
-};
-
-/** Turn the background on. Everything painted after this sits on it. */
-export const BG_ON = (() => {
-  if (process.env.NO_COLOR || process.env.UCODE_BG === 'off') return '';
-  const [r, g, b] = rgb(BACKGROUND);
-  return `\x1b[48;2;${r};${g};${b}m`;
-})();
-
-/**
- * Tell the terminal what its own background is.
- *
- * Painting each row covers the rows ucode draws, and nothing else. It cannot
- * reach the margin a terminal keeps below the last line or beside the last
- * column, which stays the old colour and reads as a border in the wrong
- * shade. OSC 11 sets the window's background itself, which does reach those
- * edges. A terminal that does not know the sequence ignores it in silence,
- * and the per-row painting still covers everything ucode draws.
- */
-export const BG_WINDOW = BG_ON ? `\x1b]11;${BACKGROUND}\x07` : '';
-
-/** Put the terminal's own background back, exactly as it was. */
-export const BG_WINDOW_OFF = BG_ON ? '\x1b]111\x07' : '';
-
-/** Hand the terminal its own colours back. */
-export const BG_OFF = BG_ON ? '\x1b[0m' : '';
-
-/**
- * Keep the background on across a line that resets it.
- *
- * chalk closes a foreground with 39 and a background with 49, and 49 means
- * "the terminal's default" — which is exactly the colour being painted over.
- * A diff line, which sets its own background, would therefore punch a hole
- * through to the terminal's ground for the rest of the line. Re-asserting the
- * background after every reset closes those holes.
- */
-export function onBackground(text) {
-  if (!BG_ON) return text;
-  return BG_ON + String(text).replace(/\x1b\[(?:0|49)m/g, (m) => m + BG_ON);
-}
+/** The bullet beside a narration line: present, not loud. */
+export const narrationMark = () => chalk.dim(deep('●'));

@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, BG_ON, BG_OFF, BG_WINDOW, BG_WINDOW_OFF, onBackground } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -149,7 +149,7 @@ export class Screen {
 
   async start() {
     ensureColour(this.output);
-    this.output.write(ALT_ON + MOUSE_ON + HIDE + BG_WINDOW + BG_ON + `${ESC}[2J` + title(`ucode — ${path.basename(this.cwd)}`));
+    this.output.write(ALT_ON + MOUSE_ON + HIDE + title(`ucode — ${path.basename(this.cwd)}`));
     this.input.setRawMode?.(true);
     this.input.resume();
     this.input.setEncoding('utf8');
@@ -173,7 +173,7 @@ export class Screen {
     this.output.off?.('resize', this.onResize);
     this.input.setRawMode?.(false);
     this.input.pause();
-    this.output.write(BG_OFF + BG_WINDOW_OFF + MOUSE_OFF + ALT_OFF + SHOW);
+    this.output.write(MOUSE_OFF + ALT_OFF + SHOW);
   }
 
   close() {
@@ -291,7 +291,7 @@ export class Screen {
   toolCall(label) {
     // U+25CF, not U+23FA: the latter carries emoji presentation, which Windows
     // Terminal draws as a white circle on a blue tile.
-    this.push(`${blue('●')} ${asLabel(label)}`);
+    this.push(`${narrationMark()} ${narration(asLabel(label))}`);
     this.updateSpinner(label);
   }
 
@@ -1127,7 +1127,7 @@ export class Screen {
     // dot flickering above the input box on every keystroke.
     const out = [HIDE, HOME];
     for (let i = 0; i < this.rows; i++) {
-      out.push(BG_ON + CLEAR_LINE + onBackground(padVis(frame[i] ?? '', width)) + (i === this.rows - 1 ? '' : '\n'));
+      out.push(CLEAR_LINE + padVis(frame[i] ?? '', width) + (i === this.rows - 1 ? '' : '\n'));
     }
 
     const [row, col] = this.caret();
@@ -1214,7 +1214,7 @@ export class Screen {
 
     const out = [HIDE, HOME];
     for (let i = 0; i < this.rows; i++) {
-      out.push(BG_ON + CLEAR_LINE + onBackground(padVis(frame[i], g.cols)) + (i === this.rows - 1 ? '' : '\n'));
+      out.push(CLEAR_LINE + padVis(frame[i], g.cols) + (i === this.rows - 1 ? '' : '\n'));
     }
     const [row, col] = this.caret();
     out.push(at(row, col) + SHOW);

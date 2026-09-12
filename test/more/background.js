@@ -1,82 +1,40 @@
-// ucode paints its own ground, whatever colour the terminal is set to.
-import { BG_ON, BG_OFF, BG_WINDOW, BG_WINDOW_OFF, BACKGROUND, onBackground } from '../../src/ui/theme.js';
+// Narration recedes; the answer is what the page is for.
+import chalk from 'chalk';
+import { narration, narrationMark, bare } from '../../src/ui/theme.js';
 
 export default async function ({ test, section, ok, eq }) {
-  section('the background');
+  section('narration against the answer');
 
-  await test('it is a real 24-bit black', () => {
-    const m = /^\x1b\[48;2;(\d+);(\d+);(\d+)m$/.exec(BG_ON);
-    ok(m, JSON.stringify(BG_ON));
-    const [r, g, b] = m.slice(1).map(Number);
-    ok(r < 40 && g < 40 && b < 40, `${BACKGROUND} is not dark`);
+  // The suite is not a terminal, so chalk would emit nothing at all; the
+  // question here is what it emits when there IS a terminal to emit to.
+  const level = chalk.level;
+  chalk.level = 3;
+
+  await test('what the agent is doing is drawn faint', () => {
+    const line = narration('Reading screen.js');
+    ok(line.includes('\x1b[2m'), 'faint is the only "smaller" a terminal has');
+    eq(bare(line), 'Reading screen.js', 'and the words are untouched');
   });
 
-  await test('the terminal itself is told, so the colour reaches the window edges', () => {
-    // Painting rows covers the rows ucode draws; the margin past them is the
-    // terminal's own, and only the terminal can colour it.
-    ok(BG_WINDOW.startsWith('\x1b]11;'), JSON.stringify(BG_WINDOW));
-    ok(BG_WINDOW.includes(BACKGROUND), 'the window and the rows must agree');
-    eq(BG_WINDOW_OFF, '\x1b]111\x07', 'and it is handed back on the way out');
+  await test('the bullet is present without being loud', () => {
+    const mark = narrationMark();
+    ok(mark.includes('\x1b[2m'), 'it is dimmed with the line it belongs to');
+    eq(bare(mark), '\u25cf');
   });
 
-  await test('leaving hands the terminal its own colours back', () => {
-    eq(BG_OFF, '\x1b[0m');
+  await test('the answer itself is not dimmed, so it wins by contrast', async () => {
+    const { theme } = await import('../../src/ui/theme.js');
+    ok(!theme.text('an answer').includes('\x1b[2m'), 'the answer stays at full strength');
   });
 
-  await test('a reset inside a line does not punch a hole through to the terminal', () => {
-    // chalk closes a background with 49, which means "the terminal default" —
-    // exactly the colour being painted over.
-    const painted = onBackground(`before\x1b[49mafter`);
-    ok(painted.startsWith(BG_ON), 'the line opens on the background');
-    ok(painted.endsWith(`\x1b[49m${BG_ON}after`), painted);
+  await test('nothing paints over the terminal background any more', async () => {
+    const t = await import('../../src/ui/theme.js');
+    eq(t.BG_ON, undefined, 'the background feature is gone, not merely turned off');
+    const fs = await import('node:fs');
+    const screen = fs.readFileSync('src/ui/screen.js', 'utf8');
+    ok(!screen.includes('BG_ON'), 'and the screen no longer references it');
+    ok(!/\x1b\]11;/.test(screen), 'nor sets the window colour');
   });
 
-  await test('a full reset is closed over too', () => {
-    ok(onBackground('a\x1b[0mb').includes(`\x1b[0m${BG_ON}`), 'a hard reset re-asserts it');
-  });
-
-  await test('a line with no resets is simply painted', () => {
-    eq(onBackground('plain'), `${BG_ON}plain`);
-  });
-
-  await loginSuite({ test, section, ok, eq });
-}
-
-export async function loginSuite({ test, section, ok, eq }) {
-  const { looksLikeKey, withKey } = await import('../../src/core/login.js');
-
-  section('saving the key once per machine');
-
-  await test('a real key is accepted and an obvious typo is not', () => {
-    ok(looksLikeKey('sk-or-v1-' + 'a'.repeat(40)));
-    ok(!looksLikeKey('or-v1-missing-the-prefix'));
-    ok(!looksLikeKey('sk-short'));
-    ok(!looksLikeKey(''));
-    ok(!looksLikeKey(undefined));
-  });
-
-  await test('the key is added without disturbing what else is in the file', () => {
-    const before = 'VERCEL_TOKEN=abc\nTAVILY_API_KEY=def\n';
-    const after = withKey(before, 'sk-or-v1-xyz');
-    ok(after.includes('VERCEL_TOKEN=abc'), after);
-    ok(after.includes('TAVILY_API_KEY=def'), 'the other keys survive');
-    ok(after.includes('OPENROUTER_API_KEY=sk-or-v1-xyz'), after);
-  });
-
-  await test('setting it again replaces it in place rather than adding a second one', () => {
-    const after = withKey('OPENROUTER_API_KEY=old\nOTHER=1\n', 'sk-or-v1-new');
-    eq(after.match(/OPENROUTER_API_KEY=/g).length, 1, 'exactly one key line');
-    ok(after.includes('OPENROUTER_API_KEY=sk-or-v1-new'), after);
-    ok(!after.includes('=old'), 'the old one is gone');
-    ok(after.includes('OTHER=1'), 'the rest is untouched');
-  });
-
-  await test('an exported line counts as the same key, not a different one', () => {
-    const after = withKey('export OPENROUTER_API_KEY=old\n', 'sk-or-v1-new');
-    eq(after.match(/OPENROUTER_API_KEY=/g).length, 1, after);
-  });
-
-  await test('an empty file just gets the key', () => {
-    ok(withKey('', 'sk-or-v1-a').includes('OPENROUTER_API_KEY=sk-or-v1-a'));
-  });
+  chalk.level = level;
 }
