@@ -24,9 +24,15 @@ const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 
 const RENAME = { _gitignore: '.gitignore', '_package-lock.json': 'package-lock.json' };
 
 /** Files the placeholders are filled into. Everything else is copied byte for byte. */
-const TEXT = /\.(?:json|md|mjs|css|tsx?)$/i;
+const TEXT = /\.(?:json|md|mjs|css|html|jsx?|tsx?)$/i;
 
-export const TEMPLATE_NAMES = ['next-shadcn'];
+export const TEMPLATE_NAMES = ['next-shadcn', 'plain-html'];
+
+/** What each starter is for, so the choice is made on purpose. */
+export const TEMPLATE_NOTES = {
+  'next-shadcn': 'Next.js, TypeScript, Tailwind and shadcn/ui. For anything with routes, data or many components.',
+  'plain-html': 'One index.html, one stylesheet, one module. No install, no build, opens straight in a browser.',
+};
 
 function slug(name) {
   return String(name).toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'app';
@@ -168,14 +174,17 @@ export async function createApp({ folder, name, description, template = 'next-sh
   };
 
   const files = await copyTree(path.join(TEMPLATES, template), target.abs, fill);
-  await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
+  // Next.js serves static files from public/; a plain page has no such place
+  // and an empty folder in a three-file app is clutter.
+  if (template !== 'plain-html') await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
   const look = await applyDesign(target.abs, design);
 
   // The starter has been installed on this machine before: hard-link that
   // tree in, which is seconds where npm is a minute. Otherwise install as
   // usual, and keep the result so the next app is instant.
   let linked = 0;
-  if (install) {
+  const needsInstall = template !== 'plain-html';
+  if (install && needsInstall) {
     // Keyed on the starter's lockfile, which is the same for every app made
     // from it — the app's own is rewritten by npm as it installs.
     const lockText = await fs
@@ -199,11 +208,14 @@ export async function createApp({ folder, name, description, template = 'next-sh
       (linked
         ? `Its packages are already in place (${linked.toLocaleString()} files, linked from the starter cache) — ` +
           'nothing to install: build and run straight away.\n'
-        : install
+        : install && needsInstall
         ? `Its packages are installing in the background right now. Keep writing: any command you run in ` +
           `${target.show} waits for that install first, so there is no need to run npm install.\n`
         : '') +
-      `Run this app's commands with cwd: "${target.show}" (npm run build, npm run dev).\n\n${guide}`,
-    `${files.length} files${linked ? ' · packages ready' : install ? ' · installing in the background' : ''}`
+      (needsInstall
+        ? `Run this app's commands with cwd: "${target.show}" (npm run build, npm run dev).\n\n${guide}`
+        : `Nothing to install and nothing to build: open ${target.show}/index.html directly, or serve the ` +
+          `folder with "python -m http.server 8000" if it fetches anything.\n\n${guide}`),
+    `${files.length} files${linked ? ' · packages ready' : install && needsInstall ? ' · installing in the background' : ''}`
   );
 }

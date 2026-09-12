@@ -923,10 +923,12 @@ export class Agent {
       this.ui.stopSpinner();
       this.ui.stopTimer?.();
       this.activity = null;
-      this.ui.turnEnd?.({ ok: finished });
       await this.persist();
       if (this.full) this.showHeader({ clear: false });
       if (finished) this.openWhenReady(turnStarted);
+      // Last, so "Done" is the last thing that happens rather than the last
+      // thing said before several more things happen.
+      this.ui.turnEnd?.({ ok: finished });
     }
   }
 
@@ -1292,8 +1294,16 @@ export class Agent {
   }
 
   /** A dev server came up during this turn: open it in the browser, once. */
+  /**
+   * Open the running app in a browser — only when asked.
+   *
+   * This used to happen on its own whenever a dev server came up. Something
+   * seizing the screen mid-thought is startling at the best of times, and
+   * during a demo it is worse. UCODE_OPEN=1 brings the old behaviour back for
+   * anyone who liked it; otherwise the URL is on screen to click.
+   */
   openWhenReady(since) {
-    if (!this.full || process.env.UCODE_OPEN === '0') return;
+    if (!this.full || process.env.UCODE_OPEN !== '1') return;
     const server = serversReadySince(since).at(-1);
     if (!server || (this.opened ??= new Set()).has(server.url)) return;
     this.opened.add(server.url);

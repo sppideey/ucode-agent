@@ -1064,6 +1064,13 @@ export class Screen {
     }
     rest += chunk.slice(index);
 
+    // A chunk carrying a line break *and* other text did not come from a
+    // keyboard: nobody types a newline in the middle of a burst. Many
+    // terminals, Windows ones especially, send a paste with no markers at
+    // all, so without this every newline in it reads as Enter and the paste
+    // submits itself a line at a time.
+    if (looksPasted(rest)) { this.onPaste(rest); return; }
+
     for (const key of splitKeys(rest)) this.onKey(key);
   }
 
@@ -1333,6 +1340,27 @@ export class Screen {
  * up arrow rather than ESC [ A. Both are normalised to the bracket form here
  * so the key handler only ever sees one of them.
  */
+/**
+ * Did this arrive as a paste, judged by shape rather than by markers?
+ *
+ * Someone pressing Enter sends one carriage return on its own. A paste sends
+ * a line break with text around it, in a single read. That difference is all
+ * there is to go on when a terminal does not implement bracketed paste, and
+ * it is enough.
+ *
+ * Anything carrying an escape sequence is left alone: that is a key or a
+ * mouse report, and reading one as text would put gibberish in the input.
+ */
+export function looksPasted(chunk) {
+  const text = String(chunk ?? '');
+  if (text.length < 2 || text.includes(ESC)) return false;
+  const breaks = (text.match(/[\r\n]/g) ?? []).length;
+  if (breaks === 0) return false;
+  // One trailing break is someone finishing a line, not pasting one.
+  if (breaks === 1 && /[\r\n]$/.test(text)) return false;
+  return true;
+}
+
 export function splitKeys(chunk) {
   const keys = [];
   let i = 0;

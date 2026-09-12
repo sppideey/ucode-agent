@@ -13,7 +13,7 @@ import { typeOf } from './types.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
 import { lookAtApp } from './browser.js';
-import { createApp } from './scaffold.js';
+import { createApp, TEMPLATE_NAMES, TEMPLATE_NOTES } from './scaffold.js';
 import { deploy } from './deploy.js';
 import { clip, READ_LINES } from './shared.js';
 
@@ -27,18 +27,28 @@ export const tools = [
   {
     name: 'create_app',
     description:
-      'Start a new Next.js + shadcn/ui app from the ready-made ucode starter. This is how every ' +
-      'Next.js app begins - never run create-next-app or shadcn init. It copies a project that ' +
-      'is already known to build (Next.js 16, TypeScript, Tailwind 4, shadcn with 33 common ' +
-      'components, light/dark mode, toasts, a design preset of colours and fonts) into a new empty folder, and ' +
-      'starts installing its packages in the background so you can write components at once. ' +
-      'The result lists everything included.',
+      'Start a new app from a starter that already works. Two to choose between, and the ' +
+      'choice matters. "plain-html": one index.html, one stylesheet, one ES module — nothing ' +
+      'to install, nothing to build, opens straight in a browser. Use it whenever the user ' +
+      'asks for plain HTML/CSS/JS, or for a single page, a toy, a game or a visualisation. ' +
+      '"next-shadcn": Next.js 16, TypeScript, Tailwind 4 and shadcn with 33 components, light ' +
+      'and dark, toasts, and a design preset — for anything with routes, data or many screens; ' +
+      'its packages install in the background so you can write components at once. This is how ' +
+      'every Next.js app begins - never run create-next-app or shadcn init. Do not reach for ' +
+      'Next.js when a single HTML file is what was asked for.',
     parameters: {
       type: 'object',
       properties: {
         folder: str('A new, empty folder for the app, relative to the project root, e.g. "stride".'),
         name: str('The display name of the app, e.g. "Stride".'),
         description: str('One line about the app, used in the page metadata.'),
+        template: {
+          type: 'string',
+          enum: ['next-shadcn', 'plain-html'],
+          description:
+            'Which starter. "plain-html" for plain HTML/CSS/JS, a single page, a toy or a game: ' +
+            'no install, no build. "next-shadcn" (the default) for routes, data or many screens.',
+        },
         design: {
           type: 'string',
           enum: ['ocean', 'grove', 'sunset', 'graphite', 'violet', 'citrus'],
