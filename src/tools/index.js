@@ -54,6 +54,31 @@ export const lookAtAppTool =   {
     },
   };
 
+/**
+ * Deploying is not the model's to decide.
+ *
+ * Put something online and it is online: a link exists, someone may have it,
+ * and undoing that is not the same as undoing a file. It happens when the
+ * user says /deploy, and at no other time.
+ */
+export const deployTool =   {
+    name: 'deploy',
+    description:
+      'Put an app online on Vercel and get its live link - use it when the user asks to deploy, ' +
+      'publish, host or share the app. ucode picks a short free project name, copies the app\'s ' +
+      '.env keys to Vercel as encrypted variables, refuses code with a secret written into it ' +
+      '(move it to .env.local and a server route, then deploy again), and builds on Vercel. ' +
+      'Run the local build first so errors show up here. Deploying again updates the same link.',
+    parameters: {
+      type: 'object',
+      properties: {
+        folder: str('The app folder, relative to the project root, e.g. "food-iq". Defaults to ".".'),
+        name: str('Optional: a project name to use instead of the one ucode would choose.'),
+      },
+      required: [],
+    },
+  };
+
 export const tools = [
   {
     name: 'create_app',
@@ -94,23 +119,6 @@ export const tools = [
         },
       },
       required: ['folder', 'name'],
-    },
-  },
-  {
-    name: 'deploy',
-    description:
-      'Put an app online on Vercel and get its live link - use it when the user asks to deploy, ' +
-      'publish, host or share the app. ucode picks a short free project name, copies the app\'s ' +
-      '.env keys to Vercel as encrypted variables, refuses code with a secret written into it ' +
-      '(move it to .env.local and a server route, then deploy again), and builds on Vercel. ' +
-      'Run the local build first so errors show up here. Deploying again updates the same link.',
-    parameters: {
-      type: 'object',
-      properties: {
-        folder: str('The app folder, relative to the project root, e.g. "food-iq". Defaults to ".".'),
-        name: str('Optional: a project name to use instead of the one ucode would choose.'),
-      },
-      required: [],
     },
   },
   {

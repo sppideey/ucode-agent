@@ -548,65 +548,35 @@ export class Screen {
   // and the transcript gets one line afterwards saying how long it took.
 
   /**
-   * The model's reasoning, live, one line at a time.
+   * The first thing the model says, as soon as it has said it.
    *
-   * Models reach for a tool before they say anything, so the first words of a
-   * step were arriving a minute after it began — while the reasoning channel
-   * had been streaming words the whole time and we were throwing them away to
-   * keep a timer. Its latest sentence now shows on one line that rewrites
-   * itself, which is something to read from the first second.
+   * Models reach for a tool before writing any reply, so nothing appeared for
+   * the first minute of a step. The reasoning channel streams from the first
+   * moment, so its opening sentence goes up as one line and stays there: what
+   * it is setting out to do, which is the thing worth knowing while you wait.
    *
-   * It is scaffolding, not the answer: it shimmers while it is live and it is
-   * taken off the screen the moment the real reply starts.
+   * Written once, never rewritten. Rewriting it as more arrived was the
+   * flicker — an unfinished sentence showed as a single word, then jumped.
    */
   thinkingDelta(text = '') {
     if (this.thoughtSince === undefined) this.thoughtSince = Date.now();
-    if (!text) return;
+    if (!text || this.openedWith) return;
 
-    this.thought = ((this.thought ?? '') + text).slice(-2000);
-    // The last sentence it has finished, or what it has written of the next.
-    const parts = this.thought.split(/(?<=[.!?])\s+|(?<=[.!?])(?=[A-Z])/).filter((p) => p.trim());
-    const latest = (parts[parts.length - 1] ?? '').replace(/\s+/g, ' ').trim();
-    if (!latest) return;
+    this.thought = ((this.thought ?? '') + text).slice(0, 600);
+    const tidy = this.thought.replace(/\s+/g, ' ').trim();
+    const finished = /^(.+?[.!?])(?:\s|$)/.exec(tidy);
+    if (!finished) return;
 
-    // A sentence that is replaced the instant the next one arrives cannot be
-    // read — it flashes. Each one holds the line for long enough to take in,
-    // and whatever arrived meanwhile shows when its turn comes.
-    const now = Date.now();
-    if (latest !== this.shownThought) {
-      if (this.shownThought !== undefined && now - (this.shownAt ?? 0) < THOUGHT_HOLD_MS) return;
-      this.shownThought = latest;
-      this.shownAt = now;
-    }
+    const line = finished[1].trim();
+    if (line.length < 12) return;   // "Okay." tells nobody anything
 
-    const line = `  ${shimmer(clip(this.shownThought, Math.max(20, this.width() - 6)), this.tick * FRAME_MS)}`;
-    if (this.thinkAt === undefined || this.lines[this.thinkAt] === undefined) {
-      this.thinkAt = this.lines.length;
-      this.push(line);
-    } else {
-      this.lines[this.thinkAt] = line;
-      this.render();
-    }
-  }
-
-  /** Keep the live thought moving between deltas. */
-  paintLiveThought() {
-    if (this.thinkAt !== undefined && this.lines[this.thinkAt] !== undefined) this.thinkingDelta('');
+    this.openedWith = line;
+    this.push(narration('  ' + clip(line, Math.max(30, this.width() - 6))));
   }
 
   thinkingEnd() {
-    // The thought was the wait; once there is a reply it has nothing to add,
-    // so it comes off the screen rather than settling into the transcript.
-    if (this.thinkAt !== undefined) {
-      this.lines.splice(this.thinkAt, 1);
-      if (this.run && this.run.at > this.thinkAt) this.run.at--;
-      for (const run of this.segment?.values() ?? []) if (run.at > this.thinkAt) run.at--;
-      this.thinkAt = undefined;
-      this.render();
-    }
     this.thought = '';
-    this.shownThought = undefined;
-    this.shownAt = undefined;
+    this.openedWith = undefined;
     this.thoughtSince = undefined;
   }
 
@@ -950,7 +920,6 @@ export class Screen {
     this.spinTimer = setInterval(() => {
       this.tick++;
       this.paintLiveRun();
-      this.paintLiveThought();
       this.paintStatus();
     }, FRAME_MS);
     this.spinTimer.unref?.();

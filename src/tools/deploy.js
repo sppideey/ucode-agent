@@ -223,6 +223,22 @@ export async function deploy({ folder = '.', name } = {}, { onOutput } = {}) {
     if (!/^\.vercel\/?$/m.test(ignore)) await fs.writeFile(gi, `${ignore.replace(/\n?$/, '\n')}.vercel\n`).catch(() => {});
   }
 
+  // A folder with an index.html and no package.json is a static site: every
+  // file in it is the site, and there is nothing to build. Saying so outright
+  // stops Vercel guessing at a build step and shipping only what that produced
+  // — which is how a page arrives online with its stylesheet missing.
+  const staticSite = !pkg && existsSync(path.join(dir, 'index.html'));
+  if (staticSite) {
+    const config = path.join(dir, 'vercel.json');
+    if (!existsSync(config)) {
+      await fs.writeFile(config, JSON.stringify({ buildCommand: null, outputDirectory: '.' }, null, 2) + '\n');
+    }
+    const sending = (await fs.readdir(dir, { withFileTypes: true }))
+      .filter((e) => e.isFile() && !e.name.startsWith('.') && e.name !== 'vercel.json')
+      .map((e) => e.name);
+    say(`Sending ${sending.length} file${sending.length === 1 ? '' : 's'}: ${sending.slice(0, 8).join(', ')}`);
+  }
+
   const vars = await readEnv(dir);
   const keys = Object.keys(vars);
   if (keys.length) {

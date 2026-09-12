@@ -152,64 +152,59 @@ export async function thinkingSuite({ test, section, ok, eq }) {
   const chalk = (await import('chalk')).default;
   const { Screen } = await import('../../src/ui/screen.js');
 
-  section('the live thought');
+  section('the opening line');
 
   const make = () => {
-    chalk.level = 3;
+    chalk.level = 0;
     const s = new Screen({ output: { write() {}, columns: 80, rows: 24, isTTY: true, on() {}, off() {} }, cwd: '.' });
     s.render = () => {};
     return s;
   };
-  const bare = (l) => String(l ?? '').replace(/\x1b\[[0-9;]*m/g, '').trim();
+  const bare = (l) => String(l ?? '').replace(/\[[0-9;]*m/g, '').trim();
 
-  await test('reasoning reaches the screen as it arrives', () => {
+  await test('nothing is shown until a sentence has finished', () => {
     const s = make();
-    s.thinkingDelta('I need to build a tasks app. ');
-    eq(bare(s.lines[0]), 'I need to build a tasks app.');
+    s.thinkingDelta('I');
+    s.thinkingDelta(' need to buil');
+    eq(s.lines.length, 0, 'half a sentence reads as a stutter');
   });
 
-  await test('it rewrites one line rather than filling the page', () => {
+  await test('the first finished sentence goes up as one line', () => {
     const s = make();
-    s.thinkingDelta('First thought. ');
-    s.thinkingDelta('Second thought. ');
-    s.thinkingDelta('Third thought.');
-    eq(s.lines.length, 1, s.lines.map(bare).join(' | '));
-  });
-
-  await test('a sentence holds long enough to read before the next takes the line', () => {
-    const s = make();
-    s.thinkingDelta('First thought. ');
-    eq(bare(s.lines[0]), 'First thought.');
-    s.thinkingDelta('Second thought.');
-    eq(bare(s.lines[0]), 'First thought.', 'replaced instantly, it would only flash');
-    s.shownAt = Date.now() - 5000;   // long enough to have been read
-    s.thinkingDelta('');
-    s.thinkingDelta('Third thought.');
-    eq(bare(s.lines[0]), 'Third thought.', 'then it moves on');
-  });
-
-  await test('a part-written sentence still shows, rather than waiting for the full stop', () => {
-    const s = make();
-    s.thinkingDelta('Done. Now I am hal');
-    eq(bare(s.lines[0]), 'Now I am hal');
-  });
-
-  await test('it comes off the screen when the real reply starts', () => {
-    const s = make();
-    s.thinkingDelta('thinking about it.');
+    s.thinkingDelta('I need to build a tasks app in one file.');
     eq(s.lines.length, 1);
-    s.thinkingEnd();
-    eq(s.lines.length, 0, 'the thought is the wait, not the record');
+    eq(bare(s.lines[0]), 'I need to build a tasks app in one file.');
   });
 
-  await test('removing it does not leave the run lines pointing at the wrong row', () => {
+  await test('it is never rewritten, however much more arrives', () => {
     const s = make();
-    s.toolCall('Reading files');
-    const at = s.run.at;
-    s.thinkingDelta('a thought.');
+    s.thinkingDelta('First I will write the HTML structure.');
+    const line = s.lines[0];
+    s.thinkingDelta(' Then the CSS. Then the JavaScript.');
+    eq(s.lines.length, 1, 'rewriting it as more arrived was the flicker');
+    eq(s.lines[0], line);
+  });
+
+  await test('it stays put when the real reply starts', () => {
+    const s = make();
+    s.thinkingDelta('I will build the app now.');
     s.thinkingEnd();
-    eq(s.run.at, at, 'the run still points at its own line');
-    ok(bare(s.lines[s.run.at]).includes('Reading files'), s.lines[s.run.at]);
+    eq(s.lines.length, 1, 'what it set out to do is worth keeping');
+  });
+
+  await test('a new turn gets its own opening line', () => {
+    const s = make();
+    s.thinkingDelta('First turn opening sentence.');
+    s.thinkingEnd();
+    s.thinkingDelta('Second turn opening sentence.');
+    eq(s.lines.length, 2);
+    eq(bare(s.lines[1]), 'Second turn opening sentence.');
+  });
+
+  await test('a throwaway opener is not worth a line', () => {
+    const s = make();
+    s.thinkingDelta('Okay.');
+    eq(s.lines.length, 0, 'it tells nobody anything');
   });
 
   await test('an empty delta never creates a line of nothing', () => {
