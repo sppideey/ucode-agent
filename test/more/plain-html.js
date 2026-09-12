@@ -53,10 +53,58 @@ export default async function ({ test, section, ok, eq, sandbox }) {
     ok(css.includes('prefers-reduced-motion'), 'someone who asked for no motion means it');
   });
 
+  await htmlCheckSuite({ test, section, ok, eq });
+
   await test('a starter that does not exist is still refused', async () => {
     let threw = false;
     try { await createApp({ folder: 'x', name: 'X', template: 'svelte-kit', install: false }); }
     catch (err) { threw = err.kind === 'bad_args'; }
     ok(threw, 'an unknown starter is a clear error');
+  });
+}
+
+export async function htmlCheckSuite({ test, section, ok, eq }) {
+  const { checkHtml } = await import('../../src/core/htmlcheck.js');
+
+  section('the script inside a page');
+
+  await test('a script that does not parse is reported, with the line in the file', () => {
+    const html = ['<html>', '<body>', '<div></div>', '<script>', '  const a = 1;', '  const bad = {', '</script>'].join('\n');
+    const bad = checkHtml(html);
+    eq(bad.length, 1);
+    ok(bad[0].line >= 5 && bad[0].line <= 7, 'line ' + bad[0].line + ' should be inside the script');
+  });
+
+  await test('the exact failure that shipped a dead app is caught', () => {
+    // A model writing an HTML-escape map inside HTML: the entities collapsed
+    // into three quotes in a row, and the whole script stopped running.
+    const html = '<script>\n  const esc = (s) => s.replace(/&/g, {"\'":\'\'\'}[s]);\n</script>';
+    ok(checkHtml(html).length === 1, 'this is the one that got through');
+  });
+
+  await test('a page whose script is fine says nothing', () => {
+    eq(checkHtml('<script>\n  const a = 1;\n  document.title = a;\n</script>'), []);
+  });
+
+  await test('a module is parsed as a module', () => {
+    eq(checkHtml('<script type="module">\n  import x from "./x.js";\n  await x();\n</script>'), []);
+  });
+
+  await test('a separate file is left to its own check', () => {
+    eq(checkHtml('<script src="app.js"></script>'), []);
+  });
+
+  await test('JSON and templates are not JavaScript', () => {
+    eq(checkHtml('<script type="application/json">{not json</script>'), []);
+    eq(checkHtml('<script type="text/template"><div>{{x}}</div></script>'), []);
+  });
+
+  await test('several scripts are each checked', () => {
+    eq(checkHtml('<script>const a = 1;</script>\n<script>const b = {</script>').length, 1);
+  });
+
+  await test('a page with no script at all is fine', () => {
+    eq(checkHtml('<html><body>hello</body></html>'), []);
+    eq(checkHtml(''), []);
   });
 }

@@ -17,6 +17,7 @@ import { appendFileSync } from 'node:fs';
 import { readFile, access, mkdir } from 'node:fs/promises';
 import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { LogWatch } from './livelog.js';
+import { checkHtml } from './htmlcheck.js';
 import { runningServers } from '../tools/shell.js';
 import { spawn } from 'node:child_process';
 
@@ -100,7 +101,7 @@ const SILENT = new Set(['update_plan']);
 const MAX_FIX_ROUNDS = 3;
 
 /** Files worth checking after they change. */
-const CHECKABLE = /\.(?:[cm]?[jt]sx?|py)$/i;
+const CHECKABLE = /\.(?:[cm]?[jt]sx?|py|html?)$/i;
 
 /** Where TypeScript keeps what it learned, so the next check is a quick one. */
 export const TSBUILDINFO = 'node_modules/.cache/ucode/types.tsbuildinfo';
@@ -1656,11 +1657,23 @@ export class Agent {
     const root = path.resolve(this.cwd);
     const tsRoots = new Set();
     const singles = [];
+    const problems = [];
 
     for (const rel of changed) {
       const abs = path.resolve(root, rel);
       if (!(await exists(abs))) continue;
       if (/\.py$/i.test(rel)) { singles.push({ abs, rel, command: `python -m py_compile "${abs}"` }); continue; }
+      // A single-file app keeps all its logic in an inline <script>, which no
+      // other check here ever looks at.
+      if (/\.html?$/i.test(rel)) {
+        const text = await readFile(abs, 'utf8').catch(() => null);
+        const bad = text === null ? [] : checkHtml(text);
+        if (bad.length) {
+          problems.push(`${rel} — the script in this page does not parse, so none of it runs:\n` +
+            bad.map((b) => `  line ${b.line}: ${b.message}`).join('\n'));
+        }
+        continue;
+      }
       let dir = path.dirname(abs);
       let owner = null;
       while (dir.startsWith(root)) {
@@ -1673,7 +1686,6 @@ export class Agent {
       else if (/\.[cm]?js$/i.test(rel)) singles.push({ abs, rel, command: `node --check "${abs}"` });
     }
 
-    const problems = [];
     const check = async (label, command, cwd) => {
       this.ui.toolCall(label);
       this.ui.startSpinner(label);
