@@ -15,7 +15,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolFailure } from '../core/failure.js';
 import { resolveIn, guard, result } from './shared.js';
-import { packageJsonWritten } from './shell.js';
+import { packageJsonWritten, installIn } from './shell.js';
+import { restore, populate } from './cache.js';
 
 const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates');
 
@@ -170,9 +171,24 @@ export async function createApp({ folder, name, description, template = 'next-sh
   await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
   const look = await applyDesign(target.abs, design);
 
+  // The starter has been installed on this machine before: hard-link that
+  // tree in, which is seconds where npm is a minute. Otherwise install as
+  // usual, and keep the result so the next app is instant.
+  let linked = 0;
   if (install) {
-    const pkg = path.join(target.abs, 'package.json');
-    packageJsonWritten(pkg, await fs.readFile(pkg, 'utf8'));
+    // Keyed on the starter's lockfile, which is the same for every app made
+    // from it — the app's own is rewritten by npm as it installs.
+    const lockText = await fs
+      .readFile(path.join(TEMPLATES, template, '_package-lock.json'), 'utf8')
+      .catch(() => null);
+    linked = await restore(target.abs, template, lockText);
+    if (!linked) {
+      const pkg = path.join(target.abs, 'package.json');
+      packageJsonWritten(pkg, await fs.readFile(pkg, 'utf8'));
+      installIn(target.abs)?.then((done) => {
+        if (done?.code === 0) populate(target.abs, template, lockText);
+      });
+    }
   }
 
   const guide = await fs.readFile(path.join(target.abs, 'TEMPLATE.md'), 'utf8').catch(() => '');
@@ -180,11 +196,14 @@ export async function createApp({ folder, name, description, template = 'next-sh
   return result(
     `Created ${target.show} from the ${template} starter — ${files.length} files, already known to build.\n` +
       (look ? `Design: the ${look.name} preset (${look.summary}), font ${look.fonts?.sans ?? 'Geist'}.\n` : '') +
-      (install
+      (linked
+        ? `Its packages are already in place (${linked.toLocaleString()} files, linked from the starter cache) — ` +
+          'nothing to install: build and run straight away.\n'
+        : install
         ? `Its packages are installing in the background right now. Keep writing: any command you run in ` +
           `${target.show} waits for that install first, so there is no need to run npm install.\n`
         : '') +
       `Run this app's commands with cwd: "${target.show}" (npm run build, npm run dev).\n\n${guide}`,
-    `${files.length} files${install ? ' · installing in the background' : ''}`
+    `${files.length} files${linked ? ' · packages ready' : install ? ' · installing in the background' : ''}`
   );
 }

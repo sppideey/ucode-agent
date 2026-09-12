@@ -422,6 +422,11 @@ export function packageJsonWritten(file, content) {
   else runInstall(dir);
 }
 
+/** The install running in exactly this folder, to follow it to its end. */
+export function installIn(dir) {
+  return installs.get(path.resolve(dir))?.promise ?? null;
+}
+
 /** The install running for this directory or any folder above it, if one is. */
 function installFor(dir) {
   let at = path.resolve(dir);
