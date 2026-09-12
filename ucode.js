@@ -88,7 +88,13 @@ async function main() {
   // have no way to know. So if there is something newer, it goes on now and
   // this process hands over to it. The wait is a few seconds, once per
   // release; every other launch pays one quick question to the registry.
-  if (!args.version && process.argv[2] !== 'login' && process.argv[2] !== 'doctor') {
+  //
+  // Only when a person is sitting there. Handing over means re-running this
+  // process, and a run whose input is a pipe has that input consumed by the
+  // handover — `cat prompt.txt | ucode` printed "updating…" and then did
+  // nothing at all. Piped runs take the background update and carry on.
+  if (!args.version && process.stdin.isTTY &&
+      process.argv[2] !== 'login' && process.argv[2] !== 'doctor') {
     const { pendingUpdate, installNow } = await import('./src/core/updater.js');
     const waiting = await pendingUpdate();
     if (waiting) {
