@@ -101,7 +101,7 @@ const title = (t) => `${ESC}]0;${t}\x07`;
  * Fixed rows below the header: the gap under it, the gap above the input box,
  * the input box's two borders, the blank row inside it, and the status row.
  */
-const CHROME_BELOW = 8;
+const CHROME_BELOW = 6;
 
 /** How long one sentence of reasoning holds the line before the next takes it. */
 const THOUGHT_HOLD_MS = 1100;
@@ -285,6 +285,11 @@ export class Screen {
       this.add(boxRow(` ${lead} ${chalk.white(row)}`, width, edge));
     });
     this.add(boxBottom(width, edge));
+    // Room between what you asked for and what came back. Without it the reply
+    // starts against the bottom of your own message and the two read as one
+    // block of text.
+    this.add('');
+    this.add('');
     this.render();
   }
 
@@ -1360,8 +1365,6 @@ export class Screen {
       // reads as part of the input rather than as the answer above it.
       '',
       ...this.inputBox(),
-      '',
-      '',
     ];
 
     // The cursor is hidden for the duration of the paint. Without this it is

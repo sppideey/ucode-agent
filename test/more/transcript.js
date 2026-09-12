@@ -179,6 +179,30 @@ export async function inputSuite({ test, section, ok, eq }) {
     eq(s.caretAt(60).row, 0);
   });
 
+  await test('the caret stays inside the box, whatever is typed into it', () => {
+    // The box is positioned by counting up from the bottom of the screen, so
+    // anything added underneath it moves the box and not the caret — which
+    // showed up as the input glitching while a task ran.
+    const s = screen('');
+    s.assistant('past the welcome screen');
+    for (const buffer of ['', 'hello', 'a'.repeat(200), `one${NL}two${NL}three`]) {
+      s.buffer = buffer;
+      s.cursor = buffer.length;
+      const [row] = s.caret();
+      const rows = s.inputLines().rows.length;
+      const first = s.rows - 2 - rows;
+      ok(row >= first && row < first + rows,
+        `caret on row ${row}, box occupies ${first}..${first + rows - 1} for ${JSON.stringify(buffer.slice(0, 12))}`);
+    }
+  });
+
+  await test('what you typed is given room before the reply starts', () => {
+    const s = screen('');
+    s.userMessage('build me a tasks app');
+    const tail = s.lines.slice(-2);
+    eq(tail.filter((l) => l.trim() === '').length, 2, 'two clear rows under your message');
+  });
+
   await test('a pasted block sizes the box to hold it', () => {
     const s = screen('');
     s.onData(`\x1b[200~a${NL}b${NL}c${NL}d\x1b[201~`);
