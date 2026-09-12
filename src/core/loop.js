@@ -434,10 +434,12 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '## How to work',
     '',
-    'Say what you are about to do, in one short line, before you do it — "now the',
-    'tests", "wiring this into the loop". A line like that before a group of actions is',
-    'what makes the work readable. Keep it to a sentence: the narration is not the',
-    'answer, and three sentences of intent before every step reads as stalling.',
+    '- Say what you are about to do before you do it, in one short line, every time you',
+    '  pick up a new piece of work: "Right, the HTML structure first.", "Now the state',
+    '  and the render loop.", "That is the layout done - onto the animations." Without',
+    '  it the screen is a list of file operations and the user cannot tell what you are',
+    '  building or why. One sentence, in your own voice, then the actions. Not three',
+    '  sentences, and not a restatement of the request.',
     '',
     'Before you guess at an API, ask: type_of gives the exact signature from the',
     'TypeScript this project has installed, and find_symbol says where something is declared without',
@@ -493,7 +495,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  writing files. Running the install yourself afterwards just waits for that one.',
     '- When you finish, ucode type-checks what you changed and hands you the errors, so',
     '  there is no need to run tsc yourself.',
-    '- Once the dev server is ready, run look_at_app on the pages you built. Fix what it',
+    '- Do not open or drive a browser. Checking the page in one is something the user',
+    '  asks for with /look; your job is to leave the app in a state worth looking at.',
     '  reports - errors, layout that overflows a phone, the review points worth fixing -',
     '  in one pass, then look once more. A clean second look means it is done: report',
     '  back instead of polishing in circles. Never call an interface finished unlooked at.',
@@ -1815,6 +1818,7 @@ export class Agent {
       case '/copy':     return this.cmdCopy();
       case '/stats':    return this.cmdStats();
       case '/doctor':   return this.cmdDoctor();
+      case '/look':     return this.cmdLook(arg);
       case '/deploy':   return this.cmdDeploy(arg);
       case '/exit':
       case '/quit':     return 'exit';
@@ -1825,11 +1829,42 @@ export class Agent {
     }
   }
 
+  /**
+   * Look at the running app, because the user asked to.
+   *
+   * This used to happen on its own, which meant a browser being driven while
+   * someone was reading, and a window taking the screen mid-thought. It is
+   * the same check as before; the difference is who starts it.
+   */
+  async cmdLook(url) {
+    const { lookAtApp } = await import('../tools/browser.js');
+    const server = runningServers().at(-1);
+    const at = (url ?? '').trim() || server?.url;
+    if (!at) {
+      this.ui.write(theme.warn('  nothing is running to look at.'));
+      this.ui.note('start the app first, or pass a URL: /look http://localhost:3000');
+      return;
+    }
+    this.ui.toolCall(`Looking at ${at}`);
+    try {
+      const out = await lookAtApp({ url: at });
+      this.ui.write(out.content);
+      // The model gets it too, so the next thing it says is about what is
+      // actually on the page rather than what it believes it built.
+      this.push({ role: 'user', content: `I looked at ${at}. This is what is there:
+
+${out.content}` });
+    } catch (err) {
+      this.ui.write(theme.error(`  ${err.failed ?? err.message}`));
+    }
+  }
+
   cmdHelp() {
     const rows = [
       ['/help', 'this list'],
       ['/stats', 'time, steps and tokens this session'],
       ['/doctor', 'check that everything ucode needs is working'],
+      ['/look [url]', 'open the running app and report what is on the page'],
       ['/deploy [folder]', 'put the app online and get its link'],
       ['/model', 'show the models and switch between them'],
       ['/resume', 'pick up an earlier conversation'],

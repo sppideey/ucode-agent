@@ -118,6 +118,7 @@ export default async function ({ test, section, ok, eq }) {
   });
 
   await inputSuite({ test, section, ok, eq });
+  await planSuite({ test, section, ok, eq });
 }
 
 export async function inputSuite({ test, section, ok, eq }) {
@@ -181,5 +182,50 @@ export async function inputSuite({ test, section, ok, eq }) {
     const s = screen('');
     s.onData(`\x1b[200~a${NL}b${NL}c${NL}d\x1b[201~`);
     eq(s.inputLines(60).rows.length, 4, 'four pasted lines, four rows');
+  });
+}
+
+export async function planSuite({ test, section, ok, eq }) {
+  const chalk = (await import('chalk')).default;
+  const { planRows, planLine, bare } = await import('../../src/ui/theme.js');
+  const { tools } = await import('../../src/tools/index.js');
+
+  section('the plan');
+
+  const plain = (items) => planRows(items).map(bare);
+
+  await test('each step keeps its own row, so nothing wraps into the ticks', () => {
+    const rows = plain([{ text: 'a', done: true }, { text: 'b' }, { text: 'c' }]);
+    eq(rows.length, 4, 'a heading and three steps');
+    ok(rows[0].includes('plan 1/3'), rows[0]);
+  });
+
+  await test('done, in progress and not started are each marked differently', () => {
+    const rows = plain([{ text: 'a', done: true }, { text: 'b' }, { text: 'c' }]);
+    ok(rows[1].includes('✓'), rows[1]);
+    ok(rows[2].includes('▸'), 'the one in progress is the first not done');
+    ok(rows[3].includes('○'), rows[3]);
+  });
+
+  await test('an empty plan draws nothing at all', () => {
+    eq(planRows([]), []);
+    eq(planRows(undefined), []);
+    eq(planLine([]), '');
+  });
+
+  await test('a finished plan says so rather than pointing at nothing', () => {
+    ok(bare(planLine([{ text: 'a', done: true }])).includes('done'));
+  });
+
+  section('the browser check');
+
+  await test('the model is not given it — it is something the user asks for', () => {
+    ok(!tools.some((t) => t.name === 'look_at_app'),
+      'look_at_app in the toolbox is how it ended up driving a browser unasked');
+  });
+
+  await test('and it is still there to be asked for', async () => {
+    const m = await import('../../src/tools/index.js');
+    ok(m.lookAtAppTool?.name === 'look_at_app', 'the schema is kept for /look');
   });
 }

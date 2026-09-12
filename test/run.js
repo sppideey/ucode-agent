@@ -814,14 +814,22 @@ await test('the live label never ends in a full stop', () => {
   }
 });
 
-await test('the label names the thing being worked on', () => {
+await test('the label names the kind of work, so a run of it folds into one line', () => {
   eq(describe('list_dir', { path: 'src' }), 'Listing src');
   eq(describe('list_dir', {}), 'Listing the project root');
   eq(describe('list_dir', { path: '.' }), 'Listing the project root');
-  eq(describe('read_file', { path: 'a.js' }), 'Reading a.js');
-  eq(describe('batch_write', { files: [{ path: 'only.js' }] }), 'Writing only.js');
-  eq(describe('read_files', { paths: ['a.js', 'b.js'] }), 'Reading a.js, b.js');
-  eq(describe('read_files', { paths: Array.from({ length: 9 }, (_, i) => `src/components/part-${i}.tsx`) }), 'Reading 9 files');
+  // Which file is in the result and in the diff. Naming it here made every
+  // step its own line, and a run of eight reads eight lines of near-identical
+  // text between the reader and the answer.
+  eq(describe('read_file', { path: 'a.js' }), 'Reading files');
+  eq(describe('read_files', { paths: ['a.js', 'b.js'] }), 'Reading files');
+  eq(describe('write_file', { path: 'only.js' }), 'Writing app');
+  eq(describe('batch_write', { files: [{ path: 'only.js' }] }), 'Writing app');
+  eq(describe('edit_file', { path: 'a.js' }), 'Writing app');
+  eq(describe('multi_edit', { path: 'a.js', edits: [1, 2] }), 'Writing app');
+  // A command still says which command: that is the one thing you cannot
+  // reconstruct from anywhere else on screen.
+  eq(describe('run_command', { command: 'npm test' }), 'Running npm test');
 });
 
 await test('reads are parallel-safe and writes are not', () => {

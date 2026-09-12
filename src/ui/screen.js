@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -58,7 +58,7 @@ export function isLabel(text) {
 export const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
   '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
-  '/stats', '/doctor', '/deploy',
+  '/stats', '/doctor', '/deploy', '/look',
 ];
 
 // ANSI ----------------------------------------------------------------------
@@ -347,8 +347,10 @@ export class Screen {
 
   /** The checklist, when the model updates it. One line, wrapped if it must. */
   plan(items) {
-    const line = planLine(items);
-    if (line) this.push(line);
+    const rows = planRows(items);
+    if (!rows.length) return;
+    this.endRun();          // a plan is not another step of whatever came before
+    for (const row of rows) this.push(row);
   }
 
   /**
@@ -508,7 +510,10 @@ export class Screen {
   thinkingEnd() {
     if (this.thoughtSince === undefined) return;
     const seconds = Math.round((Date.now() - this.thoughtSince) / 1000);
-    if (seconds >= 2) this.push(dim(`  ⋮ thought for ${seconds}s`));
+    // How long it thought is not what the reader is here for, and a line of it
+    // between every step broke every run of steps into singletons — which is
+    // why nothing folded. The time is still on the status row while it runs.
+    void seconds;
     this.thoughtSince = undefined;
   }
 

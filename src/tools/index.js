@@ -23,6 +23,37 @@ const str = (description) => ({ type: 'string', description });
 const int = (description) => ({ type: 'integer', description });
 const bool = (description) => ({ type: 'boolean', description });
 
+/**
+ * The browser check is deliberately not in `tools`.
+ *
+ * It used to run itself whenever a dev server came up, which meant a window
+ * opening mid-thought and a page being driven while the user was reading. It
+ * is now something asked for: /look runs it, and nothing else does.
+ */
+export const lookAtAppTool =   {
+    name: 'look_at_app',
+    description:
+      'Open the running app in a real browser at a phone width (375px) and a desktop width ' +
+      '(1440px) and report what a person would run into: console errors, failed requests, ' +
+      'content that spills off the side of the screen, broken images, unlabeled buttons and ' +
+      'fields. The first look at an app also brings a designer-style review of the ' +
+      'screenshots; later looks re-run only the fast checks. Use it once the dev server is ' +
+      'ready, fix what it reports, then look once more to confirm. Screenshots are saved ' +
+      'under .ucode/screenshots.',
+    parameters: {
+      type: 'object',
+      properties: {
+        url: str('The local URL the dev server reported, e.g. http://localhost:3000'),
+        paths: {
+          type: 'array',
+          description: 'Pages to open, e.g. ["/", "/settings"]. Defaults to ["/"]. Up to 4.',
+          items: { type: 'string' },
+        },
+      },
+      required: ['url'],
+    },
+  };
+
 export const tools = [
   {
     name: 'create_app',
@@ -417,29 +448,6 @@ export const tools = [
     },
   },
   {
-    name: 'look_at_app',
-    description:
-      'Open the running app in a real browser at a phone width (375px) and a desktop width ' +
-      '(1440px) and report what a person would run into: console errors, failed requests, ' +
-      'content that spills off the side of the screen, broken images, unlabeled buttons and ' +
-      'fields. The first look at an app also brings a designer-style review of the ' +
-      'screenshots; later looks re-run only the fast checks. Use it once the dev server is ' +
-      'ready, fix what it reports, then look once more to confirm. Screenshots are saved ' +
-      'under .ucode/screenshots.',
-    parameters: {
-      type: 'object',
-      properties: {
-        url: str('The local URL the dev server reported, e.g. http://localhost:3000'),
-        paths: {
-          type: 'array',
-          description: 'Pages to open, e.g. ["/", "/settings"]. Defaults to ["/"]. Up to 4.',
-          items: { type: 'string' },
-        },
-      },
-      required: ['url'],
-    },
-  },
-  {
     name: 'web_search',
     description:
       'Search the web and get back titles, links and summaries. For anything the ' +
@@ -578,28 +586,20 @@ export async function runTool(name, args = {}, opts = {}) {
 export function describe(name, args = {}) {
   switch (name) {
     case 'read_file':
-      return `Reading ${clip(args.path)}${args.offset > 1 ? ` from line ${args.offset}` : ''}`;
-    case 'read_files': {
-      const names = (args.paths ?? []).map((p) => String(p));
-      const joined = names.join(', ');
-      return names.length && joined.length <= 60 ? `Reading ${joined}` : `Reading ${names.length} files`;
-    }
+    case 'read_files':
+      // Which file is in the diff and in the result; the transcript only has to
+      // say what kind of work is going on, so a run of them folds into one line.
+      return 'Reading files';
     case 'write_file':
-      return `Writing ${clip(args.path)}`;
-    case 'batch_write': {
-      const n = args.files?.length ?? 0;
-      const first = args.files?.[0]?.path;
-      return n === 1 && first ? `Writing ${clip(first)}` : `Writing ${n} files`;
-    }
+      return 'Writing app';
+    case 'batch_write':
+      return 'Writing app';
     case 'edit_file':
-      return `Editing ${clip(args.path)}`;
+      return 'Writing app';
     case 'multi_edit':
-      return `Editing ${clip(args.path)}, ${args.edits?.length ?? 0} changes`;
-    case 'edit_files': {
-      const n = args.files?.length ?? 0;
-      const first = args.files?.[0]?.path;
-      return n === 1 && first ? `Editing ${clip(first)}` : `Editing ${n} files`;
-    }
+      return 'Writing app';
+    case 'edit_files':
+      return 'Writing app';
     case 'update_plan':
       return 'Updating the plan';
     case 'delegate':

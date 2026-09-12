@@ -263,18 +263,41 @@ export function asLabel(text) {
  * The model's checklist, as one short line — done ticked, the current item
  * marked, the rest dim — so progress is visible without taking over the screen.
  */
+/**
+ * The plan, as a block rather than a sentence.
+ *
+ * Six steps joined with separators made one line far wider than any terminal,
+ * so it wrapped — and a wrapped checklist has its ticks in the middle of the
+ * text, which is unreadable. Down the page each step keeps its own row, its
+ * mark stays in the left column, and the eye can find the one in progress
+ * without reading any of the others.
+ *
+ * Returns the rows; the caller pushes them.
+ */
+export function planRows(items) {
+  const list = (Array.isArray(items) ? items : []).slice(0, 8);
+  if (!list.length) return [];
+  const done = list.filter((i) => i?.done).length;
+  const current = list.findIndex((i) => !i?.done);
+
+  const rows = [`  ${sky(`plan ${done}/${list.length}`)}`];
+  list.forEach((item, i) => {
+    const text = clip(String(item?.text ?? '').trim(), 64);
+    if (item?.done) rows.push(`    ${theme.ok('✓')} ${dim(text)}`);
+    else if (i === current) rows.push(`    ${blue('▸')} ${chalk.white(text)}`);
+    else rows.push(`    ${dim('○')} ${dim(text)}`);
+  });
+  return rows;
+}
+
+/** Kept for the plain interface, which has one line to work with. */
 export function planLine(items) {
   const list = (Array.isArray(items) ? items : []).slice(0, 6);
   if (!list.length) return '';
   const done = list.filter((i) => i?.done).length;
   const current = list.findIndex((i) => !i?.done);
-  const parts = list.map((item, i) => {
-    const text = clip(String(item?.text ?? '').trim(), 30);
-    if (item?.done) return `${theme.ok('✓')} ${dim(text)}`;
-    if (i === current) return `${blue('▸')} ${chalk.white(text)}`;
-    return dim(`○ ${text}`);
-  });
-  return `  ${sky(`plan ${done}/${list.length}`)}  ${parts.join(dim('  ·  '))}`;
+  const now = current === -1 ? 'done' : clip(String(list[current]?.text ?? '').trim(), 40);
+  return `  ${sky(`plan ${done}/${list.length}`)}  ${chalk.white(now)}`;
 }
 
 /**
