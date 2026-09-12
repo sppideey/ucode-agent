@@ -8,6 +8,7 @@ import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFi
 import { listDir, glob, grep } from './search.js';
 import { findSymbol, outline } from './symbols.js';
 import { renameSymbol } from './rename.js';
+import { addBlock, BLOCK_NAMES } from './blocks.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
 import { lookAtApp } from './browser.js';
@@ -317,6 +318,23 @@ export const tools = [
     },
   },
   {
+    name: 'add_block',
+    description:
+      'Add a ready-made, polished piece of an app — ' + BLOCK_NAMES.join(', ') + '. Each is ' +
+      'copied in as an ordinary source file you can then edit, built on the shadcn ' +
+      'components already in the starter, so nothing needs installing. Call it with no ' +
+      'name to see what each one is for. Prefer these over writing a table or an empty ' +
+      'state from scratch: they already handle sorting, empty and loading states, ' +
+      'alignment and small screens.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: str('Which block, e.g. "data-table". Omit to list them.'),
+        folder: str('The app folder to add it to. Defaults to the project root.'),
+      },
+    },
+  },
+  {
     name: 'run_command',
     description:
       'Run a shell command and get back its output and exit code. It runs without ' +
@@ -424,6 +442,7 @@ const run = {
   find_symbol: findSymbol,
   outline,
   rename_symbol: renameSymbol,
+  add_block: addBlock,
   run_command: runCommand,
   run_commands: runCommands,
   web_search: webSearch,
@@ -434,7 +453,7 @@ const run = {
 
 /** Tools that change the project or execute code. */
 export const MUTATING = new Set([
-  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol',
+  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol', 'add_block',
   'run_command', 'run_commands', 'deploy',
 ]);
 
@@ -443,7 +462,7 @@ export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'gl
 
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
-  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol',
+  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol', 'add_block',
   'run_command', 'run_commands', 'delegate', 'create_app', 'deploy',
 ]);
 
@@ -561,6 +580,8 @@ export function describe(name, args = {}) {
         : `Listing ${clip(args.path)}`;
     case 'glob':
       return `Finding ${clip(args.pattern)}`;
+    case 'add_block':
+      return args.name ? `Adding the ${clip(args.name, 30)} block` : 'Listing the ready-made blocks';
     case 'rename_symbol':
       return `Renaming ${clip(args.name, 30)} to ${clip(args.to, 30)}`;
     case 'find_symbol':
