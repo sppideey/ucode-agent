@@ -252,7 +252,11 @@ export function asLabel(text) {
   return String(text ?? '')
     .trim()
     .replace(/\s+/g, ' ')
-    .replace(/(?<=[\w)\]"'`])[.。]+$/, '');
+    // A trailing stop, from a model's sentence or a tool's own output
+    // ("Building…", "Completing…"), is noise on a one-line label. A dot that
+    // is the argument itself — "Listing ." — is not, so a word has to come
+    // before it.
+    .replace(/(?<=[\w)\]"'`])[.。…]+$/, '');
 }
 
 /**
