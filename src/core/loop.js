@@ -14,7 +14,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { appendFileSync } from 'node:fs';
-import { readFile, access } from 'node:fs/promises';
+import { readFile, access, mkdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 
 import {
@@ -72,6 +72,22 @@ const MAX_FIX_ROUNDS = 3;
 
 /** Files worth checking after they change. */
 const CHECKABLE = /\.(?:[cm]?[jt]sx?|py)$/i;
+
+/** Where TypeScript keeps what it learned, so the next check is a quick one. */
+export const TSBUILDINFO = 'node_modules/.cache/ucode/types.tsbuildinfo';
+
+/** TypeScript before 4.0 rejects --incremental together with --noEmit. */
+const NO_INCREMENTAL = /TS5074|TS6304|'--incremental'/;
+
+/**
+ * The type check to run. Incremental by default: the first check pays the
+ * full cost and writes a build info file, and every one after it reads that
+ * and reports in about a second.
+ */
+export function typeCheckCommand(incremental = true) {
+  const base = 'npx --no-install tsc --noEmit --pretty false';
+  return incremental ? `${base} --incremental --tsBuildInfoFile ${TSBUILDINFO}` : base;
+}
 
 /**
  * Failures that are the provider's and not the model's: busy, slow, down, or
@@ -1413,6 +1429,12 @@ export class Agent {
    * Check the code files changed since the last check, and return the
    * errors as text for the model — or null when everything is clean.
    *
+   * The check is incremental: TypeScript writes what it learned to a build
+   * info file, so the second check onwards reads that instead of retyping
+   * every dependency — seconds rather than the best part of a minute. The
+   * file sits in node_modules/.cache, which is already ignored by git and is
+   * deliberately left out of the starter package cache.
+   *
    * TypeScript projects get one `tsc --noEmit` per project that owns a
    * changed file (an app scaffolded into a subfolder is its own project).
    * Plain JavaScript gets a syntax check, Python a compile check. Nothing
@@ -1457,7 +1479,13 @@ export class Agent {
 
     for (const dir of tsRoots) {
       const show = path.relative(root, dir) || '.';
-      const out = await check(`Checking types in ${show}`, 'npx --no-install tsc --noEmit --pretty false', dir);
+      await mkdir(path.join(dir, path.dirname(TSBUILDINFO)), { recursive: true }).catch(() => {});
+      let out = await check(`Checking types in ${show}`, typeCheckCommand(true), dir);
+      // Older TypeScript refuses --incremental alongside --noEmit. Say so once
+      // by simply checking again the slow way, rather than failing the edit.
+      if (out.exitCode !== 0 && NO_INCREMENTAL.test(out.content)) {
+        out = await check(`Checking types in ${show}`, typeCheckCommand(false), dir);
+      }
       if (out.exitCode === 0) { this.ui.toolResult('types check out'); continue; }
       const errors = out.content.split('\n').filter((l) => /error TS\d+/.test(l));
       this.ui.toolFailed(`${errors.length || 'some'} type error${errors.length === 1 ? '' : 's'}`);

@@ -124,4 +124,31 @@ export default async function ({ test, section, ok, eq, tmp }) {
     ok(await populate(app, 'again-starter', LOCK, { home }), 'the first fills it');
     eq(await populate(app, 'again-starter', LOCK, { home }), false, 'the second leaves it as it is');
   });
+
+  await typecheckSuite({ test, section, ok, eq });
+}
+
+// ---------------------------------------------------------------------------
+
+export async function typecheckSuite({ test, section, ok, eq }) {
+  const { typeCheckCommand, TSBUILDINFO } = await import('../../src/core/loop.js');
+
+  section('instant type-checking');
+
+  await test('the check is incremental, so the second one is quick', () => {
+    const cmd = typeCheckCommand();
+    ok(cmd.includes('--incremental'), cmd);
+    ok(cmd.includes(`--tsBuildInfoFile ${TSBUILDINFO}`), 'the build info needs somewhere to live');
+    ok(cmd.includes('--noEmit'), 'checking types, not building');
+  });
+
+  await test('the build info hides in node_modules/.cache, which git and the package cache both skip', () => {
+    ok(TSBUILDINFO.startsWith('node_modules/.cache/'), TSBUILDINFO);
+  });
+
+  await test('old TypeScript still gets checked, just the slow way', () => {
+    const slow = typeCheckCommand(false);
+    ok(!slow.includes('--incremental'), 'the fallback drops it');
+    ok(slow.includes('--noEmit') && slow.includes('tsc'), 'but still checks');
+  });
 }
