@@ -7,6 +7,7 @@ import { ToolFailure } from '../core/failure.js';
 import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFiles } from './files.js';
 import { listDir, glob, grep } from './search.js';
 import { findSymbol, outline } from './symbols.js';
+import { renameSymbol } from './rename.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
 import { lookAtApp } from './browser.js';
@@ -298,6 +299,24 @@ export const tools = [
     },
   },
   {
+    name: 'rename_symbol',
+    description:
+      'Rename a function, component, variable, prop or type everywhere it appears as ' +
+      'that name. Understands where code ends and strings and comments begin, so it will ' +
+      'not rewrite a word inside a message, and matches whole names only — renaming "id" ' +
+      'leaves "width" and "idle" alone. Prefer this over edit_file for a rename: a ' +
+      'find-and-replace that matched too much is the most common broken edit.',
+    parameters: {
+      type: 'object',
+      properties: {
+        name: str('The name as it is now, e.g. "userId".'),
+        to: str('What it should become, e.g. "accountId".'),
+        path: str('File or directory to rename within. Defaults to the project root.'),
+      },
+      required: ['name', 'to'],
+    },
+  },
+  {
     name: 'run_command',
     description:
       'Run a shell command and get back its output and exit code. It runs without ' +
@@ -404,6 +423,7 @@ const run = {
   grep,
   find_symbol: findSymbol,
   outline,
+  rename_symbol: renameSymbol,
   run_command: runCommand,
   run_commands: runCommands,
   web_search: webSearch,
@@ -414,7 +434,8 @@ const run = {
 
 /** Tools that change the project or execute code. */
 export const MUTATING = new Set([
-  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands', 'deploy',
+  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol',
+  'run_command', 'run_commands', 'deploy',
 ]);
 
 /** Tools with no side effects, so several may run at the same time. */
@@ -422,12 +443,12 @@ export const PARALLEL_SAFE = new Set(['read_file', 'read_files', 'list_dir', 'gl
 
 /** Tools withheld in plan mode. Withholding beats asking a model not to. */
 export const WRITES = new Set([
-  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'run_command', 'run_commands',
-  'delegate', 'create_app', 'deploy',
+  'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol',
+  'run_command', 'run_commands', 'delegate', 'create_app', 'deploy',
 ]);
 
 /** Tools that change files on disk, which parallel workers take turns at. */
-export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files']);
+export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol']);
 
 // ---------------------------------------------------------------------------
 // Argument checking
@@ -540,6 +561,8 @@ export function describe(name, args = {}) {
         : `Listing ${clip(args.path)}`;
     case 'glob':
       return `Finding ${clip(args.pattern)}`;
+    case 'rename_symbol':
+      return `Renaming ${clip(args.name, 30)} to ${clip(args.to, 30)}`;
     case 'find_symbol':
       return `Looking up ${clip(args.name, 40)}`;
     case 'outline':
