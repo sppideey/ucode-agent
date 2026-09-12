@@ -46,12 +46,12 @@ export default async function ({ test, section, ok, eq }) {
     s.restore();
   });
 
-  await test('a single step still shows what it was and what came of it', () => {
+  await test('a single step shows what it was, and nothing underneath it', () => {
     const s = screen();
     s.toolCall('Running npm test');
     s.toolResult('ok');
     ok(bare(s.lines[0]).includes('Running npm test'), s.lines[0]);
-    ok(bare(s.lines[1]).includes('ok'), 'its result is still there');
+    eq(s.lines.filter((l) => l.trim()).length, 1, 'the result does not get a line of its own');
     s.restore();
   });
 

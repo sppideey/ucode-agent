@@ -328,3 +328,28 @@ export function groupLabel(label, count) {
   const [past, one, many] = g;
   return `${past} ${count} ${count === 1 ? one : many}`;
 }
+
+/** The part of a label after its opening word: the file or command it is about. */
+export const groupTarget = (label) => String(label ?? '').trim().split(/\s+/).slice(1).join(' ');
+
+/**
+ * One narration line, standing for everything that happened under it.
+ *
+ * The transcript is a record of what was done, not a copy of what was
+ * written. A 539-line file printed into it buries the answer and tells the
+ * reader nothing they could not get from the file itself, so a change is its
+ * two numbers. Several steps on one file stay one line naming that file;
+ * several files become a count.
+ */
+export function runLine({ label, count = 1, targets = [], added = 0, removed = 0 }) {
+  const counts = added || removed
+    ? ` ${chalk.hex('#3fb950')(`+${added}`)} ${chalk.hex('#f2939c')(`-${removed}`)}`
+    : '';
+  if (count <= 1) return `${label}${counts}`;
+
+  const g = GROUPS[groupKind(label)];
+  const unique = [...new Set(targets.filter(Boolean))];
+  if (g && unique.length === 1) return `${g[0]} ${unique[0]}${counts}`;
+  if (!g) return `${label} (+${count - 1} more)${counts}`;
+  return `${g[0]} ${count} ${count === 1 ? g[1] : g[2]}${counts}`;
+}

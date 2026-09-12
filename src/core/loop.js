@@ -65,6 +65,32 @@ const MAX_ARG_RETRIES = 2;
 const MAX_CONTINUATIONS = 3;
 
 /** Read-only tools whose result line adds nothing — the user saw the output. */
+/**
+ * How many rows a diff adds and removes.
+ *
+ * The rows come through as "+12| text" and "-12| text", with a "~" heading
+ * for each file in a multi-file write and an undecorated note counting what
+ * was elided. Only the signs are counted.
+ */
+export function countDiff(rows = []) {
+  let added = 0;
+  let removed = 0;
+  for (const row of rows) {
+    const line = String(row ?? '');
+    if (line.startsWith('~')) continue;
+    // "… 218 more removed" / "… 508 more added" stand for rows not shown.
+    const more = /^\s*[….]+\s*(\d+)\s+more\s+(added|removed)/.exec(line);
+    if (more) {
+      if (more[2] === 'added') added += Number(more[1]);
+      else removed += Number(more[1]);
+      continue;
+    }
+    if (line.startsWith('+')) added++;
+    else if (line.startsWith('-')) removed++;
+  }
+  return { added, removed };
+}
+
 const QUIET = new Set(['read_file', 'read_files', 'list_dir', 'glob', 'grep', 'web_search', 'update_plan']);
 
 /** Tools that draw their own line, so they get no "● Doing X" line of their own. */
@@ -1320,8 +1346,10 @@ export class Agent {
       this.sinceCheck?.clear();
     }
     if (!QUIET.has(call.name)) this.ui.toolResult(out.summary);
-    if (out.diff?.length) this.ui.diff(out.diff);
-    if (out.output?.length) this.ui.commandOutput(out.output);
+    // The change as its two numbers, not as a copy of the file. The diff rows
+    // are still built by the tool — the model reads them in the result — they
+    // simply do not go on screen.
+    if (out.diff?.length) this.ui.diffStat?.(countDiff(out.diff));
     this.push({ role: 'tool', toolCallId: call.id, name: call.name, content: out.content + this.stuckNote(call, { out }) });
   }
 

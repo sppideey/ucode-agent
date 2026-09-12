@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -84,6 +84,8 @@ const TRACK = process.platform === 'win32'
 const UNTRACK = process.platform === 'win32'
   ? '' : `${ESC}[?1006l${ESC}[?1015l${ESC}[?1002l${ESC}[?1000l`;
 
+const PASTE_ON = `${ESC}[?2004h`;
+const PASTE_OFF = `${ESC}[?2004l`;
 const MOUSE_ON = `${ESC}[?1007h${TRACK}`;
 const MOUSE_OFF = `${UNTRACK}${ESC}[?1007l`;
 const HIDE = `${ESC}[?25l`;
@@ -149,7 +151,7 @@ export class Screen {
 
   async start() {
     ensureColour(this.output);
-    this.output.write(ALT_ON + MOUSE_ON + HIDE + title(`ucode — ${path.basename(this.cwd)}`));
+    this.output.write(ALT_ON + MOUSE_ON + PASTE_ON + HIDE + title(`ucode — ${path.basename(this.cwd)}`));
     this.input.setRawMode?.(true);
     this.input.resume();
     this.input.setEncoding('utf8');
@@ -173,7 +175,7 @@ export class Screen {
     this.output.off?.('resize', this.onResize);
     this.input.setRawMode?.(false);
     this.input.pause();
-    this.output.write(MOUSE_OFF + ALT_OFF + SHOW);
+    this.output.write(PASTE_OFF + MOUSE_OFF + ALT_OFF + SHOW);
   }
 
   close() {
@@ -305,11 +307,14 @@ export class Screen {
       if (gap === 1) this.lines.pop();   // its single result line, now counted
       run.count++;
       run.label = label;
-      this.lines[run.at] = `${narrationMark()} ${narration(asLabel(groupLabel(label, run.count)))}`;
-      this.render();
+      run.targets.push(groupTarget(label));
+      this.paintRun();
     } else {
       this.push(`${narrationMark()} ${narration(asLabel(label))}`);
-      this.run = { kind, count: 1, at: this.lines.length - 1, label };
+      this.run = {
+        kind, count: 1, at: this.lines.length - 1, label,
+        targets: [groupTarget(label)], added: 0, removed: 0,
+      };
     }
     this.updateSpinner(label);
   }
@@ -317,18 +322,42 @@ export class Screen {
   /** Anything that is not another step of the same kind ends the run. */
   endRun() { this.run = null; }
 
+  /** Redraw the run's single line from what it has accumulated. */
+  paintRun() {
+    if (!this.run) return;
+    this.lines[this.run.at] = `${narrationMark()} ${narration(asLabel(runLine(this.run)))}`;
+    this.render();
+  }
+
+  /**
+   * A change, as its two numbers.
+   *
+   * The diff itself used to go into the transcript. A 539-line file printed
+   * there buries the answer under a copy of something already on disk, so
+   * what is kept is the shape of the change: how much arrived, how much left.
+   */
+  diffStat({ added = 0, removed = 0 } = {}) {
+    if (!this.run) return;
+    this.run.added += added;
+    this.run.removed += removed;
+    this.paintRun();
+  }
+
   /** The checklist, when the model updates it. One line, wrapped if it must. */
   plan(items) {
     const line = planLine(items);
     if (line) this.push(line);
   }
 
-  toolResult(summary) {
-    // Inside a run, the count on the line above already says what happened;
-    // a result line per step is the noise this is meant to remove.
-    if (this.run && this.run.count > 1) return;
-    this.push(dim(`  └ ${summary}`));
-  }
+  /**
+   * What came of a step.
+   *
+   * Nothing goes underneath the bullet any more: a line of its own for every
+   * result doubles the height of the transcript to say "ok". The bullet
+   * already names the step, and a change adds its numbers to that same line.
+   * Only a failure earns a line of its own.
+   */
+  toolResult() {}
 
   toolFailed(summary) {
     // A failure is never folded away.
@@ -953,7 +982,55 @@ export class Screen {
     this.render();
   }
 
+  /**
+   * Text arriving as a paste rather than as typing.
+   *
+   * A terminal in bracketed-paste mode wraps pasted text in markers, which is
+   * the only way to tell forty lines pasted at once from forty lines typed
+   * very fast. Without it every newline in the paste reads as Enter, so a
+   * pasted block submits itself a line at a time and arrives as forty
+   * messages. Inside the markers a newline is just a character.
+   */
+  onPaste(text) {
+    const clean = String(text).replace(/\r\n?/g, '\n');
+    this.buffer = this.buffer.slice(0, this.cursor) + clean + this.buffer.slice(this.cursor);
+    this.cursor += clean.length;
+    this.render();
+  }
+
   onData(chunk) {
+    // Pasted text first: it is wrapped in markers and must not be read as
+    // keys, or its newlines submit it in pieces.
+    const paste = /\[200~([\s\S]*?)\[201~/g;
+    if (paste.test(chunk)) {
+      paste.lastIndex = 0;
+      let at = 0;
+      let m;
+      while ((m = paste.exec(chunk))) {
+        if (m.index > at) this.onData(chunk.slice(at, m.index));
+        this.onPaste(m[1]);
+        at = m.index + m[0].length;
+      }
+      if (at < chunk.length) this.onData(chunk.slice(at));
+      return;
+    }
+    // An unterminated paste: hold what has arrived and wait for the rest.
+    const open = chunk.indexOf('[200~');
+    if (open !== -1) {
+      if (open > 0) this.onData(chunk.slice(0, open));
+      this.pasting = chunk.slice(open + 6);
+      return;
+    }
+    if (this.pasting !== undefined && this.pasting !== null) {
+      const close = chunk.indexOf('[201~');
+      if (close === -1) { this.pasting += chunk; return; }
+      this.onPaste(this.pasting + chunk.slice(0, close));
+      this.pasting = null;
+      const after = chunk.slice(close + 6);
+      if (after) this.onData(after);
+      return;
+    }
+
     // UCODE_DEBUG_KEYS=1 logs every byte the terminal sends to
     // ~/.ucode/keys.log. Whether mouse reporting works at all depends on the
     // terminal forwarding it; this is how to find out.
