@@ -473,7 +473,7 @@ export function explain(err, id) {
         : `The request was rejected as malformed (HTTP 400): ${detail}`,
       fix: noTools
         ? 'Run /model and pick another one.'
-        : 'Usually an oversized conversation. /new starts a fresh one.',
+        : 'The conversation has something in it the provider will not accept. /new starts a fresh one.',
       cause: err,
     });
   }

@@ -1221,7 +1221,12 @@ export class Agent {
           continue;
         }
 
-        this.push({ role: 'assistant', content: reply.text });
+        // An assistant message with no content and no tool calls is not a turn,
+        // it is a hole. Providers reject the whole conversation as malformed
+        // once one is in it — which showed up as HTTP 400 on every request
+        // after the model went quiet, with the conversation at 0% full and
+        // "usually an oversized conversation" printed underneath it.
+        if (reply.text?.trim()) this.push({ role: 'assistant', content: reply.text });
         if (!reply.text?.trim()) {
           // Silence after being asked to speak is not a finished turn. Saying
           // "Done" here is the worst thing available: the user believes it,

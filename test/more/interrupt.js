@@ -41,6 +41,22 @@ export default async function ({ test, section, ok, eq }) {
     ok(/do not pick it back up/i.test(last.content), last.content);
   });
 
+  await test('an empty assistant turn never enters the conversation', async () => {
+    // A message with no content and no tool calls is a hole, and a provider
+    // rejects the whole conversation as malformed once one is in it: HTTP 400
+    // on every request after the model went quiet, with the window at 0% full.
+    const src = await (await import('node:fs/promises')).readFile('src/core/loop.js', 'utf8');
+    ok(!/this\.push\(\{ role: 'assistant', content: reply\.text \}\);/.test(src),
+      'it must be pushed only when there is something in it');
+    ok(/if \(reply\.text\?\.trim\(\)\) this\.push\(\{ role: 'assistant'/.test(src),
+      'guarded on there being text');
+  });
+
+  await test('the error hint does not blame a size that was not the problem', async () => {
+    const src = await (await import('node:fs/promises')).readFile('src/core/provider.js', 'utf8');
+    ok(!/Usually an oversized conversation/.test(src), 'the run that hit this was at 0% full');
+  });
+
   await test('a turn that finished cleanly is left exactly as it is', () => {
     const msgs = [
       { role: 'assistant', toolCalls: [{ id: 'c1', name: 'run_command' }] },
