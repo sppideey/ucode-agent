@@ -12,7 +12,6 @@ import { addBlock, BLOCK_NAMES } from './blocks.js';
 import { typeOf } from './types.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
-import { lookAtApp } from './browser.js';
 import { createApp, TEMPLATE_NAMES, TEMPLATE_NOTES } from './scaffold.js';
 import { deploy } from './deploy.js';
 import { clip, READ_LINES } from './shared.js';
@@ -492,7 +491,14 @@ const run = {
   run_command: runCommand,
   run_commands: runCommands,
   web_search: webSearch,
-  look_at_app: lookAtApp,
+  /**
+   * Loaded when it is used, not when ucode starts.
+   *
+   * browser.js pulls in playwright-core, which costs a second of start-up on
+   * its own. Nothing reaches for the browser until someone types /look, so
+   * nobody should wait for it before the first prompt.
+   */
+  look_at_app: async (args, opts) => (await import('./browser.js')).lookAtApp(args, opts),
   create_app: createApp,
   deploy,
 };

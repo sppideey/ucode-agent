@@ -12,11 +12,21 @@ import { readFile } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 
-import { Agent } from './src/core/loop.js';
-import { setModel, modelName, MODELS, DEFAULT_MODEL, ENV_FILE } from './src/core/provider.js';
 import { VERSION } from './src/core/version.js';
-import { Plain } from './src/ui/plain.js';
 import { blue, dim, sky } from './src/ui/theme.js';
+
+/**
+ * The agent and the provider are loaded when a session actually starts.
+ *
+ * Between them they pull in the OpenAI SDK and every tool, which is most of
+ * the two and a half seconds ucode used to take before printing anything at
+ * all — including for `--version`, which needs none of it.
+ */
+const heavy = () => Promise.all([
+  import('./src/core/loop.js'),
+  import('./src/core/provider.js'),
+  import('./src/ui/plain.js'),
+]);
 
 function parseArgs(argv) {
   const args = { debug: false, model: null, cwd: process.cwd(), help: false, plan: false, version: false };
@@ -34,7 +44,8 @@ function parseArgs(argv) {
   return args;
 }
 
-function usage() {
+async function usage() {
+  const [, { MODELS, modelName, DEFAULT_MODEL, ENV_FILE }] = await heavy();
   const entries = Object.entries(MODELS);
   const width = Math.max(...entries.map(([, m]) => m.name.length));
   const models = entries
@@ -111,6 +122,8 @@ async function main() {
       // making a failed update the reason ucode will not start.
     }
   }
+
+  const [{ Agent }, { setModel }, { Plain }] = await heavy();
 
   if (args.model) {
     try {
