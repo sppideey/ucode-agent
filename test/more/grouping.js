@@ -154,7 +154,7 @@ export async function thinkingSuite({ test, section, ok, eq }) {
   const chalk = (await import('chalk')).default;
   const { Screen } = await import('../../src/ui/screen.js');
 
-  section('the opening line');
+  section('reasoning stays off the screen');
 
   const make = () => {
     chalk.level = 0;
@@ -162,95 +162,38 @@ export async function thinkingSuite({ test, section, ok, eq }) {
     s.render = () => {};
     return s;
   };
-  const bare = (l) => String(l ?? '').replace(/\[[0-9;]*m/g, '').trim();
 
-  await test('nothing is shown until a sentence has finished', () => {
-    const s = make();
-    s.thinkingDelta('I');
-    s.thinkingDelta(' need to buil');
-    eq(s.lines.length, 0, 'half a sentence reads as a stutter');
-  });
-
-  await test('the first finished sentence goes up as one line', () => {
-    const s = make();
-    s.thinkingDelta('I need to build a tasks app in one file.');
-    eq(s.lines.length, 1);
-    eq(bare(s.lines[0]), 'I need to build a tasks app in one file.');
-  });
-
-  await test('it is never rewritten, however much more arrives', () => {
-    const s = make();
-    s.thinkingDelta('First I will write the HTML structure.');
-    const line = s.lines[0];
-    s.thinkingDelta(' Then the CSS. Then the JavaScript.');
-    eq(s.lines.length, 1, 'rewriting it as more arrived was the flicker');
-    eq(s.lines[0], line);
-  });
-
-  await test('it stays put when the real reply starts', () => {
-    const s = make();
-    s.thinkingDelta('I will build the app now.');
-    s.thinkingEnd();
-    eq(s.lines.length, 1, 'what it set out to do is worth keeping');
-  });
-
-  await test('a new turn gets its own opening line', () => {
-    const s = make();
-    s.thinkingDelta('First turn opening sentence.');
-    s.thinkingEnd();
-    s.thinkingDelta('Second turn opening sentence.');
-    eq(s.lines.length, 2);
-    eq(bare(s.lines[1]), 'Second turn opening sentence.');
-  });
-
-  await test('what the model says is full strength, not backdrop', () => {
-    const level = chalk.level;
-    chalk.level = 3;
-    const s = make();
-    chalk.level = 3;
-    s.thinkingDelta('I will build Tide as a single HTML file.');
-    ok(!s.lines[0].includes('[2m'), 'the model talking is the thing worth reading');
-    ok(s.lines[0].includes('[37m'), 'it is painted, not left to the terminal default');
-    chalk.level = level;
-  });
-
-  await test('the request is never read back to the person who wrote it', () => {
-    // Reasoning models open by restating the prompt to themselves. The user
-    // wrote it, is looking at it, and does not need it narrated.
+  await test('nothing the model thinks is published', () => {
+    // It was surfaced to fill the wait, and what it filled it with was the
+    // model talking to itself. What the model *says* is its reply.
     for (const line of [
-      'The user wants a tasks app called Tide in a single index.html.',
-      'The user wants me to build Tide - a tasks app.',
-      'So the user is asking for a dark theme here.',
-      'The request asks for localStorage persistence.',
-      'I need to understand what they are asking for here.',
-    ]) {
-      const s = make();
-      s.thinkingDelta(line);
-      eq(s.lines.length, 0, 'shown: ' + line);
-    }
-  });
-
-  await test('a sentence about the work still earns its line', () => {
-    for (const line of [
+      'I need to build this app.',
+      'The user wants a tasks app called Tide.',
       'Now I need to add the missing CSS for the filter row.',
+      'Let me look at the request again.',
       'I will build Tide as a single HTML file.',
-      'The layout is done, now the animations.',
     ]) {
       const s = make();
       s.thinkingDelta(line);
-      eq(s.lines.length, 1, 'hidden: ' + line);
+      s.thinkingEnd();
+      eq(s.lines.length, 0, 'reached the screen: ' + line);
     }
   });
 
-  await test('a throwaway opener is not worth a line', () => {
+  await test('a finished turn writes nothing at all', () => {
     const s = make();
-    s.thinkingDelta('Okay.');
-    eq(s.lines.length, 0, 'it tells nobody anything');
+    s.turnStart();
+    s.activity.start = Date.now() - 9000;
+    s.turnEnd({ ok: true });
+    eq(s.lines.filter((l) => l.trim()).length, 0, 'the reply is the end of the turn');
   });
 
-  await test('an empty delta never creates a line of nothing', () => {
+  await test('a turn that gave up still says so', () => {
+    // Silence there is indistinguishable from a crash.
     const s = make();
-    s.thinkingDelta('');
-    eq(s.lines.length, 0);
+    s.turnStart();
+    s.activity.start = Date.now() - 9000;
+    s.turnEnd({ ok: false });
+    ok(s.lines.some((l) => /without finishing/.test(l)), s.lines.join(' | '));
   });
 }

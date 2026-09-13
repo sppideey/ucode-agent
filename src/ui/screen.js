@@ -541,44 +541,17 @@ export class Screen {
   // and the transcript gets one line afterwards saying how long it took.
 
   /**
-   * The first thing the model says, as soon as it has said it.
+   * The model's reasoning does not go on screen.
    *
-   * Models reach for a tool before writing any reply, so nothing appeared for
-   * the first minute of a step. The reasoning channel streams from the first
-   * moment, so its opening sentence goes up as one line and stays there: what
-   * it is setting out to do, which is the thing worth knowing while you wait.
-   *
-   * Written once, never rewritten. Rewriting it as more arrived was the
-   * flicker — an unfinished sentence showed as a single word, then jumped.
+   * It was surfaced here to fill the wait before the first tool call, and what
+   * it actually filled it with was the model talking to itself: "I need to
+   * build this", "The user wants a tasks app". Nobody needs their own request
+   * read back to them, and half-formed working-out is not something to publish.
+   * What the model *says* is its reply, and that is the only thing shown.
    */
-  thinkingDelta(text = '') {
-    if (this.thoughtSince === undefined) this.thoughtSince = Date.now();
-    if (!text || this.openedWith) return;
+  thinkingDelta() {}
 
-    this.thought = ((this.thought ?? '') + text).slice(0, 600);
-    const tidy = this.thought.replace(/\s+/g, ' ').trim();
-    const finished = /^(.+?[.!?])(?:\s|$)/.exec(tidy);
-    if (!finished) return;
-
-    const line = finished[1].trim();
-    if (line.length < 12) return;   // "Okay." tells nobody anything
-    // Reasoning models open by restating the request to themselves — "The user
-    // wants a tasks app called Tide" — which the user wrote, is looking at, and
-    // does not need read back. Only a sentence about what is being done is
-    // worth the line.
-    if (RESTATEMENT.test(line)) { this.thought = ''; return; }
-
-    this.openedWith = line;
-    // Full strength: this is the model talking, and it is the thing on the page
-    // worth reading. The dimmed lines around it are the machinery.
-    this.push('  ' + chalk.white(clip(line, Math.max(30, this.width() - 6))));
-  }
-
-  thinkingEnd() {
-    this.thought = '';
-    this.openedWith = undefined;
-    this.thoughtSince = undefined;
-  }
+  thinkingEnd() {}
 
   error(err, { debug = false } = {}) {
     const known = err && typeof err === 'object' && err.attempted;
@@ -910,9 +883,13 @@ export class Screen {
     const a = this.activity;
     this.activity = null;
     if (!this.status.busy) this.stopTimer();
-    // A turn that stopped without finishing says so. Dropping the line entirely
-    // left the transcript looking like the work was still going.
-    if (a && Date.now() - a.start >= 2000) this.push(`  ${doneLine(Date.now() - a.start, a.steps, { ok })}`);
+    // Nothing is written when a turn finishes. The reply is the end of the
+    // turn, and a timing line under it is bookkeeping the reader did not ask
+    // for. A turn that stopped *without* finishing still says so, because
+    // silence there is indistinguishable from a crash.
+    if (a && !ok && Date.now() - a.start >= 2000) {
+      this.push(`  ${doneLine(Date.now() - a.start, a.steps, { ok })}`);
+    }
     this.paintStatus();
   }
 
