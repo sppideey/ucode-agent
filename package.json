@@ -1,6 +1,6 @@
 {
   "name": "ucode-agent",
-  "version": "1.32.0",
+  "version": "1.33.0",
   "description": "ucode - a terminal coding agent that reads, edits and runs your code, on NVIDIA and Cohere models.",
   "type": "module",
   "main": "ucode.js",
@@ -16,7 +16,7 @@
   "scripts": {
     "start": "node ucode.js",
     "test": "node test/run.js",
-    "prepublishOnly": "node test/run.js"
+    "prepublishOnly": "node scripts/no-bundled-key.js && node test/run.js"
   },
   "repository": {
     "type": "git",
@@ -26,9 +26,6 @@
     "url": "https://github.com/sppideey/ucode-agent/issues"
   },
   "homepage": "https://github.com/sppideey/ucode-agent#readme",
-  "publishConfig": {
-    "access": "public"
-  },
   "engines": {
     "node": ">=22"
   },
@@ -56,5 +53,8 @@
   },
   "devDependencies": {
     "typescript": "^5.9.3"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }

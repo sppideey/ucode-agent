@@ -108,6 +108,46 @@ async function copyTree(from, to, fill) {
  * globals.css and layout.tsx. Apps stop looking like the same default blue.
  * Returns the preset used, or null when the starter has none.
  */
+/**
+ * The file in each starter that carries the design, not just some of the rules.
+ *
+ * next-shadcn has globals.css, which applyDesign re-tints. plain-html has one
+ * stylesheet and it is the whole design system: the palette, a spacing scale,
+ * radii, motion timings, focus rings, a reduced-motion rule and a breakpoint.
+ */
+const TOKEN_FILE = { 'plain-html': 'styles.css' };
+
+/**
+ * Put the starter's token block back when the app wrote over it without one.
+ *
+ * The stylesheet in plain-html is a design, not a placeholder — but `files`
+ * lands straight on top of the starter, so a model passing its own styles.css
+ * replaces the scale, the palette and the timings with whatever it typed. What
+ * comes back is hand-rolled CSS with no system behind it, and an app built on
+ * raw pixel values has uneven spacing everywhere for the rest of its life.
+ *
+ * A replacement that declares its own custom properties is left alone: that is
+ * a model doing the job properly, and second-guessing it would be worse. Only
+ * a stylesheet with no :root variables at all gets the starter's block put
+ * back above it, where every rule underneath can reach it.
+ */
+async function keepDesignTokens(appDir, template, written, starterCss) {
+  const rel = TOKEN_FILE[template];
+  if (!rel || !starterCss) return null;
+
+  const abs = path.join(appDir, rel);
+  if (!written.has(abs)) return null;                 // never overwritten
+
+  const now = await fs.readFile(abs, 'utf8').catch(() => null);
+  if (now === null || /:root\s*\{[^}]*--/.test(now)) return null;
+
+  const block = /:root\s*\{[\s\S]*?\n\}/.exec(starterCss);
+  if (!block) return null;
+
+  await fs.writeFile(abs, `${block[0]}\n\n${now}`, 'utf8');
+  return rel;
+}
+
 export async function applyDesign(appDir, design) {
   const dir = path.join(appDir, 'presets');
   const names = (await fs.readdir(dir).catch(() => [])).filter((f) => f.endsWith('.json'));
@@ -244,6 +284,12 @@ export async function createApp({ folder, name, description, template = 'plain-h
   if (template !== 'plain-html') await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
   const look = await applyDesign(target.abs, design);
 
+  // Read before the app's own files land on top of it, so the tokens can be
+  // put back if the replacement arrives without any.
+  const starterCss = TOKEN_FILE[template]
+    ? await fs.readFile(path.join(target.abs, TOKEN_FILE[template]), 'utf8').catch(() => null)
+    : null;
+
   // The starter has been installed on this machine before: hard-link that
   // tree in, which is seconds where npm is a minute. Otherwise install as
   // usual, and keep the result so the next app is instant.
@@ -272,6 +318,7 @@ export async function createApp({ folder, name, description, template = 'plain-h
   const mine = given;
   const wrote = mine.length ? await batchWrite({ files: mine }) : null;
   const written = new Set(mine.map((f) => resolveIn(f.path, 'create_app', 'files').abs));
+  const keptTokens = await keepDesignTokens(target.abs, template, written, starterCss);
 
   // The starter's own files, in full, so there is never a reason to read them
   // back — and only the ones this call did not already write over. A read is
@@ -288,6 +335,13 @@ export async function createApp({ folder, name, description, template = 'plain-h
     `Created ${target.show} from the ${template} starter — ${copied.length} files, already known to build.\n` +
       (look ? `Design: the ${look.name} preset (${look.summary}), font ${look.fonts?.sans ?? 'Geist'}.\n` : '') +
       (wrote ? `\nYour ${mine.length} file${mine.length === 1 ? '' : 's'}:\n${wrote.content}\n` : '') +
+      (keptTokens
+        ? `\nYour ${keptTokens} arrived with no :root block, so the starter's was kept above it — ` +
+          'the palette, the spacing scale (--s1 to --s5), the radius and the motion timings. ' +
+          'Build the rest of the stylesheet out of those variables: spacing that comes from a ' +
+          'scale is the difference between a designed page and an arranged one. Re-tint the ' +
+          'values to suit this app; do not go back to raw pixels.\n'
+        : '') +
       (linked
         ? `Its packages are already in place (${linked.toLocaleString()} files, linked from the starter cache) — ` +
           'nothing to install: build and run straight away.\n'

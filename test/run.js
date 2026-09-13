@@ -1046,13 +1046,27 @@ await test('the default is North Mini Code', () => {
   eq(modelName(DEFAULT_MODEL), 'North Mini Code');
 });
 
-await test('a busy model has somewhere to go, and never back to itself', () => {
-  const next = fallbackFor(DEFAULT_MODEL);
-  ok(next && next !== DEFAULT_MODEL, `got ${next}`);
-  ok(MODELS[next], 'the fallback is one of the five');
-  const tried = new Set(FALLBACKS);
-  eq(fallbackFor(DEFAULT_MODEL, tried), null, 'nothing left once every model was tried');
-  eq(fallbackFor('nvidia/nemotron-3-ultra-550b-a55b:free', new Set()), FALLBACKS[0], 'the chain wraps around');
+await test('the model you chose is the model you keep', () => {
+  // Switching models mid-build is off unless asked for: every caller reads a
+  // null here as "wait, then try the same one again".
+  eq(fallbackFor(DEFAULT_MODEL), null, 'no hand-over without UCODE_FALLBACK=1');
+  eq(fallbackFor('nvidia/nemotron-3-ultra-550b-a55b:free', new Set()), null);
+});
+
+await test('a busy model has somewhere to go once switching is asked for', () => {
+  const was = process.env.UCODE_FALLBACK;
+  process.env.UCODE_FALLBACK = '1';
+  try {
+    const next = fallbackFor(DEFAULT_MODEL);
+    ok(next && next !== DEFAULT_MODEL, `got ${next}`);
+    ok(MODELS[next], 'the fallback is one of the five');
+    const tried = new Set(FALLBACKS);
+    eq(fallbackFor(DEFAULT_MODEL, tried), null, 'nothing left once every model was tried');
+    eq(fallbackFor('nvidia/nemotron-3-ultra-550b-a55b:free', new Set()), FALLBACKS[0], 'the chain wraps around');
+  } finally {
+    if (was === undefined) delete process.env.UCODE_FALLBACK;
+    else process.env.UCODE_FALLBACK = was;
+  }
 });
 
 await test('update versions compare as numbers, not strings', () => {

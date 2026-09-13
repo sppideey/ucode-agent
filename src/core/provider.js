@@ -107,6 +107,18 @@ export const FALLBACKS = [
 
 /** The next model to try after `id`, skipping any already tried this round. */
 export function fallbackFor(id, tried = new Set()) {
+  // Off unless UCODE_FALLBACK=1. A build that starts on one model and finishes
+  // on another finishes to a different standard, and the swap lands exactly
+  // when the user is least placed to work out why the output changed —
+  // mid-build, behind a note that scrolls past. Which model to run is the one
+  // decision they made before starting; it is not one to take back for them.
+  //
+  // Every caller already reads "no fallback" as "wait, then try this one
+  // again": failover waits a minute and returns to the same model, the
+  // stuck-detector simply does not switch, and a worker retries its own. That
+  // is why this can be a single gate rather than four.
+  if (process.env.UCODE_FALLBACK !== '1') return null;
+
   const start = Math.max(0, FALLBACKS.indexOf(id));
   for (let i = 1; i <= FALLBACKS.length; i++) {
     const next = FALLBACKS[(start + i) % FALLBACKS.length];

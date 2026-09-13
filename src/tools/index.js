@@ -86,6 +86,10 @@ export const tools = [
       'is the only call the build needs: the starter lands, your files are written over it, ' +
       'and the result comes back with everything. Two starters. "plain-html" (the default): ' +
       'one index.html, one stylesheet, one ES module — nothing to install, nothing to build, ' +
+      'and the stylesheet is a design system already: a palette, a spacing scale, radii, ' +
+      'motion timings, focus rings and a breakpoint. Re-tint those tokens to suit the app ' +
+      'and compose every rule from them. Replacing it with raw pixel values is what an ' +
+      'undesigned page is made of. ' +
       'opens straight in a browser, and its three files come back inside this result so there ' +
       'is never a reason to read them. Use it for anything that is one page: a tasks app, a ' +
       'toy, a game, a visualisation, a calculator, a timer. "next-shadcn": Next.js 16, ' +
