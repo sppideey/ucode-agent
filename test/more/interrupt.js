@@ -45,11 +45,16 @@ export default async function ({ test, section, ok, eq }) {
     // A message with no content and no tool calls is a hole, and a provider
     // rejects the whole conversation as malformed once one is in it: HTTP 400
     // on every request after the model went quiet, with the window at 0% full.
-    const src = await (await import('node:fs/promises')).readFile('src/core/loop.js', 'utf8');
-    ok(!/this\.push\(\{ role: 'assistant', content: reply\.text \}\);/.test(src),
-      'it must be pushed only when there is something in it');
-    ok(/if \(reply\.text\?\.trim\(\)\) this\.push\(\{ role: 'assistant'/.test(src),
-      'guarded on there being text');
+    const fsp = await import('node:fs/promises');
+    const src = await fsp.readFile('src/core/loop.js', 'utf8');
+    const rows = src.split("\n");
+    const guards = ['reply.text &&', 'if (reply.text)', 'reply.text?.trim()'];
+    const unguarded = rows.filter((l, i) => {
+      if (!l.includes('content: reply.text }')) return false;
+      const near = rows.slice(Math.max(0, i - 2), i + 1).join(' ');
+      return !guards.some((g) => near.includes(g));
+    });
+    ok(unguarded.length === 0, 'pushed without checking there is text: ' + unguarded.join(' | '));
   });
 
   await test('the error hint does not blame a size that was not the problem', async () => {
