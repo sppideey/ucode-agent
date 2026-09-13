@@ -1015,6 +1015,7 @@ export class Agent {
     let argRetries = 0;
     let continuations = 0;
     let askedToVerify = false;
+    let squeezed = false;
     let askedToSpeak = false;
     let fixRounds = 0;
     this.failovers = 0;
@@ -1098,6 +1099,23 @@ export class Agent {
               `are: ${available.map((t) => t.name).join(', ')}. Try again with one of them.`,
           });
           continue;
+        }
+
+        // An oversized conversation is a recoverable thing, not a dead end.
+        //
+        // The provider rejects the request, ucode prints the error and the
+        // half-built app stops there; typing "continue" sends the same
+        // oversized conversation again and fails the same way. Folding it and
+        // trying once is what the user would be told to do, so it happens
+        // without asking.
+        if (err.kind === 'bad_request' && !squeezed && !this.abort.signal.aborted) {
+          squeezed = true;
+          const before = this.working.length;
+          await this.maybeFold({ force: true });
+          if (this.working.length < before) {
+            this.ui.note('the conversation had grown too large — folded it and carried on');
+            continue;
+          }
         }
 
         // Busy, slow or down: move to the next model and carry on, rather
@@ -1841,10 +1859,16 @@ export class Agent {
     total.turns += 1;
   }
 
-  /** Fold older turns into a summary when the window gets tight. */
-  async maybeFold() {
+  /**
+   * Fold older turns into a summary when the window gets tight.
+   *
+   * `force` is for when the provider has already said the conversation is too
+   * large: its word beats our estimate of the same thing, and the estimate is
+   * what let it get here.
+   */
+  async maybeFold({ force = false } = {}) {
     const limit = contextLimit();
-    if (!tooBig(this.working, limit)) return;
+    if (!force && !tooBig(this.working, limit)) return;
 
     this.ui.startSpinner('context is filling up — summarizing earlier turns');
     try {

@@ -55,13 +55,15 @@ export default async function ({ test, section, ok, eq }) {
     s.restore();
   });
 
-  await test('the model speaking ends the run, so the next steps start a new one', () => {
+  await test('the model speaking does not start a second line for the same work', () => {
+    // It used to. Five "Creating Tide from the HTML starter" lines down one
+    // page is what that looked like.
     const s = screen();
+    s.turnStart();
     s.toolCall('Reading a.ts'); s.toolResult('ok');
     s.assistant('Now the tests.');
     s.toolCall('Reading b.ts'); s.toolResult('ok');
-    const folded = s.lines.filter((l) => /Read \d+ files/.test(bare(l)));
-    eq(folded.length, 0, 'they are separate runs, not one of two');
+    eq(s.lines.filter((l) => /Read/i.test(bare(l))).length, 1, s.lines.map(bare).filter(Boolean).join(' | '));
     s.restore();
   });
 
@@ -83,7 +85,10 @@ export default async function ({ test, section, ok, eq }) {
     ok(!s.lines.some((l) => bare(l).includes('it broke')),
       'machinery going wrong reads as the tool being broken; the model fixes it instead');
     s.toolCall('Running c');
-    ok(!s.lines.some((l) => /Ran 3/.test(bare(l))), 'and it did not get counted into a run');
+    // The count carries on: one line per kind of work for the whole turn is
+    // the point, and a failure in the middle does not start a second one.
+    ok(s.lines.some((l) => /Ran 3 commands/.test(bare(l))), s.lines.map(bare).join(' | '));
+    eq(s.lines.filter((l) => /command/.test(bare(l))).length, 1, 'still one line');
     s.restore();
   });
 }
@@ -117,13 +122,29 @@ export async function liveSuite({ test, section, ok, eq }) {
     ok(bare(shown[1]).includes('+36 -33'), 'the writes kept adding up');
   });
 
-  await test('the model speaking starts the next piece of work afresh', () => {
+  await test('a kind of work keeps one line for the whole turn', () => {
+    // Five "Creating Tide from the HTML starter" lines and four "Reading
+    // files" down one page, each about a different moment, said the same
+    // thing five times and took five rows to do it.
     const s = make();
+    s.turnStart();
     step(s, 'read_file', { path: 'a' });
     s.assistant('Now the animations.');
     step(s, 'read_file', { path: 'b' });
-    eq(s.lines.filter((l) => bare(l).includes('eading files')).length, 2,
-      'a new segment gets its own line');
+    s.assistant('And the empty state.');
+    step(s, 'read_file', { path: 'c' });
+    eq(s.lines.filter((l) => /ead files/i.test(bare(l))).length, 1,
+      s.lines.map(bare).filter(Boolean).join(' | '));
+  });
+
+  await test('a new turn starts a clean set of lines', () => {
+    const s = make();
+    s.turnStart();
+    step(s, 'read_file', { path: 'a' });
+    s.turnStart();
+    step(s, 'read_file', { path: 'b' });
+    eq(s.lines.filter((l) => /eading files/.test(bare(l))).length, 2,
+      'the next turn is a new page of work');
   });
 
   await test('a transcript line never animates', () => {

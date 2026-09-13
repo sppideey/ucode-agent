@@ -340,11 +340,19 @@ export class Screen {
    * is what makes the transcript read as a sequence of things done rather
    * than a set of running totals.
    */
-  endRun() {
-    if (this.run) this.paintRun({ live: false });
-    this.run = null;
-    this.segment = new Map();
-  }
+  /**
+   * Stop adding to the current run, but keep the lines already on screen.
+   *
+   * A kind of work gets one line for the whole turn. Starting a fresh set
+   * whenever the model spoke meant "Creating Tide from the HTML starter" five
+   * times down the page and "Reading files" four, each saying the same thing
+   * about a different moment. One line that counts up says all of it and
+   * costs one row.
+   */
+  endRun() { this.run = null; }
+
+  /** A new turn starts with a clean page's worth of lines. */
+  newSegment() { this.run = null; this.segment = new Map(); }
 
   /** Redraw the run's single line from what it has accumulated. */
   /**
@@ -869,6 +877,7 @@ export class Screen {
 
   /** A turn begins: the timer and step count run until turnEnd(). */
   turnStart() {
+    this.newSegment();
     this.activity = { start: Date.now(), steps: 0, movedAt: 0 };
     this.startTimer();
   }
