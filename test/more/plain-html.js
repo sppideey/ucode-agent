@@ -54,6 +54,7 @@ export default async function ({ test, section, ok, eq, sandbox }) {
   });
 
   await htmlCheckSuite({ test, section, ok, eq });
+  await stuckOnSyntaxSuite({ test, section, ok, eq, sandbox });
 
   await test('a starter that does not exist is still refused', async () => {
     let threw = false;
@@ -106,5 +107,51 @@ export async function htmlCheckSuite({ test, section, ok, eq }) {
   await test('a page with no script at all is fine', () => {
     eq(checkHtml('<html><body>hello</body></html>'), []);
     eq(checkHtml(''), []);
+  });
+}
+
+export async function stuckOnSyntaxSuite({ test, section, ok, eq, sandbox }) {
+  const fsp = await import('node:fs/promises');
+  const pathMod = await import('node:path');
+  const { writeFile } = await import('../../src/tools/files.js');
+  const { forgetBrokenRuns } = await import('../../src/tools/files.js');
+
+  section('a file that will not parse');
+
+  const broken = 'const a = {\n';
+  const fine = 'const a = 1;\n';
+
+  await test('the first failure is a nudge, not a lecture', async () => {
+    forgetBrokenRuns();
+    const out = await writeFile({ path: 'loop/a.js', content: broken });
+    ok(out.content.includes('does not parse'), out.content);
+    ok(out.content.includes('Fix it now'), out.content);
+    ok(!out.content.includes('write the whole file again'), 'too early for that');
+  });
+
+  await test('the third in a row says to stop editing and rewrite it', async () => {
+    // One run spent fifteen minutes patching a single line before giving up
+    // and rewriting the file, which is what it should have done much earlier.
+    forgetBrokenRuns();
+    let out;
+    for (let i = 0; i < 3; i++) out = await writeFile({ path: 'loop/b.js', content: broken });
+    ok(out.content.includes('3 attempts in a row'), out.content);
+    ok(out.content.includes('write the whole file again'), out.content);
+  });
+
+  await test('a file that parses forgets its run, so a later slip is just a slip', async () => {
+    forgetBrokenRuns();
+    for (let i = 0; i < 3; i++) await writeFile({ path: 'loop/c.js', content: broken });
+    const good = await writeFile({ path: 'loop/c.js', content: fine });
+    ok(!good.content.includes('does not parse'), 'it parses now');
+    const slip = await writeFile({ path: 'loop/c.js', content: broken });
+    ok(!slip.content.includes('attempts in a row'), 'the count started over');
+  });
+
+  await test('each file keeps its own count', async () => {
+    forgetBrokenRuns();
+    for (let i = 0; i < 3; i++) await writeFile({ path: 'loop/d.js', content: broken });
+    const other = await writeFile({ path: 'loop/e.js', content: broken });
+    ok(!other.content.includes('attempts in a row'), 'a different file starts clean');
   });
 }

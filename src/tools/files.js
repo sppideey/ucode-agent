@@ -129,9 +129,40 @@ export function syntaxProblem(file, text) {
   }
 }
 
+/**
+ * How many times in a row each file has come back unparseable.
+ *
+ * A model that has broken a file once usually fixes it. A model that has
+ * broken it three times is guessing at a structure it has lost track of, and
+ * will keep guessing: one run spent fifteen minutes on a single line before
+ * giving up and rewriting the file, which is what it should have been told to
+ * do after the second try.
+ */
+const brokenRuns = new Map();
+
+export function forgetBrokenRuns() { brokenRuns.clear(); }
+
+/**
+ * The note appended to a result: empty when the file parses, and the run of
+ * failures forgotten, so three good writes later a single slip is a slip again.
+ */
+const parseNote = (show, problem) => {
+  if (!problem) { brokenRuns.delete(show); return ''; }
+  return brokenNote(show, problem);
+};
+
 /** The warning appended to a result when a file does not parse. */
-const brokenNote = (show, problem) =>
-  `\n\n⚠ ${show} does not parse — ${problem}. Fix it now: the build will fail on it.`;
+const brokenNote = (show, problem) => {
+  const runs = (brokenRuns.get(show) ?? 0) + 1;
+  brokenRuns.set(show, runs);
+  const base = `
+
+⚠ ${show} does not parse — ${problem}.`;
+  if (runs < 3) return `${base} Fix it now: the build will fail on it.`;
+  return `${base} That is ${runs} attempts in a row on this file. Stop editing it: ` +
+    `write the whole file again with write_file, in one piece, rather than patching ` +
+    `a structure you have lost track of.`;
+};
 
 /** A file this short comes back whole after an edit; longer ones show the part around the change. */
 const SHOW_WHOLE = 250;
@@ -302,7 +333,7 @@ export async function writeFile({ path: p, content }) {
 
   const written = await put(target, content);
   const out = result(
-    `${written.line}.${written.problem ? brokenNote(target.show, written.problem) : ''}`,
+    `${written.line}.${parseNote(target.show, written.problem)}`,
     `${written.existed ? 'overwrote' : 'created'} · ${written.lineCount} lines${written.problem ? ' · does not parse' : ''}`
   );
   out.diff = written.diff;
@@ -348,7 +379,7 @@ export async function batchWrite({ files }) {
     // would bury the reply under three hundred lines of gutter.
     const written = await put(target, content, { diffMax: 6 });
     if (!written.existed) created++;
-    lines.push(written.line + (written.problem ? brokenNote(target.show, written.problem) : ''));
+    lines.push(written.line + parseNote(target.show, written.problem));
     if (written.problem) broken++;
     diff.push(`~${target.show}`, ...written.diff);
   }
@@ -537,7 +568,7 @@ export async function editFile({ path: p, old_string, new_string }) {
   const span = toLines(new_string).length;
   const out = result(
     `Replaced one occurrence in ${target.show} at line ${at} (${change}${how}).` +
-      (syntaxProblem(target.abs, text) ? brokenNote(target.show, syntaxProblem(target.abs, text)) : '') +
+      parseNote(target.show, syntaxProblem(target.abs, text)) +
       nowReads(target.show, text, at, span),
     `1 change at line ${at} · ${change}${loose ? ' · whitespace-tolerant' : ''}${syntaxProblem(target.abs, text) ? ' · does not parse' : ''}`,
     MAX_FILE_OUTPUT
@@ -608,7 +639,7 @@ export async function multiEdit({ path: p, edits }) {
 
   const out = result(
     `Applied ${edits.length} edits to ${target.show} (${change}).` +
-      (syntaxProblem(target.abs, text) ? brokenNote(target.show, syntaxProblem(target.abs, text)) : '') +
+      parseNote(target.show, syntaxProblem(target.abs, text)) +
       nowReads(target.show, text, 1, toLines(text).length),
     `${edits.length} edits · ${change}`,
     MAX_FILE_OUTPUT
@@ -697,7 +728,7 @@ export async function editFiles({ files }) {
     planned.map((p) => {
       const problem = syntaxProblem(p.target.abs, p.text);
       return `Edited ${p.target.show} (${p.count} change${p.count === 1 ? '' : 's'})` +
-        (problem ? brokenNote(p.target.show, problem) : '');
+        parseNote(p.target.show, problem);
     }).join('\n'),
     `${planned.length} files · ${edits} edits`
   );
