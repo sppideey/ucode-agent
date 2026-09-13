@@ -39,7 +39,8 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
+  bannerPaint, answerMark, RAIL, MAX_WIDTH } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -112,11 +113,21 @@ const RESTATEMENT = /^(?:the user|they|so the user|user)|^(?:i (?:need|should|wi
 /** The wordmark only earns its place with room for the facts column beside it. */
 const WORDMARK_NEEDS = BANNER_WIDTH + 30;
 
-/** Where the U ends and CODE begins in each row of the wordmark. */
-const WORDMARK_SPLIT = 9;
-
 /** What the empty input box says before anything is typed. */
 const PLACEHOLDER = 'Ask anything…';
+
+/**
+ * What it says instead while the agent has the turn.
+ *
+ * The status row beside it already says "esc to stop", so this carries the
+ * half nothing else on screen does: that the box is still live, and a line
+ * typed into it now is kept and sent when the turn ends rather than lost. The
+ * short form is for a terminal too narrow to hold the sentence, where a cut
+ * one would read as a glitch.
+ */
+const WORKING_HINT = 'Working… type to queue your next message';
+const WORKING_HINT_SHORT = 'Working…';
+const WORKING_HINT_NEEDS = WORKING_HINT.length + 8;
 
 export class Screen {
   constructor({ cwd, input = process.stdin, output = process.stdout } = {}) {
@@ -146,6 +157,7 @@ export class Screen {
     this.onInterrupt = null;
     this.onModeChange = null;
     this.spinTimer = null;
+    this.paintedBusy = false;  // whose turn the frame on screen was drawn for
     this.activity = null; // the turn in flight: when it began, how many steps
     this.tick = 0;        // animation frames painted, for the spinner
     this.pendingPrompt = null;
@@ -193,8 +205,27 @@ export class Screen {
     while (this.waiters.length) this.waiters.shift()(null);
   }
 
-  width() {
+  /** Every column the terminal has. Only the start screen, which centres, uses it. */
+  screenWidth() {
     return Math.max(30, this.cols);
+  }
+
+  /**
+   * The width the interface actually draws to.
+   *
+   * On a wide monitor an uncapped frame stretched its boxes to two hundred
+   * columns and ran prose the same distance, which is past the point a line
+   * can be read without losing the start of it — and reads as the app not
+   * having an opinion rather than as it filling the space. The cap is the
+   * width the markdown renderer was already holding answers to, so prose,
+   * boxes and diffs now end in the same column instead of three.
+   *
+   * Left, not centred: the shell prompt before and after a session sits on the
+   * left margin, and a frame that jumps to the middle of the screen reads as a
+   * different program. What is past the cap is cleared, never written to.
+   */
+  width() {
+    return Math.min(this.screenWidth(), MAX_WIDTH);
   }
 
   /** Usable width inside a box: two borders and a space of padding each side. */
@@ -267,39 +298,53 @@ export class Screen {
     if (!body.trim()) return;
     this.endRun();
     this.add('');
-    this.add(render(this.md, body));
+
+    // A bullet on the first line that has words on it, and the rest of the
+    // answer indented to clear it. Without the mark the reply is white text at
+    // the same margin as the narration above it, and scrolling back there is
+    // nothing to aim at — you find where the answer starts by reading until
+    // the sentences stop being about files.
+    //
+    // Wrapped here rather than left to add(), which knows nothing about the
+    // indent: marked-terminal is told not to reflow, so a long line arrives
+    // whole, and a row add() broke for itself came back out at column zero
+    // with the rest of the answer sitting two columns to its right.
+    const room = Math.max(8, this.width() - 2);
+    let marked = false;
+    for (const row of render(this.md, body).split('\n')) {
+      if (!row.trim()) { this.add(''); continue; }
+      for (const line of wrapAnsi(row, room)) {
+        this.add(marked ? `  ${line}` : `${answerMark()} ${line}`);
+        marked = true;
+      }
+    }
+
     this.add('');
     this.render();
   }
 
   /**
-   * Something the user said, in the conversation, in the same blue box as the
-   * input it was typed into.
+   * Something the user said, marked down its left edge in the same blue as the
+   * box it was typed into.
    *
    * A long session is mostly the agent's output — tool calls, diffs, answers.
    * Your own messages are the landmarks you scroll back looking for, so they
-   * get the frame: every one of them is findable at a glance, and the box
-   * matches the one below so it is plain where each came from.
+   * get a mark of their own. It was a full box, and forty turns of that is a
+   * ladder of rules across the page: two horizontal lines per message, each as
+   * loud as the input box, none of them saying anything the rail does not.
    */
   userMessage(text) {
-    const width = this.width();
-    const room = Math.max(8, width - 6);   // borders, padding, and the caret column
+    const room = Math.max(8, this.width() - 2);   // the rail and the space after it
 
     const rows = [];
     for (const paragraph of String(text).replace(/\r/g, '').split('\n')) {
       for (const line of wrapAnsi(paragraph, room)) rows.push(line);
     }
 
+    // Room between what you asked for and what came back: without it the reply
+    // starts against your own message and the two read as one block of text.
     this.add('');
-    this.add(boxTop(width, edge));
-    rows.forEach((row, i) => {
-      const lead = i === 0 ? blue('›') : ' ';
-      this.add(boxRow(` ${lead} ${chalk.white(row)}`, width, edge));
-    });
-    this.add(boxBottom(width, edge));
-    // Room between what you asked for and what came back. Without it the reply
-    // starts against the bottom of your own message and the two read as one
-    // block of text.
+    for (const row of rows) this.add(`${blue(RAIL)} ${chalk.white(row)}`);
     this.add('');
     this.add('');
     this.render();
@@ -316,7 +361,11 @@ export class Screen {
   toolCall(label) {
     // U+25CF, not U+23FA: the latter carries emoji presentation, which Windows
     // Terminal draws as a white circle on a blue tile.
-    const kind = groupKind(label);
+    // Trimmed here rather than at paint time: runLine hands back a coloured
+    // string, and asLabel's regexes run off the end of one of those into the
+    // escape sequence instead of the last word.
+    const clean = asLabel(label);
+    const kind = groupKind(clean);
     // One line per kind of work for as long as the model is working on one
     // thing. Reading, writing and reading again used to draw six lines that
     // said three things; now the "Reading files" line it already has is the
@@ -325,18 +374,19 @@ export class Screen {
 
     if (run && this.lines[run.at] !== undefined) {
       run.count++;
-      run.label = label;
-      run.targets.push(groupTarget(label));
+      run.label = clean;
+      run.targets.push(groupTarget(clean));
       this.run = run;
       this.paintRun();
     } else {
-      this.push(`${narrationMark()} ${narration(asLabel(label))}`);
-      this.run = {
-        kind, count: 1, at: this.lines.length - 1, label,
-        targets: [groupTarget(label)], added: 0, removed: 0,
+      const fresh = {
+        kind, count: 1, at: 0, label: clean,
+        targets: [groupTarget(clean)], added: 0, removed: 0,
       };
-      this.segment.set(kind, this.run);
-      this.paintRun();
+      this.push(`${narrationMark()} ${runLine(fresh)}`);
+      fresh.at = this.lines.length - 1;
+      this.run = fresh;
+      this.segment.set(kind, fresh);
     }
     this.updateSpinner(label);
   }
@@ -374,7 +424,7 @@ export class Screen {
    */
   paintRun() {
     if (!this.run) return;
-    this.lines[this.run.at] = `${narrationMark()} ${narration(asLabel(runLine(this.run)))}`;
+    this.lines[this.run.at] = `${narrationMark()} ${runLine(this.run)}`;
     this.render();
   }
 
@@ -654,7 +704,7 @@ export class Screen {
       const right = label
         ? `${dim(label.padEnd(9))}${chalk.white(clip(value, room - 9))}`
         : (value ? dim(value) : '');
-      return `  ${blue(art)}   ${right}`;
+      return `  ${bannerPaint(i)(art)}   ${right}`;
     });
 
     return [boxTop(width), ...rows.map((r) => boxRow(r, width)), boxBottom(width)];
@@ -724,24 +774,58 @@ export class Screen {
    */
   inputBox(width = this.width()) {
     const { rows } = this.inputLines(width - 4);
+    const border = this.borderPaint();
+    const busy = this.busy();
     // Nothing typed yet: a quiet prompt where the text will go. The caret sits
     // on its first letter and typing replaces it.
     const empty = !this.buffer && !this.pendingPrompt;
+    const hint = !busy ? PLACEHOLDER
+      : (width >= WORKING_HINT_NEEDS ? WORKING_HINT : WORKING_HINT_SHORT);
     const painted = rows.map((row, i) =>
       i === 0
-        ? boxRow(` ${blue('›')}${empty ? ` ${dim(PLACEHOLDER)}` : row.slice(1)}`, width, edge)
-        : boxRow(` ${row}`, width, edge)
+        ? boxRow(` ${border('›')}${empty ? ` ${dim(hint)}` : row.slice(1)}`, width, border)
+        : boxRow(` ${row}`, width, border)
     );
     return [
-      boxTop(width, edge),
+      boxTop(width, border),
       ...painted,
       // A blank row between the two. Sitting directly under the caret, the
       // status read as a second line of the thing being typed; one row of air
       // separates what you are writing from what you are writing it with.
-      boxRow('', width, edge),
-      boxRow(this.statusRow(width), width, edge),
-      boxBottom(width, edge),
+      boxRow('', width, border),
+      boxRow(this.statusRow(width), width, border),
+      boxBottom(width, border),
     ];
+  }
+
+  /** Is the agent holding the turn? */
+  busy() {
+    return this.status.busy || !!this.activity;
+  }
+
+  /**
+   * The input box's edge, which says whose turn it is.
+   *
+   * Bold blue while the box is yours, quiet while the agent has it. The status
+   * row inside the same box already carries the words; this is the half you
+   * catch without reading, from the corner of your eye, in the one place on
+   * screen you were already looking.
+   */
+  borderPaint() {
+    return this.busy() ? deep : edge;
+  }
+
+  /**
+   * Repaint after something that may have changed whose turn it is.
+   *
+   * The cheap path redraws one row, which is right twelve times a second for a
+   * spinner and wrong at a turn boundary: the border above and below would
+   * still be the old weight while the status row had the new one, and the box
+   * would be drawn in two colours. A whole frame costs nothing twice a turn.
+   */
+  paintBusy() {
+    if (this.busy() === this.paintedBusy) this.paintStatus();
+    else this.render();
   }
 
   // -- status row ----------------------------------------------------------
@@ -832,7 +916,7 @@ export class Screen {
     const [row, col] = this.caret();
     this.output.write(
       HIDE +
-      at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(), this.width(), edge) +
+      at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(), this.width(), this.borderPaint()) +
       at(row, col) + SHOW
     );
   }
@@ -865,7 +949,7 @@ export class Screen {
     // a minute, so the seconds beside it are the proof it is still alive.
     this.status = { busy: true, text: asLabel(text), frame: 0, since: Date.now() };
     this.startTimer();
-    this.paintStatus();
+    this.paintBusy();
   }
 
   updateSpinner(text) {
@@ -878,7 +962,7 @@ export class Screen {
     if (!this.activity) this.stopTimer();
     if (this.status.busy) {
       this.status = { busy: false, text: '', frame: 0, since: 0 };
-      this.paintStatus();
+      this.paintBusy();
     }
   }
 
@@ -889,6 +973,7 @@ export class Screen {
     this.newSegment();
     this.activity = { start: Date.now(), steps: 0, movedAt: 0 };
     this.startTimer();
+    this.paintBusy();
   }
 
   /** One more model step in this turn. */
@@ -910,7 +995,7 @@ export class Screen {
     if (a && !ok && Date.now() - a.start >= 2000) {
       this.push(`  ${doneLine(Date.now() - a.start, a.steps, { ok })}`);
     }
-    this.paintStatus();
+    this.paintBusy();
   }
 
   /** The animation clock: only the status row repaints, about twelve times a second. */
@@ -1347,6 +1432,7 @@ export class Screen {
 
     const [row, col] = this.caret();
     out.push(at(row, col) + SHOW);
+    this.paintedBusy = this.busy();
     this.output.write(out.join(''));
   }
 
@@ -1387,7 +1473,10 @@ export class Screen {
 
   /** Where everything on the start screen goes, 0-based rows. */
   welcomeGeometry() {
-    const cols = this.width();
+    // The true width here, not the capped one: the start screen centres itself,
+    // and centring inside the cap would park it left of the middle of a wide
+    // terminal. The session frame below is the thing that is left-aligned.
+    const cols = this.screenWidth();
     const boxWidth = Math.max(30, Math.min(cols - 4, 84));
     const left = Math.max(0, Math.floor((cols - boxWidth) / 2));
     const big = cols >= BANNER_WIDTH + 4 && this.rows >= 18;
@@ -1403,13 +1492,13 @@ export class Screen {
     const g = this.welcomeGeometry();
     const frame = new Array(this.rows).fill('');
 
-    // The wordmark in two tones of the one blue, the way a name reads in two
-    // halves: the U quieter, CODE brighter.
+    // The wordmark lit from the top: sky at the crown, deep in the shadow
+    // rows. Across the rows rather than along them — a name split down its
+    // middle reads as two words, where a name that fades downward reads as
+    // one object with a light on it.
     g.art.forEach((line, i) => {
       const pad = ' '.repeat(Math.max(0, Math.floor((g.cols - line.length) / 2)));
-      frame[g.top + i] = pad + (g.big
-        ? deep(line.slice(0, WORDMARK_SPLIT)) + sky(line.slice(WORDMARK_SPLIT))
-        : blue.bold(line));
+      frame[g.top + i] = pad + (g.big ? bannerPaint(i, g.art.length)(line) : blue.bold(line));
     });
 
     const indent = ' '.repeat(g.left);
@@ -1429,6 +1518,7 @@ export class Screen {
     }
     const [row, col] = this.caret();
     out.push(at(row, col) + SHOW);
+    this.paintedBusy = this.busy();
     this.output.write(out.join(''));
   }
 }

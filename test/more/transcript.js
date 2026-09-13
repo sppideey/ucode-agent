@@ -222,7 +222,8 @@ export async function planSuite({ test, section, ok, eq }) {
   await test('each step keeps its own row, so nothing wraps into the ticks', () => {
     const rows = plain([{ text: 'a', done: true }, { text: 'b' }, { text: 'c' }]);
     eq(rows.length, 4, 'a heading and three steps');
-    ok(rows[0].includes('plan 1/3'), rows[0]);
+    ok(rows[0].includes('1/3'), rows[0]);
+    ok(/[━─]{10}/.test(rows[0]), 'the heading is a bar, ten cells wide whatever the plan length');
   });
 
   await test('done, in progress and not started are each marked differently', () => {

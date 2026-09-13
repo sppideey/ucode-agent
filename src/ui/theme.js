@@ -67,6 +67,21 @@ export const theme = {
 export const ADDED = chalk.bgHex('#0e2a1a').hex('#7ee2a8');
 export const REMOVED = chalk.bgHex('#331319').hex('#f2939c');
 
+/**
+ * The widest the interface draws, however many columns the terminal has.
+ *
+ * An uncapped frame stretched its boxes across two hundred columns on a wide
+ * monitor and ran prose the same distance, which is past the point a line can
+ * be read without losing the start of it — and reads as the app having no
+ * opinion rather than as it filling the space. marked-terminal was already
+ * holding answers to 100, so this is the number the prose in the transcript
+ * has always obeyed; the boxes and the diffs now obey it too.
+ *
+ * Both surfaces read it from here, because a full screen and a piped one
+ * disagreeing about how wide the product is would be the odder thing.
+ */
+export const MAX_WIDTH = 100;
+
 export const BANNER = [
   '██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗',
   '██║   ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝',
@@ -77,6 +92,46 @@ export const BANNER = [
 ];
 
 export const BANNER_WIDTH = Math.max(...BANNER.map((r) => r.length));
+
+/**
+ * The wordmark, lit from the top.
+ *
+ * Six identical rows of one blue read as ASCII art that happened to be lying
+ * there. The same six stepped from sky down to deep read as a mark someone
+ * drew: the crown catches the light, and the two shadow rows settle back into
+ * the page. chalk downshifts the hex to whatever the terminal actually has, so
+ * on a 16-colour terminal this is flat blue again rather than nothing.
+ */
+const GRADIENT_TOP = [0x8f, 0xbc, 0xff];      // sky, at the crown
+const GRADIENT_BOTTOM = [0x2f, 0x6f, 0xe0];   // deep, in the shadow
+
+export function bannerPaint(row, rows = BANNER.length) {
+  const t = rows > 1 ? Math.min(1, Math.max(0, row / (rows - 1))) : 0;
+  const hex = GRADIENT_TOP
+    .map((from, i) => Math.round(from + (GRADIENT_BOTTOM[i] - from) * t))
+    .map((v) => v.toString(16).padStart(2, '0'))
+    .join('');
+  return chalk.hex(`#${hex}`);
+}
+
+/**
+ * The rail beside something you said.
+ *
+ * A box around every user message draws two full-width rules per turn, and a
+ * long session becomes a ladder. A half-block in the left column is the same
+ * landmark — findable at a glance, scrollable to — for a fortieth of the ink.
+ */
+export const RAIL = '▌';
+
+/**
+ * The bullet beside the answer.
+ *
+ * The same circle as a step, because it is the same conversation, but at full
+ * strength against the step's faint one. U+25CF and not U+23FA: the latter
+ * carries emoji presentation, which Windows Terminal draws as a white circle
+ * on a blue tile.
+ */
+export const answerMark = () => blue.bold('●');
 
 /** The spinner. Braille dots, because they animate in place without jitter. */
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -274,13 +329,32 @@ export function asLabel(text) {
  *
  * Returns the rows; the caller pushes them.
  */
+/**
+ * How far along, as a bar rather than as arithmetic.
+ *
+ * "2/4" is a sum the reader has to do; a bar is the answer to it, read at a
+ * glance. Ten cells whatever the plan's length, so the row does not change
+ * width as steps are added and the eye keeps one edge to measure against.
+ *
+ * Heavy and light box-drawing, not block shading: those two are already the
+ * frame of every box on screen, so they are the two glyphs this app can be
+ * certain the terminal has and draws one cell wide.
+ */
+export const BAR_CELLS = 10;
+
+export function progressBar(done, total, cells = BAR_CELLS) {
+  const ratio = total > 0 ? Math.min(1, Math.max(0, done / total)) : 0;
+  const fill = Math.round(ratio * cells);
+  return blue('━'.repeat(fill)) + dim('─'.repeat(Math.max(0, cells - fill)));
+}
+
 export function planRows(items) {
   const list = (Array.isArray(items) ? items : []).slice(0, 8);
   if (!list.length) return [];
   const done = list.filter((i) => i?.done).length;
   const current = list.findIndex((i) => !i?.done);
 
-  const rows = [`  ${sky(`plan ${done}/${list.length}`)}`];
+  const rows = [`  ${progressBar(done, list.length)}  ${sky(`${done}/${list.length}`)}`];
   list.forEach((item, i) => {
     const text = clip(String(item?.text ?? '').trim(), 64);
     if (item?.done) rows.push(`    ${theme.ok('✓')} ${dim(text)}`);
@@ -314,6 +388,27 @@ export const narration = (text) => chalk.dim(text);
 
 /** The bullet beside a narration line: present, not loud. */
 export const narrationMark = () => chalk.dim(deep('●'));
+
+/**
+ * The file or command a step is about, lit so the line can be scanned.
+ *
+ * "Which file did it touch" is the one question a reader puts to a transcript
+ * of tool calls, and dimming the whole line made the answer as faint as the
+ * verb in front of it. The verb stays faint — there are only a dozen of them
+ * and they repeat — and the part that differs every time carries the colour.
+ */
+const paintStep = (label) => {
+  const text = String(label ?? '');
+  const space = text.indexOf(' ');
+  if (space < 0) return narration(text);
+
+  const target = text.slice(space + 1);
+  // "Read 2 files" is a tally, not a path. Lighting it up would point the eye
+  // at a number that says nothing about where the work happened.
+  if (/^\d/.test(target)) return narration(text);
+
+  return `${narration(text.slice(0, space))} ${blue(target)}`;
+};
 
 /**
  * How a run of the same kind of step reads once it is over.
@@ -363,18 +458,22 @@ export const groupTarget = (label) => String(label ?? '').trim().split(/\s+/).sl
  * reader nothing they could not get from the file itself, so a change is its
  * two numbers. Several steps on one file stay one line naming that file;
  * several files become a count.
+ *
+ * The line comes back painted, so the label handed in has to be through
+ * asLabel() already: run that over this and its regexes would be reading
+ * escape sequences instead of the last word.
  */
 export function runLine({ label, count = 1, targets = [], added = 0, removed = 0 }) {
   const counts = added || removed
     ? ` ${chalk.hex('#3fb950')(`+${added}`)} ${chalk.hex('#f2939c')(`-${removed}`)}`
     : '';
-  if (count <= 1) return `${label}${counts}`;
+  if (count <= 1) return `${paintStep(label)}${counts}`;
 
   const g = GROUPS[groupKind(label)];
   const unique = [...new Set(targets.filter(Boolean))];
-  if (g && unique.length === 1) return `${g[0]} ${unique[0]}${counts}`;
-  if (!g) return `${label} (+${count - 1} more)${counts}`;
-  return `${g[0]} ${count} ${count === 1 ? g[1] : g[2]}${counts}`;
+  if (g && unique.length === 1) return `${paintStep(`${g[0]} ${unique[0]}`)}${counts}`;
+  if (!g) return `${paintStep(`${label} (+${count - 1} more)`)}${counts}`;
+  return `${paintStep(`${g[0]} ${count} ${count === 1 ? g[1] : g[2]}`)}${counts}`;
 }
 
 /**

@@ -235,7 +235,11 @@ await test('the frame is still exactly as tall as the terminal', () => {
       .replace(/\x1b\[\?25[lh]|\x1b\[H|\x1b\[K|\x1b\[\d+;\d+H/g, '')
       .split('\n');
     eq(painted.length, rows, `${cols}x${rows} painted the wrong number of rows`);
-    for (const line of painted) eq(visLen(line), cols, `${cols}x${rows} has a row of the wrong width`);
+    // Every row is the frame's own width, which stops at 100 however wide the
+    // terminal is. Past that the row is cleared and never written to, so the
+    // painted string is shorter than the terminal without leaving anything behind.
+    const frame = Math.min(cols, 100);
+    for (const line of painted) eq(visLen(line), frame, `${cols}x${rows} has a row of the wrong width`);
   }
 });
 

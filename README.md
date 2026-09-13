@@ -249,8 +249,18 @@ type-checks every file it changed — `tsc --noEmit` for TypeScript projects,
 a syntax check for JavaScript and Python — and hands any errors back to fix,
 up to three rounds.
 
-**A plan you can see.** For longer jobs the model keeps a short checklist, shown
-as one line: `plan 2/5  ✓ Scaffold · ✓ Upload · ▸ Score dial · ○ Findings · ○ Polish`.
+**A plan you can see.** For longer jobs the model keeps a short checklist, with
+a bar across the top for how far along it is and one row per step, so the one in
+progress is findable without reading the rest:
+
+```
+  ━━━━──────  2/5
+    ✓ Scaffold
+    ✓ Upload
+    ▸ Score dial
+    ○ Findings
+    ○ Polish
+```
 
 **It knows the project before it asks.** Each turn starts with a map of every
 file and the names each code file exports, so the model goes straight to the
