@@ -13,7 +13,7 @@ import readline from 'node:readline';
 import chalk from 'chalk';
 import {
   theme, blue, sky, dim, boxTop, boxBottom, boxRow,
-  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine, bannerPaint, MAX_WIDTH,
+  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine, bannerPaint,
   tidyReply, trimAnswer,
 } from './theme.js';
 import { formatDuration, doneLine } from './activity.js';
@@ -66,13 +66,8 @@ export class Plain {
     });
   }
 
-  /**
-   * The same cap the full screen draws to, for the same reason: a header box
-   * ruled across two hundred columns is a line, not a frame. Both surfaces are
-   * the one product and should not disagree about how wide it is.
-   */
   width() {
-    return Math.max(30, Math.min(this.output.columns || 80, MAX_WIDTH));
+    return Math.max(30, this.output.columns || 80);
   }
 
   // -- output --------------------------------------------------------------

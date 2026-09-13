@@ -40,7 +40,7 @@ import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
-  bannerPaint, answerMark, RAIL, MAX_WIDTH } from './theme.js';
+  bannerPaint, RAIL } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -205,27 +205,18 @@ export class Screen {
     while (this.waiters.length) this.waiters.shift()(null);
   }
 
-  /** Every column the terminal has. Only the start screen, which centres, uses it. */
-  screenWidth() {
-    return Math.max(30, this.cols);
-  }
-
   /**
-   * The width the interface actually draws to.
+   * Every column the terminal has.
    *
-   * On a wide monitor an uncapped frame stretched its boxes to two hundred
-   * columns and ran prose the same distance, which is past the point a line
-   * can be read without losing the start of it — and reads as the app not
-   * having an opinion rather than as it filling the space. The cap is the
-   * width the markdown renderer was already holding answers to, so prose,
-   * boxes and diffs now end in the same column instead of three.
-   *
-   * Left, not centred: the shell prompt before and after a session sits on the
-   * left margin, and a frame that jumps to the middle of the screen reads as a
-   * different program. What is past the cap is cleared, never written to.
+   * Capped at 100 for a release, and it was wrong: on a wide monitor the frame
+   * sat in the left half of the screen with the rest of it empty, which reads
+   * as the window having failed to open rather than as a measured column. The
+   * interface fills what it is given. Prose inside it is still held to 100 by
+   * the markdown renderer, which is where that limit belongs — the boxes are
+   * the shape of the window, not of a paragraph.
    */
   width() {
-    return Math.min(this.screenWidth(), MAX_WIDTH);
+    return Math.max(30, this.cols);
   }
 
   /** Usable width inside a box: two borders and a space of padding each side. */
@@ -299,25 +290,12 @@ export class Screen {
     this.endRun();
     this.add('');
 
-    // A bullet on the first line that has words on it, and the rest of the
-    // answer indented to clear it. Without the mark the reply is white text at
-    // the same margin as the narration above it, and scrolling back there is
-    // nothing to aim at — you find where the answer starts by reading until
-    // the sentences stop being about files.
-    //
-    // Wrapped here rather than left to add(), which knows nothing about the
-    // indent: marked-terminal is told not to reflow, so a long line arrives
-    // whole, and a row add() broke for itself came back out at column zero
-    // with the rest of the answer sitting two columns to its right.
-    const room = Math.max(8, this.width() - 2);
-    let marked = false;
-    for (const row of render(this.md, body).split('\n')) {
-      if (!row.trim()) { this.add(''); continue; }
-      for (const line of wrapAnsi(row, room)) {
-        this.add(marked ? `  ${line}` : `${answerMark()} ${line}`);
-        marked = true;
-      }
-    }
+    // No bullet, and no indent. A mark on every reply made the answer read as
+    // one more step in the list above it, and on "Hey! How can I help you
+    // today?" it was a bullet on a greeting. The answer already wins the page
+    // by being the only thing on it at full strength; it does not also need to
+    // be labelled.
+    this.add(render(this.md, body));
 
     this.add('');
     this.render();
@@ -1473,10 +1451,7 @@ export class Screen {
 
   /** Where everything on the start screen goes, 0-based rows. */
   welcomeGeometry() {
-    // The true width here, not the capped one: the start screen centres itself,
-    // and centring inside the cap would park it left of the middle of a wide
-    // terminal. The session frame below is the thing that is left-aligned.
-    const cols = this.screenWidth();
+    const cols = this.width();
     const boxWidth = Math.max(30, Math.min(cols - 4, 84));
     const left = Math.max(0, Math.floor((cols - boxWidth) / 2));
     const big = cols >= BANNER_WIDTH + 4 && this.rows >= 18;

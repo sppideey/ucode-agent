@@ -67,21 +67,6 @@ export const theme = {
 export const ADDED = chalk.bgHex('#0e2a1a').hex('#7ee2a8');
 export const REMOVED = chalk.bgHex('#331319').hex('#f2939c');
 
-/**
- * The widest the interface draws, however many columns the terminal has.
- *
- * An uncapped frame stretched its boxes across two hundred columns on a wide
- * monitor and ran prose the same distance, which is past the point a line can
- * be read without losing the start of it — and reads as the app having no
- * opinion rather than as it filling the space. marked-terminal was already
- * holding answers to 100, so this is the number the prose in the transcript
- * has always obeyed; the boxes and the diffs now obey it too.
- *
- * Both surfaces read it from here, because a full screen and a piped one
- * disagreeing about how wide the product is would be the odder thing.
- */
-export const MAX_WIDTH = 100;
-
 export const BANNER = [
   '██╗   ██╗ ██████╗ ██████╗ ██████╗ ███████╗',
   '██║   ██║██╔════╝██╔═══██╗██╔══██╗██╔════╝',
@@ -122,16 +107,6 @@ export function bannerPaint(row, rows = BANNER.length) {
  * landmark — findable at a glance, scrollable to — for a fortieth of the ink.
  */
 export const RAIL = '▌';
-
-/**
- * The bullet beside the answer.
- *
- * The same circle as a step, because it is the same conversation, but at full
- * strength against the step's faint one. U+25CF and not U+23FA: the latter
- * carries emoji presentation, which Windows Terminal draws as a white circle
- * on a blue tile.
- */
-export const answerMark = () => blue.bold('●');
 
 /** The spinner. Braille dots, because they animate in place without jitter. */
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
