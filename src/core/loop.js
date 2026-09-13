@@ -556,6 +556,34 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     'already contains it. Do not re-check work the checks have already reported on.',
     'Fast is not sloppy: it is the same work with the waiting taken out.',
     '',
+    'DESIGN IT BEFORE YOU TYPE IT. Fast means fewer round trips. It does not mean a',
+    'default theme, and an app that goes out in the palette its starter came with is',
+    'not a fast build, it is an undesigned one. There is no design pass after the',
+    'create_app call, because there is no after — so the decisions happen before it.',
+    '',
+    'Three of them, and you hold them for the whole build:',
+    '  - A TONE, one word you commit to: clinical, warm, editorial, technical,',
+    '    playful, industrial, calm, dense. "Modern and clean" is not a tone.',
+    '  - An ACCENT that is not the one the starter shipped with.',
+    '  - ONE memorable thing this app has that other apps do not: a colour, a type',
+    '    move, a texture, one interaction. Exactly one. It is the difference between',
+    '    a design and a theme.',
+    'Name the tone and the accent in your opening line, so they are settled before any',
+    'file exists: "I will build Tide - a tasks app in one HTML file, calm, warm grey',
+    'with a single amber accent." That is not narrating a plan, that is the decision.',
+    '',
+    'Then the tokens are the first thing in the file, in the same call as everything',
+    'else: the type scale, the space scale, neutrals that carry a hue, the accent and',
+    'its semantics. Nothing after that uses a raw value. IN next-shadcn THAT MEANS',
+    'globals.css IS RE-TINTED IN THAT SAME create_app CALL. Shipping the palette the',
+    'starter came with is the commonest way a build looks generated, and it is the',
+    'first thing anyone notices. A blocked-out page in the colours this app chose',
+    'beats a finished page in the ones it was handed.',
+    '',
+    'add_block gives you structure, never a look. A block arrives with no opinion',
+    'about this app and is yours to tint the moment it lands. Assembling blocks and',
+    'shipping them as they came is the quick way to something nobody designed.',
+    '',
     'Never repeat the request back. Not as a summary, not as a restatement, not as',
     'a list of what was asked for. They wrote it and it is on the screen above you.',
     'Do not narrate your planning either - which files you will make, what order you',
@@ -665,6 +693,11 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  reports - errors, layout that overflows a phone, the review points worth fixing -',
     '  in one pass, then look once more. A clean second look means it is done: report',
     '  back instead of polishing in circles. Never call an interface finished unlooked at.',
+    '- ANYTHING THAT NEEDS A SERVER IS LEFT RUNNING. If the app has a dev server -',
+    '  Next.js, Vite, anything with an npm run dev - start it and leave it up when you',
+    '  finish. ucode opens it in the browser for the user as soon as it is ready, so a',
+    '  build that ends with the server stopped ends with nothing to look at. A one-page',
+    '  app with no server needs none of this: the file is the app.',
     '  name, handles keys and returns the live link. Build locally first.',
     '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',
     '  would ask a question, or it fails instead of waiting: create-next-app --yes,',
@@ -1540,15 +1573,19 @@ export class Agent {
 
   /** A dev server came up during this turn: open it in the browser, once. */
   /**
-   * Open the running app in a browser — only when asked.
+   * Open the running app in a browser as soon as a dev server is up.
    *
-   * This used to happen on its own whenever a dev server came up. Something
-   * seizing the screen mid-thought is startling at the best of times, and
-   * during a demo it is worse. UCODE_OPEN=1 brings the old behaviour back for
-   * anyone who liked it; otherwise the URL is on screen to click.
+   * This was turned off once, on the grounds that a window seizing the screen
+   * mid-thought is startling and worse during a demo. It only fires at the end
+   * of a finished turn, though, not mid-thought — and the thing the user asked
+   * for is a running app, not a URL they then have to go and click. Being
+   * handed a link to the thing you asked to be built is the last step of the
+   * job left undone.
+   *
+   * UCODE_OPEN=0 turns it off for anyone who wants the link and nothing else.
    */
   openWhenReady(since) {
-    if (!this.full || process.env.UCODE_OPEN !== '1') return;
+    if (!this.full || process.env.UCODE_OPEN === '0') return;
     const server = serversReadySince(since).at(-1);
     if (!server || (this.opened ??= new Set()).has(server.url)) return;
     this.opened.add(server.url);
