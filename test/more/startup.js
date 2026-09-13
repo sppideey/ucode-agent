@@ -35,10 +35,51 @@ export default async function ({ test, section, ok, eq }) {
       'loaded eagerly: ' + statics.filter((m) => /playwright|browser/.test(m)).join(', '));
   });
 
+  await hygieneSuite({ test, section, ok });
+
   await test('the version is readable without loading anything heavy', async () => {
     const t = Date.now();
     const { VERSION } = await import('../../src/core/version.js');
     ok(VERSION, 'there is a version');
     ok(Date.now() - t < 500, `version.js took ${Date.now() - t}ms`);
+  });
+}
+
+export async function hygieneSuite({ test, section, ok }) {
+  const fsp = await import('node:fs/promises');
+  const pathMod = await import('node:path');
+
+  section('no control characters in the source');
+
+  await test('a regex escape is never a raw control character', async () => {
+    // `\b` written into a file as a literal backspace looks identical on
+    // screen and matches nothing. Two of them sat in loop.js disabling build
+    // detection, and one broke the filter that keeps the model's internal
+    // monologue off the transcript. They are invisible; only a scan finds them.
+    const bad = [];
+    const walk = async (dir) => {
+      for (const e of await fsp.readdir(dir, { withFileTypes: true })) {
+        if (e.name === 'node_modules' || e.name === '.git') continue;
+        const full = pathMod.join(dir, e.name);
+        if (e.isDirectory()) { await walk(full); continue; }
+        if (!/\.(?:js|json|css|html|md)$/.test(e.name)) continue;
+        const text = await fsp.readFile(full, 'utf8');
+        for (const m of text.matchAll(/[\x00-\x08\x0B\x0C\x0E-\x1A\x1C-\x1F]/g)) {
+          bad.push(`${full}: code ${m[0].charCodeAt(0)} at offset ${m.index}`);
+        }
+      }
+    };
+    for (const dir of ['src', 'test', 'templates']) await walk(dir);
+    ok(bad.length === 0, 'control characters found:\n  ' + bad.slice(0, 8).join('\n  '));
+  });
+
+  await test('build detection actually matches a build command', async () => {
+    const src = await fsp.readFile('src/core/loop.js', 'utf8');
+    const m = src.match(/\/(\(\?:next build[^/]*)\//);
+    ok(m, 'the build-detection regex is still there');
+    const re = new RegExp(m[1]);
+    ok(re.test('npm run build'), 'npm run build must be recognised');
+    ok(re.test('next build') && re.test('tsc'), 'and the others');
+    ok(!re.test('npm run dev'), 'but not everything');
   });
 }

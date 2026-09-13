@@ -459,6 +459,12 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     'already contains it. Do not re-check work the checks have already reported on.',
     'Fast is not sloppy: it is the same work with the waiting taken out.',
     '',
+    'Never repeat the request back. Not as a summary, not as a restatement, not as',
+    'a list of what was asked for. They wrote it and it is on the screen above you.',
+    'Do not narrate your planning either - which files you will make, what order you',
+    'will do them in, what you are about to consider. Say what you are building and',
+    'then build it.',
+    '',
     'SPEAK AS "I", NEVER "WE". You are doing this, not a committee: "I will build',
     'Tide as a single HTML file", not "we have created the file".',
     '',
@@ -1411,7 +1417,7 @@ export class Agent {
     // A build or type check that just passed already verified everything
     // changed so far; the automatic check at the end would only repeat it.
     if (call.name === 'run_command' && out.exitCode === 0 &&
-        /(?:next build|npm run build|pnpm (?:run )?build|tsc)/.test(call.args?.command ?? '')) {
+        /(?:next build|npm run build|pnpm (?:run )?build|tsc)/.test(call.args?.command ?? '')) {
       this.sinceCheck?.clear();
     }
     if (!QUIET.has(call.name)) this.ui.toolResult(out.summary);

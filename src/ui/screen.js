@@ -106,6 +106,9 @@ const CHROME_BELOW = 6;
 /** How long one sentence of reasoning holds the line before the next takes it. */
 const THOUGHT_HOLD_MS = 1100;
 
+/** Reasoning that is about the request rather than about the work. */
+const RESTATEMENT = /^(?:the user|they|so the user|user)|^(?:i (?:need|should|will need) to (?:understand|figure|work out|check what))|^(?:let me (?:understand|re-?read|look at the (?:request|prompt)))|^(?:the (?:request|prompt|task) (?:is|asks|says))/i;
+
 /** The wordmark only earns its place with room for the facts column beside it. */
 const WORDMARK_NEEDS = BANNER_WIDTH + 30;
 
@@ -316,7 +319,7 @@ export class Screen {
       run.label = label;
       run.targets.push(groupTarget(label));
       this.run = run;
-      this.paintRun({ live: true });
+      this.paintRun();
     } else {
       this.push(`${narrationMark()} ${narration(asLabel(label))}`);
       this.run = {
@@ -324,7 +327,7 @@ export class Screen {
         targets: [groupTarget(label)], added: 0, removed: 0,
       };
       this.segment.set(kind, this.run);
-      this.paintRun({ live: true });
+      this.paintRun();
     }
     this.updateSpinner(label);
   }
@@ -352,17 +355,10 @@ export class Screen {
    * lines are gone. It settles to plain dim the moment the step finishes, so
    * the finished ones above stay quiet.
    */
-  paintRun({ live = this.run?.live } = {}) {
+  paintRun() {
     if (!this.run) return;
-    const text = asLabel(runLine(this.run));
-    this.run.live = live;
-    this.lines[this.run.at] = `${narrationMark()} ${live ? shimmer(text, this.tick * FRAME_MS) : narration(text)}`;
+    this.lines[this.run.at] = `${narrationMark()} ${narration(asLabel(runLine(this.run)))}`;
     this.render();
-  }
-
-  /** Let the line in flight animate, one frame per tick. */
-  paintLiveRun() {
-    if (this.run?.live && this.lines[this.run.at] !== undefined) this.paintRun({ live: true });
   }
 
   /**
@@ -395,10 +391,7 @@ export class Screen {
    * already names the step, and a change adds its numbers to that same line.
    * Only a failure earns a line of its own.
    */
-  toolResult() {
-    // The step is over: the line stops moving and joins the quiet ones above.
-    if (this.run) this.paintRun({ live: false });
-  }
+  toolResult() {}
 
   /**
    * Something went wrong, and the model is the one who can do anything about it.
@@ -569,6 +562,11 @@ export class Screen {
 
     const line = finished[1].trim();
     if (line.length < 12) return;   // "Okay." tells nobody anything
+    // Reasoning models open by restating the request to themselves — "The user
+    // wants a tasks app called Tide" — which the user wrote, is looking at, and
+    // does not need read back. Only a sentence about what is being done is
+    // worth the line.
+    if (RESTATEMENT.test(line)) { this.thought = ''; return; }
 
     this.openedWith = line;
     // Full strength: this is the model talking, and it is the thing on the page
@@ -922,8 +920,10 @@ export class Screen {
   startTimer() {
     if (this.spinTimer) return;
     this.spinTimer = setInterval(() => {
+      // Only the status row repaints on a tick. Animating a transcript line
+      // meant redrawing the whole frame twelve times a second, and the input
+      // box was being rebuilt under the user's cursor as they typed.
       this.tick++;
-      this.paintLiveRun();
       this.paintStatus();
     }, FRAME_MS);
     this.spinTimer.unref?.();

@@ -126,25 +126,27 @@ export async function liveSuite({ test, section, ok, eq }) {
       'a new segment gets its own line');
   });
 
-  await test('the step in flight animates, and stops when it is done', () => {
+  await test('a transcript line never animates', () => {
+    // Animating one meant repainting the whole frame twelve times a second,
+    // which rebuilt the input box under the cursor as the user typed. The
+    // status row is the one animated thing, and it repaints a single row.
     const s = make();
     s.toolCall('Reading files');
-    const first = s.lines[0];
+    const drawn = s.lines[0];
     s.tick = 40;
-    s.paintLiveRun();
-    ok(s.lines[0] !== first, 'it moved between frames');
+    s.paintStatus();
+    eq(s.lines[0], drawn, 'the transcript is still');
     s.toolResult('ok');
-    ok(s.lines[0].includes('\x1b[2m'), 'and settled to plain dim');
+    eq(s.lines[0], drawn, 'and a result does not redraw it either');
   });
 
-  await test('a finished line does not keep animating', () => {
+  await test('a tick repaints the status row, not the whole frame', () => {
     const s = make();
     s.toolCall('Reading files');
-    s.toolResult('ok');
-    const settled = s.lines[0];
-    s.tick = 99;
-    s.paintLiveRun();
-    eq(s.lines[0], settled, 'nothing above the current step twitches');
+    let frames = 0;
+    s.render = () => { frames++; };
+    for (let i = 0; i < 12; i++) { s.tick++; s.paintStatus(); }
+    eq(frames, 0, 'twelve ticks must not cost twelve full repaints');
   });
 }
 
@@ -210,6 +212,34 @@ export async function thinkingSuite({ test, section, ok, eq }) {
     ok(!s.lines[0].includes('[2m'), 'the model talking is the thing worth reading');
     ok(s.lines[0].includes('[37m'), 'it is painted, not left to the terminal default');
     chalk.level = level;
+  });
+
+  await test('the request is never read back to the person who wrote it', () => {
+    // Reasoning models open by restating the prompt to themselves. The user
+    // wrote it, is looking at it, and does not need it narrated.
+    for (const line of [
+      'The user wants a tasks app called Tide in a single index.html.',
+      'The user wants me to build Tide - a tasks app.',
+      'So the user is asking for a dark theme here.',
+      'The request asks for localStorage persistence.',
+      'I need to understand what they are asking for here.',
+    ]) {
+      const s = make();
+      s.thinkingDelta(line);
+      eq(s.lines.length, 0, 'shown: ' + line);
+    }
+  });
+
+  await test('a sentence about the work still earns its line', () => {
+    for (const line of [
+      'Now I need to add the missing CSS for the filter row.',
+      'I will build Tide as a single HTML file.',
+      'The layout is done, now the animations.',
+    ]) {
+      const s = make();
+      s.thinkingDelta(line);
+      eq(s.lines.length, 1, 'hidden: ' + line);
+    }
   });
 
   await test('a throwaway opener is not worth a line', () => {
