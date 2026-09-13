@@ -161,6 +161,102 @@ export function bannerSweep(line, row, rows, elapsed, { level = chalk.level } = 
   return out;
 }
 
+
+/**
+ * The bar that says work is happening, with no claim about how much is left.
+ *
+ * A spinner turning in one cell says "alive". A band of light running along a
+ * track says "alive, and going somewhere", which is the honest amount of
+ * progress an agent can report — it does not know how many steps are left, so
+ * a filling bar would be a lie and an indeterminate one is not.
+ *
+ * The band runs off both ends rather than bouncing inside the track: a bounce
+ * draws the eye to the turn, where a pass reads as something continuous going
+ * by. Below 256 colours there is nothing to fade through, so the track is
+ * simply dim and still, and the spinner beside it carries the motion.
+ */
+export const BAR_CELLS = 12;
+
+/** The unlit track, and the crest of the band running along it. */
+const TRACK_RGB = [0x24, 0x34, 0x4f];
+const CREST_RGB = [0x8f, 0xbc, 0xff];
+
+/** One pass of the band, in milliseconds. */
+const BAR_PERIOD = 1400;
+
+/** Half the width of the band, in cells. */
+const BAR_BAND = 3.5;
+
+export function indeterminate(cells, t, { level = chalk.level } = {}) {
+  const width = Math.max(0, Math.floor(cells));
+  if (!width) return '';
+  const track = '━'.repeat(width);
+  if (level < 2) return dim(track);
+
+  const centre = ((Math.max(0, t) % BAR_PERIOD) / BAR_PERIOD) * (width + BAR_BAND * 2) - BAR_BAND;
+
+  let out = '';
+  let run = '';
+  let runStep = -1;
+  const flush = () => {
+    if (!run) return;
+    const [r, g, b] = mix(TRACK_RGB, CREST_RGB, runStep / STEPS);
+    out += painter(level).rgb(r, g, b)(run);
+    run = '';
+  };
+
+  for (let i = 0; i < width; i++) {
+    const distance = Math.abs(i - centre);
+    const k = distance < BAR_BAND ? (Math.cos((Math.PI * distance) / BAR_BAND) + 1) / 2 : 0;
+    const step = Math.round(k * STEPS);
+    if (step !== runStep) { flush(); runStep = step; }
+    run += track[i];
+  }
+  flush();
+  return out;
+}
+
+/**
+ * The whole live line: what is happening, that it is still happening, how long
+ * it has been happening, and how to stop it.
+ *
+ * This used to be squeezed into whatever the status row had spare between the
+ * model name and the percentage, which is why the label shimmered — it was the
+ * only way to look alive in twenty columns. With a row of its own the motion
+ * moves to the bar and the label can simply be read.
+ *
+ * Things are given up from the least useful end as the terminal narrows: the
+ * hint first, then the bar shortens, then it goes, then the label is clipped.
+ * The spinner is the last thing standing, because a line with nothing moving
+ * on it says the program has hung.
+ */
+export function workingLine({
+  glyph, label = '', elapsed = '', hint = 'esc to stop', room, t = 0, level = chalk.level,
+} = {}) {
+  const text = String(label ?? '');
+  if (room < 3) return glyph;
+
+  const tail = [elapsed, hint].filter(Boolean).join('   ');
+  const shortTail = elapsed || '';
+
+  const draw = (cells, tailText, labelRoom) => {
+    let out = `${glyph} ${sky(clip(text, labelRoom))}`;
+    if (cells) out += `   ${indeterminate(cells, t, { level })}`;
+    if (tailText) out += `   ${dim(tailText)}`;
+    return out;
+  };
+
+  for (const [cells, tailText] of [
+    [BAR_CELLS, tail], [BAR_CELLS, shortTail], [8, shortTail], [0, shortTail], [0, ''],
+  ]) {
+    const fixed = 2 + (cells ? cells + 3 : 0) + (tailText ? tailText.length + 3 : 0);
+    const labelRoom = room - fixed;
+    if (labelRoom >= Math.min(MIN_LABEL, text.length)) return draw(cells, tailText, labelRoom);
+  }
+
+  return `${glyph} ${sky(clip(text, Math.max(1, room - 2)))}`;
+}
+
 /**
  * The spinner glyph for a frame, breathing slowly between two blues.
  *
@@ -170,8 +266,8 @@ export function bannerSweep(line, row, rows, elapsed, { level = chalk.level } = 
 export function spinnerGlyph(frame, t, { level = chalk.level } = {}) {
   const glyph = SPINNER[((frame % SPINNER.length) + SPINNER.length) % SPINNER.length];
   if (level < 2) return theme.blue(glyph);
-  const k = (Math.sin((Math.max(0, t) / 1300) * Math.PI * 2) + 1) / 2;
-  const [r, g, b] = mix([0x4d, 0x8d, 0xff], [0x9f, 0xc6, 0xff], k);
+  const k = (Math.sin((Math.max(0, t) / 1000) * Math.PI * 2) + 1) / 2;
+  const [r, g, b] = mix([0x2f, 0x6f, 0xe0], [0x9f, 0xc6, 0xff], k);
   return painter(level).rgb(r, g, b)(glyph);
 }
 

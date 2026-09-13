@@ -41,7 +41,7 @@ import {
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
   bannerPaint, RAIL, modeChip } from './theme.js';
-import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint, bannerSweep, SWEEP_MS } from './activity.js';
+import { FRAME_MS, spinnerGlyph, formatDuration, doneLine, workingLine, bannerSweep, SWEEP_MS } from './activity.js';
 import { gitBranch } from '../core/git.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -100,10 +100,16 @@ const at = (row, col) => `${ESC}[${row};${col}H`;
 const title = (t) => `${ESC}]0;${t}\x07`;
 
 /**
- * Fixed rows below the header: the gap under it, the gap above the input box,
- * the input box's two borders, the blank row inside it, and the status row.
+ * Fixed rows below the header: the gap under it, the live line, the gap above
+ * the input box, the box's two borders, the blank row inside it, and the
+ * status row.
+ *
+ * The live line's row is held whether anything is running or not. Adding it
+ * only while busy would move the whole transcript up a row at the start of
+ * every turn and back down at the end of it, which reads as the screen
+ * flinching each time you press return.
  */
-const CHROME_BELOW = 6;
+const CHROME_BELOW = 7;
 
 /** How long one sentence of reasoning holds the line before the next takes it. */
 const THOUGHT_HOLD_MS = 1100;
@@ -915,8 +921,10 @@ export class Screen {
    * the same on every line of every session, so it was decoration that had to
    * be read past to reach the two things that do change.
    *
-   * The middle is borrowed while something is running, for the spinner and the
-   * way out of it, and handed straight back when it finishes.
+   * The spinner used to borrow the middle of this row while something ran. It
+   * has a row of its own outside the box now, so the only thing that ever
+   * appears between the model and the percentage is a flash — a reply to
+   * something you just pressed, gone a moment later.
    */
   statusRow(width = this.width()) {
     const inner = width - 2;             // the space between the two borders
@@ -928,41 +936,44 @@ export class Screen {
     this.chipTo = 2 + visLen(chip);
 
     const between = Math.max(1, inner - visLen(left) - visLen(right));
+    const middle = this.flashText ? dim(clip(this.flashText, between - 2)) : '';
 
-    let middle = '';
-    if (this.flashText) {
-      middle = dim(clip(this.flashText, between - 2));
-    } else if (this.status.busy || this.activity) {
-      // The whole turn, not just the current tool: the timer and step count
-      // keep going through the gaps between calls, so a long build never
-      // looks like it has stopped.
-      const now = Date.now();
-      const a = this.activity;
-      const since = a?.start ?? this.status.since ?? now;
-      const meta = [];
-      // No step count. It measures how much machinery ran, which is not
-      // something the person waiting has any use for; the elapsed time is.
-      void stepPaint;
-      if (now - since >= 1000) meta.push({ text: formatDuration(now - since), keep: true });
-      middle = fitActivity({
-        glyph: spinnerGlyph(this.tick, now),
-        label: this.status.busy ? this.status.text : 'working',
-        meta,
-        hint: 'esc to stop',
-        paint: (s) => shimmer(s, now),
-      }, between - 3);
-    }
-
-    // The percentage is pinned to the right border whatever is in the middle,
-    // with a gap kept in front of it so a long spinner label cannot run into
-    // the number and read as part of it.
     const tail = middle ? `${middle}   ` : '';
     const pad = Math.max(1, inner - visLen(left) - visLen(tail) - visLen(right));
     return padVis(left + ' '.repeat(pad) + tail + right, inner);
   }
 
   /**
-   * Repaint only the status row, leaving the caret where the user left it.
+   * What is happening right now: the spinner, what it is doing, how long it has
+   * been doing it, and the way out.
+   *
+   * It used to live in whatever space the status row had spare between the
+   * model name and the percentage — inside the box you type into, which is the
+   * one place on screen that is about you rather than about the agent. Out
+   * here it sits directly under the steps it belongs to, in the same column,
+   * and has room for a bar instead of a shimmer.
+   */
+  activityLine(width = this.width()) {
+    if (!this.busy()) return '';
+    const now = Date.now();
+    const since = this.activity?.start ?? this.status.since ?? now;
+    return workingLine({
+      glyph: spinnerGlyph(this.tick, now),
+      label: this.status.busy ? this.status.text : 'working',
+      elapsed: now - since >= 1000 ? formatDuration(now - since) : '',
+      hint: 'esc to stop',
+      room: Math.max(4, width),
+      t: now,
+    });
+  }
+
+  /** Which row the live line is painted on, 1-based. */
+  activityRowAt() {
+    return this.rows - this.inputLines().rows.length - 5;
+  }
+
+  /**
+   * Repaint only the moving rows, leaving the caret where the user left it.
    *
    * It is the second row from the bottom now — the box's own border is below
    * it — so the row is written with its borders rather than as a bare line.
@@ -976,9 +987,11 @@ export class Screen {
       return;
     }
     const [row, col] = this.caret();
+    const width = this.width();
     this.output.write(
       HIDE +
-      at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(), this.width(), this.borderPaint()) +
+      at(this.activityRowAt(), 1) + CLEAR_LINE + padVis(this.activityLine(width), width) +
+      at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(width), width, this.borderPaint()) +
       at(row, col) + SHOW
     );
   }
@@ -1477,6 +1490,9 @@ export class Screen {
       ...this.headerLines(),
       '',
       ...window,
+      // What is happening right now, in the same column as the steps above it,
+      // because it is the next one of those. Empty between turns.
+      this.activityLine(width),
       // Always one clear row between the last thing said and the box you type
       // in. Without it the newest line of output sits against the border and
       // reads as part of the input rather than as the answer above it.

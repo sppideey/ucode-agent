@@ -194,15 +194,31 @@ await test('the mode switches the chip', () => {
   ok(!row.includes('BUILD'));
 });
 
-await test('a busy turn borrows the middle and gives the percentage back', () => {
+await test('a busy turn leaves the status row alone — the work has its own line', () => {
   const { screen } = fakeScreen(110);
   screen.status = { busy: true, text: 'Writing src/App.jsx', frame: 0, since: Date.now() - 7000 };
+
   const row = bare(screen.statusRow());
-  ok(row.includes('Writing src/App.jsx'), `spinner text missing from "${row}"`);
-  ok(row.includes('esc to stop'));
+  ok(!row.includes('Writing src/App.jsx'), `the box you type into is not where work is reported: "${row}"`);
+  ok(!row.includes('esc to stop'));
   ok(row.trimEnd().endsWith('4%'), 'the percentage keeps its place while working');
   ok(row.includes('BUILD'), 'the mode keeps its place too');
   ok(/\s{2,}4% $/.test(row), `the number needs a gap in front of it: "${row.slice(-30)}"`);
+
+  const live = bare(screen.activityLine());
+  ok(live.includes('Writing src/App.jsx'), `the work is on the live line: "${live}"`);
+  ok(live.includes('esc to stop'), 'and so is the way out of it');
+  ok(live.includes('7s'), 'and how long it has been going');
+});
+
+await test('the live line is empty between turns, but its row is still held', () => {
+  const { screen } = fakeScreen(110, 30);
+  eq(screen.activityLine(), '', 'nothing is running, so nothing is said');
+  screen.add('a line of output');
+  const before = screen.viewportHeight();
+  screen.startSpinner('Reading a file');
+  eq(screen.viewportHeight(), before, 'the transcript does not move when a turn starts');
+  ok(bare(screen.activityLine()).includes('Reading a file'));
 });
 
 await test('a narrow terminal drops the spinner text before it collides', () => {
@@ -253,7 +269,10 @@ await test('there is always a clear row between the conversation and the input b
   const top = rows.findLastIndex((r) => r.startsWith('╭'));
   ok(top > 0, 'the input box should be on screen');
   eq(rows[top - 1].trim(), '', 'the row above the input box must be empty');
-  ok(rows[top - 2].includes('output line'), 'and the conversation runs right up to that gap');
+  // Then the live line's own row, which is blank while nothing is running, and
+  // the conversation directly above that.
+  eq(rows[top - 2].trim(), '', 'the live line holds its row even when idle');
+  ok(rows[top - 3].includes('output line'), 'and the conversation runs right up to it');
 });
 
 await test('the caret sits on the typed line, not on the status row', () => {
