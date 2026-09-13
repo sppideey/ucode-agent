@@ -535,7 +535,7 @@ export function withoutCodeBlocks(text, keepLines = 4) {
  * colon pointing at nothing reads as the reply having been cut off. A short
  * block stays: three lines showing a command to run belong in an answer.
  */
-export function tidyReply(text, keepLines = 4) {
+export function tidyReply(text, keepLines = 4, prompt = '') {
   const MARK = "\u0000CUT\u0000";
   const FENCE = new RegExp("```([A-Za-z0-9+-]*)\\n([\\s\\S]*?)```", "g");
 
@@ -545,11 +545,76 @@ export function tidyReply(text, keepLines = 4) {
   });
 
   const leadIn = new RegExp("(?:^|\\n)[^\\n]{0,80}:[ \t]*\\n+" + MARK, "g");
-  return marked
+  const body = marked
     .replace(leadIn, "\n")
     .split(MARK).join("")
     .replace(new RegExp("\\n{3,}", "g"), "\n\n")
     .trim();
+  return withoutRestatement(body, prompt);
+}
+
+/**
+ * The words of a line worth comparing: lowercase, no punctuation, and nothing
+ * short enough to turn up in any sentence at all.
+ */
+const significant = (s) => String(s ?? '')
+  .toLowerCase()
+  .replace(/[^a-z0-9\s]+/g, ' ')
+  .split(/\s+/)
+  .filter((w) => w.length >= 3);
+
+/**
+ * Is this line the request handed back?
+ *
+ * A list of phrases catches the openings a model reaches for out of habit, but
+ * the commonest way of repeating a request is simply saying it again in the
+ * asker's own words — "A Next.js habit tracker with a clean dashboard, coming
+ * right up" — and no list will ever match that. So the line is compared with
+ * what was actually typed.
+ *
+ * Three guards keep it off real answers. A prompt of four significant words or
+ * fewer is never matched, because at that length an overlap means nothing. A
+ * line much longer than the prompt is saying more than the prompt did, so it
+ * is content. And the bar is four fifths of the prompt's words rather than a
+ * majority: an answer naturally shares nouns with the request that prompted
+ * it, and only something repeating nearly all of it is a repetition.
+ */
+export function echoesPrompt(line, prompt) {
+  const want = [...new Set(significant(prompt))];
+  if (want.length < 4) return false;
+
+  const text = String(line ?? '');
+  if (text.length > String(prompt ?? '').length * 2.5) return false;
+
+  const have = new Set(significant(text));
+  return want.filter((w) => have.has(w)).length / want.length >= 0.8;
+}
+
+/**
+ * The reply with any opening that reads the request back taken off the front.
+ *
+ * This ran only on the closing message before, and it belongs on every one. A
+ * model that answers "You asked me to add a dark mode toggle — done" has spent
+ * its first line telling someone something they typed themselves, and the line
+ * directly above it on screen is already their own message, in their own
+ * words, against a rail. Two copies of the request and one of the answer is
+ * the wrong ratio.
+ *
+ * It never returns nothing. A reply that is only a restatement is still the
+ * whole of the reply, and an empty answer on screen reads as a crash.
+ */
+export function withoutRestatement(text, prompt = '') {
+  const rows = String(text ?? '').replace(/\r/g, '').split('\n');
+
+  let start = 0;
+  while (start < rows.length) {
+    const line = rows[start].trim();
+    if (!line) { start++; continue; }
+    if (!RESTATED.test(line) && !echoesPrompt(line, prompt)) break;
+    start++;
+  }
+
+  return rows.slice(start).join('\n').trim() || String(text ?? '').trim();
 }
 
 /**
@@ -568,7 +633,7 @@ export function tidyReply(text, keepLines = 4) {
 export const ANSWER_LINES = 8;
 const ANSWER_ROOM = 600;   // eight wrapped lines of prose, for a reply with no line breaks in it
 
-const RESTATED = /^(?:you (?:asked|wanted|requested|said)\b|the (?:request|task|ask)\b|as (?:you )?requested\b|here(?:'s| is) what (?:you asked|i)\b|to (?:summarise|summarize|recap)\b|(?:request|task|summary|recap|overview)\s*:)/i;
+export const RESTATED = /^(?:(?:sure|ok|okay|got it|understood|alright|right)\b[\s,!.—-]*)?(?:you(?:'ve| have)? (?:asked|want|wanted|requested|said|would like|need)\b|the (?:request|task|ask)\b|as (?:you )?requested\b|here(?:'s| is) what (?:you asked|i)\b|i(?:'ll| will|'m going to| am going to) (?:build|create|make|add|write|implement)\b|let(?:'s| us) (?:build|create|make|add|write|implement)\b|to (?:summarise|summarize|recap)\b|(?:request|task|summary|recap|overview)\s*:)/i;
 const CAVEAT = /\b(?:however|failed|couldn't|could not|cannot|can't|didn't|did not|isn't|is not|doesn't|does not|not (?:yet|wired|working|done|implemented)|missing|unfinished|except)\b/i;
 const ACTIONABLE = /\b(?:open|run|serve|visit|try|start|npm|npx|node|pnpm|yarn)\b|https?:\/\/|\.(?:html?|css|jsx?|tsx?|md|json|py|rs|go)\b/i;
 const BULLET = /^\s*(?:[-*•>]|\d+[.)]|[✓✔✅☑])\s+/;

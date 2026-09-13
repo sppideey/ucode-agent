@@ -374,6 +374,8 @@ export async function replySuite({ test, section, ok, eq }) {
   await test('only the closing message is cut — mid-turn prose is not', async () => {
     const fsp = await import('node:fs/promises');
     const src = await fsp.readFile('src/ui/screen.js', 'utf8');
-    ok(src.includes('closing ? trimAnswer(tidyReply(text)) : tidyReply(text)'), 'the cap is gated on closing');
+    ok(src.includes('closing ? trimAnswer(tidy) : tidy'), 'the cap is gated on closing');
+    ok(src.includes('tidyReply(text, 4, this.lastPrompt)'),
+      'and every reply, closing or not, is checked against what was typed');
   });
 }

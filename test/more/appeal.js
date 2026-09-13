@@ -4,7 +4,7 @@
 import chalk from 'chalk';
 import { Screen } from '../../src/ui/screen.js';
 import {
-  bare, narrationMark, modeChip, bannerPaint, BANNER,
+  bare, narrationMark, modeChip, bannerPaint, BANNER, withoutRestatement, echoesPrompt,
 } from '../../src/ui/theme.js';
 import { bannerSweep, SWEEP_MS } from '../../src/ui/activity.js';
 import { gitBranch, parseHead } from '../../src/core/git.js';
@@ -129,6 +129,52 @@ export default async function ({ test, section, ok, eq }) {
     ok(bare(screen.lines.at(-1)).startsWith('◇'), bare(screen.lines.at(-1)));
     screen.toolCall('Running npm test');
     ok(bare(screen.lines.at(-1)).startsWith('▸'), bare(screen.lines.at(-1)));
+  });
+
+  section('the answer does not say the question back');
+
+  const PROMPT = 'build me a next.js habit tracker with a clean dashboard';
+
+  await test('an opening that reads the request back is dropped', () => {
+    eq(withoutRestatement('You asked me to add a dark mode toggle.\nDone — it is in settings.', ''),
+      'Done — it is in settings.');
+    eq(withoutRestatement("Sure! I'll build the dashboard.\nIt is at /dashboard.", ''),
+      'It is at /dashboard.');
+    eq(withoutRestatement('Task: ship the landing page\nShipped.', ''), 'Shipped.');
+  });
+
+  await test('so is the request said back in the asker’s own words', () => {
+    ok(echoesPrompt('A Next.js habit tracker with a clean dashboard, coming right up.', PROMPT));
+    eq(withoutRestatement(`${PROMPT}. Here we go.\nIt is running on port 3000.`, PROMPT),
+      'It is running on port 3000.');
+  });
+
+  await test('a real answer that happens to share nouns is left alone', () => {
+    ok(!echoesPrompt('The dashboard is at /dashboard — run npm run dev.', PROMPT),
+      'sharing a word with the request is not repeating it');
+    const answer = 'The dashboard is at /dashboard.\nStreaks persist to localStorage.';
+    eq(withoutRestatement(answer, PROMPT), answer);
+  });
+
+  await test('a short prompt can never trigger it', () => {
+    ok(!echoesPrompt('hey there', 'hey'), 'three words of overlap prove nothing');
+    ok(!echoesPrompt('Fixed it.', 'fix it'));
+    eq(withoutRestatement('Hey! How can I help you today?', 'hey'),
+      'Hey! How can I help you today?');
+  });
+
+  await test('a reply that is only a restatement is still the reply', () => {
+    eq(withoutRestatement('You asked me to add a toggle.', ''), 'You asked me to add a toggle.',
+      'an empty answer on screen reads as a crash');
+  });
+
+  await test('the screen checks each reply against the message above it', () => {
+    const { screen } = fake();
+    screen.userMessage(PROMPT);
+    screen.assistant(`${PROMPT} — here it is.\n\nRunning on port 3000.`);
+    const said = screen.lines.map(bare).join('\n');
+    ok(said.includes('Running on port 3000'), 'the answer survives');
+    eq(said.split('habit tracker').length - 1, 1, 'and the request appears once, as your own message');
   });
 
   section('the header says where you are');

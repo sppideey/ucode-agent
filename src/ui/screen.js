@@ -186,6 +186,7 @@ export class Screen {
     this.intro = 0;       // when the launch sweep began, 0 once it is over
     this.introTimer = null;
     this.pendingPrompt = null;
+    this.lastPrompt = '';  // the last thing the user said, for the echo check
     this.facts.branch = gitBranch(cwd);
 
     this.cols = output.columns || 80;
@@ -340,7 +341,8 @@ export class Screen {
    */
   assistant(text, { closing = false } = {}) {
     if (!text?.trim()) return;
-    const body = closing ? trimAnswer(tidyReply(text)) : tidyReply(text);
+    const tidy = tidyReply(text, 4, this.lastPrompt);
+    const body = closing ? trimAnswer(tidy) : tidy;
     if (!body.trim()) return;
     this.endRun();
     this.add('');
@@ -367,6 +369,9 @@ export class Screen {
    * loud as the input box, none of them saying anything the rail does not.
    */
   userMessage(text) {
+    // Kept so the reply can be checked against it: an answer that opens by
+    // saying the request back is repeating the line directly above it.
+    this.lastPrompt = String(text ?? '');
     const room = Math.max(8, this.width() - 2);   // the rail and the space after it
 
     const rows = [];
@@ -730,14 +735,21 @@ export class Screen {
     const room = Math.max(8, inner - BANNER_WIDTH - 6);
     const value = (v) => clip(String(v), Math.max(4, room - 10));
     const branch = this.facts.branch;
+
+    // The facts run together from the top with nothing between them, the credit
+    // sits on the last row, and whatever is left over is the gap between the
+    // two. Holding a row empty in the middle of the list — which is what a
+    // fixed six-row layout did when a fact was missing — reads as a line that
+    // failed to draw rather than as spacing.
     const facts = [
       ['dir', value(shortenPath(this.facts.cwd ?? this.cwd, room - 10))],
-      branch ? ['branch', value(branch)] : ['', ''],
-      VERSION ? ['version', value(this.facts.update ? `${VERSION} → ${this.facts.update} next start` : VERSION)] : ['', ''],
-      ['', ''],
+      branch && ['branch', value(branch)],
+      VERSION && ['version', value(this.facts.update ? `${VERSION} → ${this.facts.update} next start` : VERSION)],
       ['keys', value('/help · esc interrupts · ctrl+b plan')],
-      ['', 'made with ❤️ by om dixit'],
-    ];
+    ].filter(Boolean).slice(0, BANNER.length - 1);
+
+    while (facts.length < BANNER.length - 1) facts.push(['', '']);
+    facts.push(['', 'made with ❤️ by om dixit']);
 
     const rows = BANNER.map((art, i) => {
       const [label, text] = facts[i] ?? ['', ''];
