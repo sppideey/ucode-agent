@@ -256,7 +256,7 @@ export async function planSuite({ test, section, ok, eq }) {
 }
 
 export async function replySuite({ test, section, ok, eq }) {
-  const { withoutCodeBlocks, tidyReply } = await import('../../src/ui/theme.js');
+  const { withoutCodeBlocks, tidyReply, trimAnswer } = await import('../../src/ui/theme.js');
 
   section('code stays in the file');
 
@@ -311,5 +311,68 @@ export async function replySuite({ test, section, ok, eq }) {
   await test('an answer with no code at all is untouched', () => {
     const plain = 'I built the tasks app. Open index.html to try it.';
     eq(withoutCodeBlocks(plain), plain);
+  });
+
+  section('the closing message is eight lines at most');
+
+  // What a model hands over at the end of a build when nothing stops it: the
+  // request read back, every feature ticked off, every file listed.
+  const report = [
+    'I have built the todo app.',
+    '',
+    'What it does:',
+    '- Add tasks with the input at the top',
+    '- Tick them off',
+    '- Delete them',
+    '- Filter: all, active, done',
+    '- Saves to localStorage',
+    '- Dark mode with a teal accent',
+    '- Keyboard shortcuts throughout',
+    '',
+    'Files created:',
+    '- todo/index.html',
+    '- todo/styles.css',
+    '- todo/app.js',
+    '',
+    'I could not run the tests, there are none in this project.',
+    '',
+    'Open todo/index.html in a browser to try it.',
+  ].join('\n');
+
+  const rows = (text) => text.split('\n').filter((row) => row.trim()).length;
+
+  await test('a closing status report is cut to eight lines', () => {
+    ok(rows(trimAnswer(report)) <= 8, trimAnswer(report));
+  });
+
+  await test('the line saying how to try it survives the cut', () => {
+    ok(trimAnswer(report).includes('Open todo/index.html'), trimAnswer(report));
+  });
+
+  await test('so does the line admitting something was not done', () => {
+    ok(trimAnswer(report).includes('could not run the tests'), trimAnswer(report));
+  });
+
+  await test('an opening that reads the request back is dropped', () => {
+    const out = trimAnswer('You asked for a tasks app with filters.\n\nTide is built — open tide/index.html.');
+    ok(!out.includes('You asked'), out);
+    ok(out.startsWith('Tide is built'), out);
+  });
+
+  await test('a short answer is left exactly as it was', () => {
+    const short = 'Tide is built — open tide/index.html.';
+    eq(trimAnswer(short), short);
+  });
+
+  await test('one long paragraph is cut at a sentence, never mid-word', () => {
+    const out = trimAnswer('Tide is a tasks app. '.repeat(60));
+    ok(out.length <= 620, `${out.length} characters`);
+    ok(out.endsWith('.'), out.slice(-40));
+  });
+
+  await test('only the closing message is cut — mid-turn prose is not', async () => {
+    const fsp = await import('node:fs/promises');
+    const src = await fsp.readFile('src/ui/screen.js', 'utf8');
+    ok(src.includes('closing ? trimAnswer(tidyReply(text)) : tidyReply(text)'), 'the cap is gated on closing');
   });
 }

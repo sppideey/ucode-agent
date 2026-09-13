@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -254,11 +254,20 @@ export class Screen {
     this.render();
   }
 
-  assistant(text) {
+  /**
+   * The reply, at full strength, with room either side.
+   *
+   * `closing` says this is the last thing the turn will say. It is then also
+   * the last thing left on screen, and what the whole session reads like
+   * afterwards, so it is cut to eight lines — see trimAnswer.
+   */
+  assistant(text, { closing = false } = {}) {
     if (!text?.trim()) return;
+    const body = closing ? trimAnswer(tidyReply(text)) : tidyReply(text);
+    if (!body.trim()) return;
     this.endRun();
     this.add('');
-    this.add(render(this.md, tidyReply(text)));
+    this.add(render(this.md, body));
     this.add('');
     this.render();
   }
@@ -529,7 +538,7 @@ export class Screen {
    * rather than an answer, in which case one short line folds down into the
    * status line it was always meant to be.
    */
-  streamEnd({ asNarration = false } = {}) {
+  streamEnd({ asNarration = false, closing = false } = {}) {
     if (this.streamAt === undefined) return '';
     const text = this.streamBuf;
     this.lines.length = this.streamAt;
@@ -537,7 +546,7 @@ export class Screen {
     this.streamBuf = '';
 
     if (asNarration && isLabel(text)) this.narrate(text);
-    else if (text.trim()) this.assistant(text);
+    else if (text.trim()) this.assistant(text, { closing });
     else this.render();
     return text;
   }

@@ -78,7 +78,7 @@ export default async function ({ test, section, ok, eq, sandbox }) {
   section('design');
 
   await test('create_app applies the chosen preset and leaves no catalogue behind', async () => {
-    await createApp({ folder: 'citrusy', name: 'Citrusy', design: 'citrus', install: false });
+    await createApp({ folder: 'citrusy', name: 'Citrusy', design: 'citrus', template: 'next-shadcn', install: false });
     const dir = path.join(sandbox, 'citrusy');
     const layout = await fs.readFile(path.join(dir, 'src/app/layout.tsx'), 'utf8');
     ok(layout.includes('Figtree('), 'font swapped');

@@ -15,6 +15,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolFailure } from '../core/failure.js';
 import { resolveIn, guard, result } from './shared.js';
+import { batchWrite } from './files.js';
 import { packageJsonWritten, installIn } from './shell.js';
 import { restore, populate } from './cache.js';
 
@@ -27,6 +28,44 @@ const RENAME = { _gitignore: '.gitignore', '_package-lock.json': 'package-lock.j
 const TEXT = /\.(?:json|md|mjs|css|html|jsx?|tsx?)$/i;
 
 export const TEMPLATE_NAMES = ['next-shadcn', 'plain-html'];
+
+/**
+ * Which of a starter's files come back inside the result, in full.
+ *
+ * Reading a file ucode just copied is a whole round trip spent learning what
+ * it already had on disk, and a round trip is ten to forty seconds. The
+ * three-file starter is small enough to hand over outright; the Next.js one
+ * is a hundred files and its guide has to do that job instead.
+ */
+const SHOW_BACK = { 'plain-html': ['index.html', 'styles.css', 'app.js'] };
+
+/**
+ * The files argument, however it was written.
+ *
+ * A list of `{ path, content }` is what the schema asks for, and it is what
+ * arrives most of the time. The rest of the time it is a JSON string, or a
+ * `{ "todo/app.js": "..." }` map, or the same list with the keys named
+ * something adjacent. Each of those, refused, is a round trip spent being
+ * told what could have been read — so they are all read.
+ */
+function normaliseFiles(files) {
+  let value = files;
+  if (typeof value === 'string') {
+    try { value = JSON.parse(value); } catch { return []; }
+  }
+  if (!value || typeof value !== 'object') return [];
+
+  const entries = Array.isArray(value)
+    ? value
+    : Object.entries(value).map(([path, content]) => ({ path, content }));
+
+  return entries.map((entry) => {
+    if (typeof entry !== 'object' || entry === null) return entry;
+    const path = entry.path ?? entry.file ?? entry.filename ?? entry.name;
+    const content = entry.content ?? entry.contents ?? entry.text ?? entry.body ?? entry.source;
+    return { ...entry, path, content };
+  });
+}
 
 /** What each starter is for, so the choice is made on purpose. */
 export const TEMPLATE_NOTES = {
@@ -63,14 +102,6 @@ async function copyTree(from, to, fill) {
   return copied;
 }
 
-/**
- * @param {object} o
- * @param {string} o.folder       new, empty folder for the app
- * @param {string} o.name         display name, e.g. "Stride"
- * @param {string} [o.description]
- * @param {string} [o.template]
- * @param {boolean} [o.install]   start the background install (tests turn it off)
- */
 /**
  * Give the new app its look: one of the hand-picked presets in the starter's
  * presets/ folder — a full light and dark palette and a font — written into
@@ -129,13 +160,47 @@ export async function applyDesign(appDir, design) {
   return preset;
 }
 
-export async function createApp({ folder, name, description, template = 'next-shadcn', design, install = true }) {
+/**
+ * Start an app, and — when the model passes them — write its files in the
+ * same call.
+ *
+ * @param {object} o
+ * @param {string} o.folder        new, empty folder for the app
+ * @param {string} o.name          display name, e.g. "Stride"
+ * @param {string} [o.description]
+ * @param {string} [o.template]    defaults to plain-html: nothing to install
+ * @param {string} [o.design]
+ * @param {{path: string, content: string}[]} [o.files]  the app itself, paths
+ *   relative to the project root, written straight over the starter's
+ * @param {boolean} [o.install]    start the background install (tests turn it off)
+ */
+export async function createApp({ folder, name, description, template = 'plain-html', design, files, install = true }) {
   if (!TEMPLATE_NAMES.includes(template)) {
     throw new ToolFailure({
       kind: 'bad_args',
       attempted: 'creating an app',
       failed: `There is no starter called "${template}".`,
       fix: `Use one of: ${TEMPLATE_NAMES.join(', ')}.`,
+    });
+  }
+
+  // Every shape a model reaches for when handing over a set of files. Reading
+  // them all costs nothing; refusing them costs a round trip each, which is
+  // the whole reason this argument exists.
+  const given = normaliseFiles(files);
+
+  // Checked before anything is copied: a bad entry found halfway through
+  // would leave the folder created, and the retry would then be refused for
+  // already having files in it.
+  const bad = given.findIndex(
+    (f) => typeof f?.path !== 'string' || typeof f?.content !== 'string'
+  );
+  if (bad !== -1) {
+    throw new ToolFailure({
+      kind: 'bad_args',
+      attempted: 'creating an app',
+      failed: `Entry ${bad + 1} of "files" is missing "path" or "content" — both must be strings.`,
+      fix: 'Fix that entry and call create_app again. Nothing has been created yet.',
     });
   }
 
@@ -173,7 +238,7 @@ export async function createApp({ folder, name, description, template = 'next-sh
     __APP_DESCRIPTION__: plain(description) || display,
   };
 
-  const files = await copyTree(path.join(TEMPLATES, template), target.abs, fill);
+  const copied = await copyTree(path.join(TEMPLATES, template), target.abs, fill);
   // Next.js serves static files from public/; a plain page has no such place
   // and an empty folder in a three-file app is clutter.
   if (template !== 'plain-html') await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
@@ -202,9 +267,27 @@ export async function createApp({ folder, name, description, template = 'next-sh
 
   const guide = await fs.readFile(path.join(target.abs, 'TEMPLATE.md'), 'utf8').catch(() => '');
 
-  return result(
-    `Created ${target.show} from the ${template} starter — ${files.length} files, already known to build.\n` +
+  // The app's own files, written in this same call. Two round trips become
+  // one, and round trips are nearly all of the time a build takes.
+  const mine = given;
+  const wrote = mine.length ? await batchWrite({ files: mine }) : null;
+  const written = new Set(mine.map((f) => resolveIn(f.path, 'create_app', 'files').abs));
+
+  // The starter's own files, in full, so there is never a reason to read them
+  // back — and only the ones this call did not already write over. A read is
+  // another round trip to learn what ucode already knows.
+  const starter = [];
+  for (const rel of SHOW_BACK[template] ?? []) {
+    const abs = path.join(target.abs, rel);
+    if (written.has(abs)) continue;
+    const text = await fs.readFile(abs, 'utf8').catch(() => null);
+    if (text !== null) starter.push(`=== ${target.show}/${rel} ===\n${text}`);
+  }
+
+  const out = result(
+    `Created ${target.show} from the ${template} starter — ${copied.length} files, already known to build.\n` +
       (look ? `Design: the ${look.name} preset (${look.summary}), font ${look.fonts?.sans ?? 'Geist'}.\n` : '') +
+      (wrote ? `\nYour ${mine.length} file${mine.length === 1 ? '' : 's'}:\n${wrote.content}\n` : '') +
       (linked
         ? `Its packages are already in place (${linked.toLocaleString()} files, linked from the starter cache) — ` +
           'nothing to install: build and run straight away.\n'
@@ -215,7 +298,14 @@ export async function createApp({ folder, name, description, template = 'next-sh
       (needsInstall
         ? `Run this app's commands with cwd: "${target.show}" (npm run build, npm run dev).\n\n${guide}`
         : `Nothing to install and nothing to build: open ${target.show}/index.html directly, or serve the ` +
-          `folder with "python -m http.server 8000" if it fetches anything.\n\n${guide}`),
-    `${files.length} files${linked ? ' · packages ready' : install && needsInstall ? ' · installing in the background' : ''}`
+          `folder with "python -m http.server 8000" if it fetches anything.\n\n${guide}`) +
+      (starter.length
+        ? `\n\nThe starter's files, in full — they are below, so do not read them back:\n\n${starter.join('\n\n')}`
+        : ''),
+    `${copied.length} files${wrote ? ` · ${mine.length} written` : ''}` +
+      `${linked ? ' · packages ready' : install && needsInstall ? ' · installing in the background' : ''}`,
+    24_000
   );
+  if (wrote?.diff?.length) out.diff = wrote.diff;
+  return out;
 }

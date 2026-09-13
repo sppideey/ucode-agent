@@ -17,10 +17,19 @@
  * in a hurry to be helpful skips judgement calls. Design quality is not
  * something to find out was skipped after the app is built.
  *
+ * A skill folder may also hold a DIGEST.md: the same rules, cut to the ones
+ * that are never worth skipping. That is what an automatic load sends, and it
+ * is a latency decision rather than a token one — the whole conversation is
+ * re-read by the provider on every single step, so four thousand tokens
+ * loaded on the word "app" is four thousand tokens re-read ten or twenty
+ * times before the app is finished. The full body stays one load_skill away
+ * for work that needs the depth.
+ *
  * Skills are read from two places, the project first so a repo can override a
  * built-in of the same name:
  *   <cwd>/.ucode/skills/<name>/SKILL.md
  *   <install dir>/skills/<name>/SKILL.md
+ * and beside either of them, an optional DIGEST.md.
  */
 
 import { promises as fs } from 'node:fs';
@@ -94,8 +103,11 @@ async function readDir(dir) {
       continue;
     }
     const { skill, error } = parseSkill(text, file);
-    if (error) problems.push(error);
-    else skills.push(skill);
+    if (error) { problems.push(error); continue; }
+    // The short form, if the skill has one. No frontmatter: it is the same
+    // skill, said in fewer words.
+    skill.digest = (await fs.readFile(path.join(dir, entry.name, 'DIGEST.md'), 'utf8').catch(() => '')).trim();
+    skills.push(skill);
   }
 
   return { skills, problems };
@@ -150,8 +162,15 @@ export function autoLoadFor(skills, text) {
   );
 }
 
-/** How a body enters the conversation. */
-export function skillMessage(skill, { automatic = false } = {}) {
+/**
+ * How a body enters the conversation.
+ *
+ * `short` sends the digest instead of the whole skill, when the skill has
+ * one. Everything in the digest is a rule; what is missing is the worked
+ * examples and the long way round, and load_skill fetches those.
+ */
+export function skillMessage(skill, { automatic = false, short = false } = {}) {
+  const digest = short && skill.digest ? skill.digest : null;
   const why = automatic
     ? `The "${skill.name}" skill was loaded automatically because this request is the kind it covers.`
     : `The "${skill.name}" skill was loaded for this task.`;
@@ -159,7 +178,12 @@ export function skillMessage(skill, { automatic = false } = {}) {
     role: 'system',
     content:
       `${why} Follow it — it outranks your defaults, and it is not optional.\n\n` +
-      `--- BEGIN SKILL: ${skill.name} ---\n${skill.body}\n--- END SKILL ---`,
+      `--- BEGIN SKILL: ${skill.name} ---\n${digest ?? skill.body}\n--- END SKILL ---` +
+      (digest
+        ? `\n\nThat is the short form: every rule, none of the worked examples. For anything ` +
+          `beyond a straightforward screen, call load_skill("${skill.name}") for the whole thing.`
+        : ''),
     skill: skill.name,
+    short: Boolean(digest),
   };
 }

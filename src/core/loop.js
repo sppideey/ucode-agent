@@ -28,7 +28,7 @@ import {
 import {
   tools, runTool, describe, setRoot, setConfirm, PARALLEL_SAFE, WRITES, FILE_WRITES,
 } from '../tools/index.js';
-import { projectMap, loadMemory, remember, MEMORY_FILE } from './context.js';
+import { projectMap, loadMemory, hasCode, remember, MEMORY_FILE } from './context.js';
 import { autoUpdate } from './updater.js';
 import { closeBrowser, forgetReviews } from '../tools/browser.js';
 import {
@@ -146,6 +146,10 @@ const TRACE_FILE = process.env.UCODE_TRACE
 const THIN_RESULTS = new Set([
   'read_file', 'read_files', 'grep', 'glob', 'list_dir', 'run_command', 'run_commands',
   'look_at_app', 'web_search', 'edit_file', 'multi_edit', 'edit_files',
+  // create_app hands back the starter's files in full so they are never read.
+  // That is worth a round trip once and nothing at all after the next few
+  // steps, by which point they are on disk like any other file.
+  'create_app',
 ]);
 
 /** Replace long strings in old tool arguments with a note of their size. */
@@ -396,9 +400,92 @@ function workerPrompt({ cwd, name, memory, skills, map }) {
 /** The files a writing tool call touches. */
 function pathsOf(call) {
   const a = call.args ?? {};
-  if (call.name === 'batch_write' || call.name === 'edit_files') return (a.files ?? []).map((f) => f?.path).filter(Boolean);
+  // create_app writes the app in the same call it scaffolds it, so those
+  // files are changes like any other: they are checked, and they are counted.
+  if (call.name === 'batch_write' || call.name === 'edit_files' || call.name === 'create_app') {
+    return (a.files ?? []).map((f) => f?.path).filter(Boolean);
+  }
   return a.path ? [a.path] : [];
 }
+
+/**
+ * Is everything that changed part of a page that has nothing to run?
+ *
+ * The verify nudge exists so an app is not handed over untested. It costs a
+ * whole round trip, so it has to be about the thing that was built: a folder
+ * with an index.html and no package.json cannot be started or tested, and its
+ * files were parsed on the spot as they were written. Running the surrounding
+ * repository's `npm test` against it proves nothing and takes half a minute.
+ */
+async function pagesOnly(paths, root) {
+  const folders = new Map();
+  for (const rel of paths) {
+    const dir = String(rel).replace(/\\/g, '/').split('/')[0];
+    if (!dir || dir.includes('.')) return false;    // a file at the root belongs to the project
+    if (!folders.has(dir)) {
+      folders.set(dir, (await exists(path.join(root, dir, 'index.html'))) &&
+                       !(await exists(path.join(root, dir, 'package.json'))));
+    }
+    if (!folders.get(dir)) return false;
+  }
+  return folders.size > 0;
+}
+
+/**
+ * Reads the file paths out of a tool call's arguments while they stream.
+ *
+ * The arguments of a call that writes an app are tens of kilobytes of JSON
+ * arriving over a minute or more. Only the paths are wanted, they appear in
+ * the order the files are written, and each one is complete long before the
+ * content that follows it — so a plain scan for the next `"path": "..."`
+ * says exactly where the model has got to.
+ *
+ * Scanning resumes from where it left off rather than re-reading the whole
+ * string on every delta, which is the difference between a few thousand
+ * characters of work and a few million over one call.
+ */
+const PATH_IN_ARGS = /"path"\s*:\s*"((?:[^"\\]|\\.)*)"/g;
+
+export class Writing {
+  constructor() {
+    this.at = new Map();      // call index -> how far it has been scanned
+    this.count = new Map();   // call index -> files named so far
+    this.last = null;
+  }
+
+  /** The line to show, or null when nothing new has been named. */
+  seen(index, name, args) {
+    if (!WRITES.has(name)) return null;
+    const from = this.at.get(index) ?? 0;
+    if (args.length <= from) return null;
+
+    // Overlap by the length of the longest thing a path match can straddle,
+    // so a path split across two deltas is not missed.
+    const window = args.slice(Math.max(0, from - 512));
+    this.at.set(index, args.length);
+
+    let found = null;
+    let extra = 0;
+    PATH_IN_ARGS.lastIndex = 0;
+    for (const match of window.matchAll(PATH_IN_ARGS)) {
+      if (match[1] === this.last) continue;
+      found = match[1];
+      extra++;
+    }
+    if (!found) return null;
+
+    const total = (this.count.get(index) ?? 0) + extra;
+    this.count.set(index, total);
+    this.last = found;
+    return `writing ${shortenPath(found, 42)}${total > 1 ? ` · ${total} files so far` : ''}`;
+  }
+}
+
+/** Tools that only mean anything once there is code in the folder. */
+const LOOKUP_TOOLS = new Set(['find_symbol', 'outline', 'rename_symbol', 'type_of']);
+
+/** A request that plainly wants the internet keeps web_search in a new project. */
+const WANTS_WEB = /\b(?:search|google|web|online|internet|latest|current|news|docs|documentation|api reference|look up|find out about)\b/i;
 
 const exists = (p) => access(p).then(() => true, () => false);
 
@@ -460,8 +547,11 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     'something is incomplete, say which part and why.',
     '',
     'BE FAST. Every tool call is a round trip, and round trips are nearly all of the',
-    'time a build takes. So: write a whole app in ONE batch_write rather than a',
-    'write_file per file. Read every file you need in ONE read_files. Never read a',
+    'time a build takes. So: a new app is ONE create_app call with its files passed',
+    'in — the starter and the whole app together, not a scaffold and then a write.',
+    'Its starter files come back inside that result, so there is nothing to read',
+    'afterwards. Everything else goes in ONE batch_write rather than a write_file',
+    'per file. Read every file you need in ONE read_files. Never read a',
     'file you just wrote, and never read one back after edit_file — the result',
     'already contains it. Do not re-check work the checks have already reported on.',
     'Fast is not sloppy: it is the same work with the waiting taken out.',
@@ -482,11 +572,14 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  - One line when you move between the big pieces of work: "The layout is done,',
     '    now the animations."',
     '  - One line at the end saying what it does and how to try it.',
-    'That closing line is ONE OR TWO SENTENCES. Never a checklist, never a feature',
-    'list, never ticks or bullets walking through the request item by item. "Tide is',
-    'built - open tide/index.html, or serve the folder and visit it." Anything longer',
-    'is a status report nobody asked for, and it is the last thing on screen, so it',
-    'is what the whole session looks like.',
+    'That closing line is ONE OR TWO SENTENCES, and SIX LINES IS THE HARD CEILING.',
+    'Never a checklist, never a feature list, never ticks or bullets walking through',
+    'the request item by item, never a list of the files you touched - the user',
+    'watched them go past. "Tide is built - open tide/index.html, or serve the folder',
+    'and visit it." Anything longer is a status report nobody asked for, and it is',
+    'the last thing on screen, so it is what the whole session looks like. ucode cuts',
+    'the closing message to eight lines before it is drawn, so anything past that is',
+    'written for nobody: say the one thing that matters and stop.',
     'That is all. A line before every tool call is not narration, it is noise: the',
     'steps already show on screen, and repeating them in words buries the few',
     'sentences worth reading.',
@@ -511,8 +604,13 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     'Before you guess at an API, ask: type_of gives the exact signature from the',
     'TypeScript this project has installed, and find_symbol says where something is declared without',
     'reading five files to find it. Rename with rename_symbol rather than edit_file — a',
-    'find-and-replace that matches too much is the most common broken edit. Reach for',
-    'add_block before writing a table, an empty state or a dashboard by hand.',
+    'find-and-replace that matches too much is the most common broken edit.',
+    '',
+    'CALL add_block BEFORE WRITING A LIST, A FILTER ROW, A STORE, A DIALOG, A TOAST, A',
+    'THEME TOGGLE, A TABLE OR AN EMPTY STATE BY HAND. It has all of those, written for',
+    'whichever starter this app uses, keyboard and empty states included, and each one',
+    'is a hundred lines you do not have to type. Typing is the slowest part of a build:',
+    'a page assembled from blocks is finished minutes before the same page typed out.',
     '',
     ...(mode === 'plan' ? [
       'You are in PLAN MODE. Reading, searching and research are available; every tool',
@@ -654,6 +752,7 @@ export class Agent {
     this.session = newSession(cwd, model());
     this.working = [];
     this.loaded = new Set();
+    this.short = new Set();   // loaded as a digest, so load_skill can still fetch the whole thing
     this.abort = null;
     this.busy = false;
     this.check = null;
@@ -927,9 +1026,14 @@ export class Agent {
   autoLoad(input) {
     for (const skill of autoLoadFor(this.skills, input)) {
       if (this.loaded.has(skill.name)) continue;
+      // The short form where the skill has one. Everything loaded here is
+      // re-read by the provider on every step of the build, so the depth is
+      // left behind load_skill and the rules come now.
+      const message = skillMessage(skill, { automatic: true, short: true });
       this.loaded.add(skill.name);
-      this.push(skillMessage(skill, { automatic: true }));
-      this.ui.note(`${skill.name} skill loaded for this`);
+      if (message.short) this.short.add(skill.name);
+      this.push(message);
+      this.ui.note(`${skill.name} skill loaded for this${message.short ? ' (short form)' : ''}`);
     }
   }
 
@@ -950,6 +1054,10 @@ export class Agent {
       projectMap(this.cwd).catch(() => ''),
       loadMemory(this.cwd).catch(() => ''),
     ]);
+    // Nothing to look up in an empty folder, so those tools do not go out with
+    // the request. Decided per turn: the moment there is code, they are back.
+    this.fresh = !hasCode(this.map);
+    this.wantsWeb = WANTS_WEB.test(input);
     await this.persist();
 
     // A busy model was swapped for a fallback earlier; after a few minutes the
@@ -1003,16 +1111,28 @@ export class Agent {
     }
   }
 
-  /** The tools the model may see, given the mode. */
+  /**
+   * The tools the model may see, given the mode and what is in the folder.
+   *
+   * A new project has nothing to look up: no symbol to find, nothing to
+   * rename, no types to ask about, and — unless the request says otherwise —
+   * nothing to search the web for. Their schemas are eight hundred tokens the
+   * provider re-reads on every step of the build, and they are also five more
+   * wrong turns available to a model deciding what to do next.
+   */
   toolsNow() {
     const all = [...tools, loadSkillTool, planTool, delegateTool];
-    if (this.ui.mode !== 'plan') return all;
-    return all.filter((t) => !WRITES.has(t.name));
+    const live = this.fresh
+      ? all.filter((t) => !LOOKUP_TOOLS.has(t.name) && !(t.name === 'web_search' && !this.wantsWeb))
+      : all;
+    if (this.ui.mode !== 'plan') return live;
+    return live.filter((t) => !WRITES.has(t.name));
   }
 
   /** Model, tools, model, until it answers with prose. */
   async run() {
     const available = this.toolsNow();
+    this.offering = new Set(available.map((t) => t.name));
     let argRetries = 0;
     let continuations = 0;
     let askedToVerify = false;
@@ -1059,6 +1179,16 @@ export class Agent {
             if (PARALLEL_SAFE.has(call.name) && !call.parseError && !this.early.has(call.id)) {
               this.early.set(call.id, this.execute(call));
             }
+          };
+          // A whole app is one tool call whose arguments take a minute or two
+          // to arrive, and nothing can be started until they have. What can
+          // happen is saying where it has got to: the files are named in the
+          // order they are written, so the spinner names the one being
+          // written now instead of sitting on "working" for ninety seconds.
+          const writing = new Writing();
+          opts.onToolArgs = ({ index, name, args }) => {
+            const at = writing.seen(index, name, args);
+            if (at) this.ui.updateSpinner(at);
           };
         }
 
@@ -1144,9 +1274,12 @@ export class Agent {
       // Text that turns out to be narration ahead of a tool call folds into a
       // status line instead — that is where the live commentary comes from.
       const narrating = reply.toolCalls.length > 0;
-      if (streaming) this.ui.streamEnd({ asNarration: narrating });
+      // No tool calls left and something was actually done: this is the closing
+      // message, the last thing on screen, and it gets cut to eight lines.
+      const closing = !narrating && (this.touched.size > 0 || this.ranSomething);
+      if (streaming) this.ui.streamEnd({ asNarration: narrating, closing });
       else if (reply.text && narrating && isLabel(reply.text)) this.ui.narrate(reply.text);
-      else if (reply.text) this.ui.assistant(reply.text);
+      else if (reply.text) this.ui.assistant(reply.text, { closing });
 
       if (reply.toolCalls.length === 0) {
         // The answer stopped at the provider's output cap rather than at the
@@ -1184,8 +1317,14 @@ export class Agent {
           }
         }
 
-        // It changed code and never ran anything. Send it back once.
-        if (this.touched.size && !this.ranSomething && this.check && !askedToVerify) {
+        // It changed code and never ran anything. Send it back once — but
+        // only if this project's check would actually exercise what changed.
+        // A page and a stylesheet in a repo that happens to have `npm test`
+        // was costing a whole round trip to run someone else's unit tests
+        // against a file they have never heard of, when the page's own script
+        // was parsed locally a moment ago.
+        if (this.touched.size && !this.ranSomething && this.check && !askedToVerify &&
+            !(await pagesOnly(this.touched, this.cwd))) {
           askedToVerify = true;
           if (reply.text) this.push({ role: 'assistant', content: reply.text });
           this.push({
@@ -1496,6 +1635,20 @@ export class Agent {
       });
     }
 
+    // A tool that was not offered does not run, whatever the model calls it.
+    // The list it is sent is the list that exists: plan mode withholds every
+    // tool that writes, and a new project is not sent the ones that look code
+    // up — and a model naming one from memory was, until this check, executing
+    // it. A withheld tool has to be refused, not just left out of the menu.
+    if (!this.offering?.has(call.name)) {
+      throw new ToolFailure({
+        kind: 'no_such_tool',
+        attempted: `calling ${call.name}`,
+        failed: `${call.name} is not available${this.ui.mode === 'plan' ? ' in plan mode' : ' in this project'}.`,
+        fix: `Use one of the tools you were given: ${[...this.offering ?? []].join(', ')}.`,
+      });
+    }
+
     if (call.name === 'load_skill') return this.loadSkill(call.args?.name);
     if (call.name === 'update_plan') return this.updatePlan(call.args?.items);
     if (call.name === 'delegate') return this.delegate(call.args?.tasks);
@@ -1609,9 +1762,11 @@ export class Agent {
   async runWorker(task, index) {
     const name = clip(String(task.name || `worker ${index + 1}`).trim(), 16);
     const touched = new Set();
+    // A worker gets what the lead has, digest included: its prompt is re-read
+    // on every step it takes, the same as the lead's.
     const skills = this.skills
       .filter((s) => this.loaded.has(s.name))
-      .map((s) => `--- ${s.name} ---\n${s.body}`)
+      .map((s) => `--- ${s.name} ---\n${this.short.has(s.name) && s.digest ? s.digest : s.body}`)
       .join('\n\n');
     const messages = [
       { role: 'system', content: workerPrompt({ cwd: this.cwd, name, memory: this.memory, skills, map: this.map }) },
@@ -1845,11 +2000,14 @@ export class Agent {
       });
     }
 
-    if (this.loaded.has(skill.name)) {
+    // Loaded in full already: nothing to do. Loaded as a digest: this is the
+    // model asking for the depth, which is exactly what the digest points at.
+    if (this.loaded.has(skill.name) && !this.short.has(skill.name)) {
       return { content: `The "${skill.name}" skill is already loaded above. Follow it.`, summary: 'already loaded' };
     }
 
     this.loaded.add(skill.name);
+    this.short.delete(skill.name);
     this.push(skillMessage(skill));
     return {
       content: `Loaded "${skill.name}". Its instructions are in your context now — follow them.`,
@@ -1887,7 +2045,11 @@ export class Agent {
               { role: 'user', content: forSummary(older) },
             ],
             [],
-            { signal: this.abort?.signal, temperature: 0 }
+            // Always the quick model, whatever the user picked for the work
+            // itself. This is a mechanical restatement in the middle of a
+            // build the user is waiting on; a reasoning model would think
+            // about it for half a minute and produce the same paragraph.
+            { signal: this.abort?.signal, temperature: 0, model: DEFAULT_MODEL },
           );
           return reply.text;
         },
@@ -2213,6 +2375,7 @@ ${out.content}` });
       this.session = loaded;
       this.working = [...loaded.messages];
       this.loaded = new Set(loaded.messages.filter((m) => m.skill).map((m) => m.skill));
+      this.short = new Set(loaded.messages.filter((m) => m.skill && m.short).map((m) => m.skill));
       if (loaded.model && MODELS[loaded.model]) setModel(loaded.model);
       return true;
     } catch (err) {
@@ -2263,6 +2426,7 @@ ${out.content}` });
     this.session = newSession(this.cwd, model());
     this.working = [];
     this.loaded = new Set();
+    this.short = new Set();   // loaded as a digest, so load_skill can still fetch the whole thing
     this.showHeader();
   }
 
@@ -2283,8 +2447,9 @@ ${out.content}` });
     this.ui.blank();
     for (const s of this.skills) {
       const live = this.loaded.has(s.name);
+      const how = live && this.short.has(s.name) ? dim('  · short form') : '';
       const auto = s.triggers.length ? dim('  · loads itself') : '';
-      this.ui.write(`  ${live ? blue('●') : dim('○')} ${blue(s.name)}${auto}`);
+      this.ui.write(`  ${live ? blue('●') : dim('○')} ${blue(s.name)}${how}${auto}`);
       this.ui.write(`    ${dim(s.description)}`);
     }
     this.ui.blank();

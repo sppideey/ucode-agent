@@ -18,6 +18,22 @@ import { estimateConversation } from './provider.js';
 /** Start folding once the conversation passes this share of the window. */
 export const FOLD_AT = 0.75;
 
+/**
+ * ...or once it passes this many tokens, whichever comes first.
+ *
+ * A share of the window is a correctness threshold: it stops the request
+ * being rejected. It is the wrong measure for speed. These endpoints re-read
+ * the whole conversation on every step and none of them cache it, so a
+ * hundred thousand tokens is a hundred thousand tokens re-read ten times
+ * before the app is finished — and on a million-token model, three quarters
+ * of the window is a build that has been crawling for an hour by the time
+ * anything is folded.
+ *
+ * Folding costs one model call. Past this size, that call has already paid
+ * for itself in the steps that follow it.
+ */
+export const FOLD_TOKENS = Number(process.env.UCODE_FOLD_TOKENS) || 80_000;
+
 /** After folding, the verbatim tail may occupy this share of the window. */
 export const KEEP = 0.4;
 
@@ -32,7 +48,12 @@ export function usage(messages, limit) {
 }
 
 export function tooBig(messages, limit) {
-  return usage(messages, limit).used > limit * FOLD_AT;
+  return usage(messages, limit).used > foldAbove(limit);
+}
+
+/** The size at which folding starts: whichever of the two rules bites first. */
+export function foldAbove(limit) {
+  return Math.min(limit * FOLD_AT, FOLD_TOKENS);
 }
 
 /**
@@ -71,7 +92,11 @@ function cutPoint(messages, budget) {
 export async function fold(messages, { limit, summarize }) {
   if (!tooBig(messages, limit)) return { messages, folded: false };
 
-  const cut = cutPoint(messages, limit * KEEP);
+  // Half the size that triggered the fold, so there is room to work before
+  // the next one. Sized off the same absolute rule, or a fold on a
+  // million-token model would keep a tail that is instantly too big again and
+  // summarize on every single step.
+  const cut = cutPoint(messages, Math.min(limit * KEEP, foldAbove(limit) / 2));
   const older = messages.slice(0, cut);
   const recent = messages.slice(cut);
 

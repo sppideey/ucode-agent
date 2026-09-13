@@ -8,7 +8,7 @@ import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFi
 import { listDir, glob, grep } from './search.js';
 import { findSymbol, outline } from './symbols.js';
 import { renameSymbol } from './rename.js';
-import { addBlock, BLOCK_NAMES } from './blocks.js';
+import { addBlock, BLOCK_NAMES, PLAIN_BLOCK_NAMES, ALL_BLOCK_NAMES } from './blocks.js';
 import { typeOf } from './types.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
@@ -82,27 +82,45 @@ export const tools = [
   {
     name: 'create_app',
     description:
-      'Start a new app from a starter that already works. Two to choose between, and the ' +
-      'choice matters. "plain-html": one index.html, one stylesheet, one ES module — nothing ' +
-      'to install, nothing to build, opens straight in a browser. Use it whenever the user ' +
-      'asks for plain HTML/CSS/JS, or for a single page, a toy, a game or a visualisation. ' +
-      '"next-shadcn": Next.js 16, TypeScript, Tailwind 4 and shadcn with 33 components, light ' +
-      'and dark, toasts, and a design preset — for anything with routes, data or many screens; ' +
-      'its packages install in the background so you can write components at once. This is how ' +
-      'every Next.js app begins - never run create-next-app or shadcn init. Do not reach for ' +
-      'Next.js when a single HTML file is what was asked for.',
+      'Start a new app AND write it, in one call. Pass "files" with the whole app and this ' +
+      'is the only call the build needs: the starter lands, your files are written over it, ' +
+      'and the result comes back with everything. Two starters. "plain-html" (the default): ' +
+      'one index.html, one stylesheet, one ES module — nothing to install, nothing to build, ' +
+      'opens straight in a browser, and its three files come back inside this result so there ' +
+      'is never a reason to read them. Use it for anything that is one page: a tasks app, a ' +
+      'toy, a game, a visualisation, a calculator, a timer. "next-shadcn": Next.js 16, ' +
+      'TypeScript, Tailwind 4 and shadcn with 33 components — only when the app genuinely ' +
+      'needs routes, a database or many screens, because it costs an install and a build. ' +
+      'This is how every Next.js app begins - never run create-next-app or shadcn init.',
     parameters: {
       type: 'object',
       properties: {
         folder: str('A new, empty folder for the app, relative to the project root, e.g. "stride".'),
         name: str('The display name of the app, e.g. "Stride".'),
         description: str('One line about the app, used in the page metadata.'),
+        files: {
+          type: 'array',
+          description:
+            'The app itself, written in this same call, straight over the starter\'s files. ' +
+            'Pass the whole app here rather than following up with batch_write - it saves a ' +
+            'round trip, which is most of the time a build takes. Paths are relative to the ' +
+            'project root and so include the app folder, e.g. "stride/index.html".',
+          items: {
+            type: 'object',
+            properties: {
+              path: str('Path relative to the project root, e.g. "stride/index.html".'),
+              content: str('The complete contents of the file.'),
+            },
+            required: ['path', 'content'],
+          },
+        },
         template: {
           type: 'string',
           enum: ['next-shadcn', 'plain-html'],
           description:
-            'Which starter. "plain-html" for plain HTML/CSS/JS, a single page, a toy or a game: ' +
-            'no install, no build. "next-shadcn" (the default) for routes, data or many screens.',
+            'Which starter. "plain-html" (the default) for one page, a toy, a game, or any ' +
+            'app that does not need a server: no install, no build, nothing to wait for. ' +
+            '"next-shadcn" only for routes, a database or many screens.',
         },
         design: {
           type: 'string',
@@ -369,16 +387,20 @@ export const tools = [
   {
     name: 'add_block',
     description:
-      'Add a ready-made, polished piece of an app — ' + BLOCK_NAMES.join(', ') + '. Each is ' +
-      'copied in as an ordinary source file you can then edit, built on the shadcn ' +
-      'components already in the starter, so nothing needs installing. Call it with no ' +
-      'name to see what each one is for. Prefer these over writing a table or an empty ' +
-      'state from scratch: they already handle sorting, empty and loading states, ' +
-      'alignment and small screens.',
+      'Add a ready-made, polished piece of an app, copied in as an ordinary source file ' +
+      'you can then edit. Which set you get is decided by the app itself, so you never ' +
+      'pick wrong. For a plain page: ' + PLAIN_BLOCK_NAMES.join(', ') + ' — plain ES ' +
+      'modules that import nothing and style themselves from the CSS variables already ' +
+      'in styles.css. For a React app: ' + BLOCK_NAMES.join(', ') + ' — built on the ' +
+      'shadcn components already in the starter. ALWAYS reach for these before writing a ' +
+      'list, a filter row, a store, a dialog or a table by hand: they already handle the ' +
+      'keyboard, the empty state, small screens and the cases that get skipped, and every ' +
+      'one you use is a hundred lines you do not have to type. Call it with no name to ' +
+      'see what each is for.',
     parameters: {
       type: 'object',
       properties: {
-        name: str('Which block, e.g. "data-table". Omit to list them.'),
+        name: str(`Which block, e.g. "${ALL_BLOCK_NAMES[0]}". Omit to list the ones this app can use.`),
         folder: str('The app folder to add it to. Defaults to the project root.'),
       },
     },
@@ -506,7 +528,7 @@ const run = {
 /** Tools that change the project or execute code. */
 export const MUTATING = new Set([
   'write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol', 'add_block',
-  'run_command', 'run_commands', 'deploy',
+  'run_command', 'run_commands', 'create_app', 'deploy',
 ]);
 
 /** Tools with no side effects, so several may run at the same time. */
@@ -519,7 +541,7 @@ export const WRITES = new Set([
 ]);
 
 /** Tools that change files on disk, which parallel workers take turns at. */
-export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol']);
+export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'multi_edit', 'edit_files', 'rename_symbol', 'create_app']);
 
 // ---------------------------------------------------------------------------
 // Argument checking
@@ -532,6 +554,14 @@ export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'm
  * wrong and can correct itself, instead of a TypeError thrown from somewhere
  * inside fs that means nothing to anybody.
  */
+/**
+ * Arguments whose tool reads more shapes than the schema advertises.
+ *
+ * Kept here rather than in the schema so the wire format stays exactly what
+ * the model is asked for — the leniency is ucode's, not part of the contract.
+ */
+const LENIENT = new Set(['create_app.files']);
+
 function check(name, args) {
   const schema = tools.find((t) => t.name === name).parameters;
   const problems = [];
@@ -552,10 +582,27 @@ function check(name, args) {
     }
     if (value === undefined || value === null) continue;
 
-    const actual = Array.isArray(value) ? 'array' : typeof value;
+    let actual = Array.isArray(value) ? 'array' : typeof value;
     const wanted = spec.type === 'integer' ? 'number' : spec.type;
     // A number sent as a string is close enough — the tool coerces it anyway.
     if (wanted === 'number' && actual === 'string' && value.trim() !== '' && !Number.isNaN(Number(value))) continue;
+
+    // An array or object sent as a JSON string is the single most common way
+    // a model gets a nested argument wrong, and it is one every model makes
+    // sometimes. Rejecting it costs a whole round trip to be told something
+    // that could simply be read: parse it and carry on.
+    if ((wanted === 'array' || wanted === 'object') && actual === 'string') {
+      try {
+        const parsed = JSON.parse(value);
+        const kind = Array.isArray(parsed) ? 'array' : typeof parsed;
+        if (kind === wanted || LENIENT.has(`${name}.${key}`)) { args[key] = parsed; actual = kind; }
+      } catch { /* not JSON either — the message below is the right answer */ }
+    }
+
+    // A list of files written as a { path: contents } map. The tool reads it
+    // either way, so refusing it here would be a round trip spent on nothing.
+    if (wanted === 'array' && actual === 'object' && LENIENT.has(`${name}.${key}`)) continue;
+
     if (actual !== wanted) problems.push(`"${key}" should be ${spec.type} but was ${actual}`);
   }
 
@@ -649,7 +696,8 @@ export function describe(name, args = {}) {
       // HTML app announced itself as Next.js, which is a line that is simply
       // untrue on screen while the opposite happens on disk.
       return `Creating ${clip(args.name || args.folder, 30)} from the ` +
-        `${args.template === 'plain-html' ? 'HTML' : 'Next.js'} starter`;
+        `${args.template === 'next-shadcn' ? 'Next.js' : 'HTML'} starter` +
+        `${args.files?.length ? ` with ${args.files.length} file${args.files.length === 1 ? '' : 's'}` : ''}`;
     case 'look_at_app':
       return `Looking at ${clip(args.url, 40)} on a phone and a desktop`;
     case 'web_search':

@@ -1,0 +1,94 @@
+# Building something from nothing — the short form
+
+The failure mode is not bad code. It is a folder of files that has never been
+run, handed over as if it works.
+
+## 1. Decide the shape before any file exists
+
+One line each: **what it does**, **the core loop** (the one path that must work
+perfectly), **the stack**, **the file list**.
+
+| Need | Choose |
+| --- | --- |
+| One page, no secrets, no server | `create_app` with `plain-html` |
+| Interactive client app, no secrets | `plain-html` still, unless it truly needs a build |
+| Pages plus a server, secrets, API routes, SEO | `create_app` with `next-shadcn` |
+| An API on its own | Node (Hono/Express) or Python (FastAPI) |
+
+Pick the smallest one that does the job and mean it: a tasks app, a
+calculator, a timer, a game, a visualisation — all one page. Next.js costs an
+install and a build, minutes the user waits through, and buys nothing an app
+with no server needs.
+
+## 2. Start from the starter — and finish in the same call
+
+`create_app` takes `files`, so for a one-page app the scaffold and the whole
+app are one call:
+
+```
+create_app({ folder: "tide", name: "Tide", files: [
+  { path: "tide/index.html", content: "…" },
+  { path: "tide/styles.css", content: "…" },
+  { path: "tide/app.js",     content: "…" },
+]})
+```
+
+Every round trip is ten to forty seconds of the user's time, so one call
+instead of four is most of how long the build takes.
+
+- `plain-html` is the default: three files, no install, no build. Its files
+  come back in full inside the result — **never read them back**.
+- `next-shadcn` installs in the background; commands in that folder wait for
+  it on their own, so start writing components at once. Re-tint `globals.css`
+  for the app's direction rather than shipping the slate default.
+- Never run `create-next-app` or `shadcn init`. Nothing you run has a
+  keyboard: every scaffolder needs its answers as flags up front.
+
+## 2b. Do not type what already exists
+
+`add_block` has the pieces every app needs, written for whichever starter this
+one uses: a list you can add to, tick off, rename and remove; a filter row; a
+localStorage store; a dialog; toasts; a theme toggle; a table; an empty state.
+Call it before writing any of those by hand. Each is a hundred lines you skip,
+and typing is the slowest part of a build — a page assembled from blocks is
+done minutes before the same page typed out. Call `add_block` with no name to
+see what fits this app.
+
+## 3. Structure
+
+One component per file, named for what it is, not a 600-line `page.tsx`. In
+Next.js: `src/app` (routes, `globals.css`, `api/<name>/route.ts`),
+`src/components/<feature>/`, `src/lib/` for outside services and schemas.
+Server components by default, `"use client"` only where it is interactive.
+Types at every boundary; parse external data rather than trusting its shape.
+
+## 4. Secrets and outside services
+
+- **A key never reaches the browser.** It lives in a server route. Anything
+  imported by a `"use client"` file ships to every visitor, including a
+  "hardcoded for now" key — put it in a server-only module and say where.
+- Every outbound call gets a timeout (`AbortSignal.timeout(60_000)`), a status
+  check, and an error that says what failed — surfaced as a real message,
+  never a silent `catch {}`.
+- Calling a model: ask for JSON and parse it defensively (extract the first
+  `{...}`, validate, clamp numbers), put the judgement rules in the prompt
+  explicitly, and make the route timeout longer than the model takes.
+
+## 5. Build order
+
+Skeleton and design tokens first, so everything after is styled correctly the
+first time; then the server route with the real integration; then the core
+loop UI wired to it; then every state — empty, loading, success, error,
+invalid input; then polish: motion, responsive, copy, title and metadata.
+
+## 6. Prove it works, then report
+
+`npm run build` type-checks and lints — a build that fails is not done. Start
+it (`npm run dev` backgrounds itself and returns the URL; do not start it
+twice), then `look_at_app` on every page. A clean build proves it compiles,
+not that it works. Fix what you find and check again.
+
+Done means: the core loop works end to end, no TODO, no placeholder copy, no
+dead buttons, no console errors, every async action has its states, secrets
+server-side, build passes. Then say what you built, how to run it, and — in
+one sentence — anything you did not finish or could not test.

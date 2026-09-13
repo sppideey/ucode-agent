@@ -20,10 +20,15 @@ One line each:
 
   | Need | Choose |
   | --- | --- |
-  | One page, no secrets, no server | a single `index.html`, no build step |
-  | Interactive client app, no secrets | Vite + React + TypeScript |
-  | Pages plus a server, secrets, API routes, SEO | Next.js App Router + TypeScript |
+  | One page, no secrets, no server | `create_app` with the `plain-html` starter |
+  | Interactive client app, no secrets | `plain-html` still, unless it truly needs a build |
+  | Pages plus a server, secrets, API routes, SEO | `create_app` with `next-shadcn` |
   | An API on its own | Node (Hono/Express) or Python (FastAPI) |
+
+  Choose the smallest one that does the job, and mean it: a tasks app, a
+  calculator, a timer, a game, a visualisation, a converter — all one page.
+  Next.js costs an install and a build, minutes the user waits through, and
+  buys nothing an app with no server needs.
 
 - **The file list** — the whole tree, before creating any of it.
 
@@ -31,23 +36,38 @@ If there is a user interface, the `ui-ux` skill is already loaded. Decide the
 design direction now, not after the logic works. If the app calls a model,
 load `ai-features`; if it has accounts, keys or uploads, load `security`.
 
-## 2. Start from the starter
+## 2. Start from the starter — and finish in the same call
 
-**For a Next.js app, call `create_app`** — one step, about a second:
+`create_app` copies a starter that is already known to build. It also takes
+`files`, so for a one-page app the scaffold and the whole app are one call:
 
 ```
-create_app({ folder: "my-app", name: "My App", description: "…" })
+create_app({
+  folder: "tide", name: "Tide", description: "…",
+  files: [
+    { path: "tide/index.html", content: "…" },
+    { path: "tide/styles.css", content: "…" },
+    { path: "tide/app.js",     content: "…" },
+  ],
+})
 ```
 
-It copies ucode's ready-made starter — Next.js 16, TypeScript, Tailwind 4,
-shadcn/ui with 25 common components, light/dark mode, toasts, a considered
-theme — which is already known to build, and starts `npm install` in the
-background. Read the `TEMPLATE.md` it lists, then start writing components
-straight away; commands in that folder wait for the install on their own.
-Re-tint the palette in `globals.css` and swap the font for the app's direction.
+That is the whole build. Every round trip is ten to forty seconds of the
+user's time, so the difference between one call and four is most of how long
+this takes.
 
-Never run `create-next-app` or `shadcn init` for a Next.js app — that is
-four minutes and a dozen steps the starter already did.
+- **`plain-html` is the default**: three files, no install, no build, opens in
+  a browser. Its files come back in full inside the result — **never read them
+  back**, they are already in front of you.
+- **`next-shadcn`** only when the app needs routes, a database or many
+  screens. It copies Next.js 16, TypeScript, Tailwind 4 and shadcn with its
+  components, light/dark and toasts, and starts `npm install` in the
+  background — commands in that folder wait for the install on their own, so
+  start writing components at once. Read the `TEMPLATE.md` in the result, and
+  re-tint `globals.css` for the app's direction.
+
+Never run `create-next-app` or `shadcn init` — that is four minutes and a
+dozen steps the starter already did.
 
 ### Other stacks
 
@@ -69,6 +89,27 @@ npx shadcn@latest add button card input label badge progress separator skeleton 
 - For any other scaffolder, find the flag for every question (`--help`) first.
 - Install dependencies once, all together: `npm i zod lucide-react` — not one
   `npm i` per package.
+
+## 2b. Do not type what already exists
+
+`add_block` has the pieces every app needs, written once and carefully, for
+whichever starter this app uses. For a plain page: `item-list` (add, tick off,
+rename, remove, empty state, counts, keyboard), `filter-bar`, `store`
+(localStorage that survives private mode and stays in step across tabs),
+`modal`, `toast`, `theme-toggle`. For React: `app-shell`, `page-header`,
+`empty-state`, `data-table`, `stat-cards`.
+
+Call it before writing any of those by hand. Two reasons, and the second is
+the one that gets forgotten:
+
+- They are finished. Every state, the keyboard, small screens, the cases a
+  first draft skips.
+- They are already typed. Typing is the slowest part of a build — a few
+  thousand tokens at forty a second — so a page assembled from blocks is done
+  minutes before the same page written out line by line.
+
+They land as ordinary source files. Edit them to suit the app rather than
+working around them.
 
 ## 3. Structure it like a real project
 

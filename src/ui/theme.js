@@ -434,3 +434,79 @@ export function tidyReply(text, keepLines = 4) {
     .replace(new RegExp("\\n{3,}", "g"), "\n\n")
     .trim();
 }
+
+/**
+ * The closing message, cut to what a terminal can take.
+ *
+ * A model that finishes a build by walking back through the request — every
+ * feature ticked off, every file listed — leaves that as the last thing on
+ * screen, and the whole session then reads like a status report. Eight lines
+ * is the whole of it: what it is, and how to try it.
+ *
+ * What goes: an opening that reads the request back, and the middle of a list
+ * too long to be worth reading. What stays: the first lines, the line that
+ * admits something is unfinished, and the line naming a file or a command —
+ * the two the user actually acts on, and both of them live at the end.
+ */
+export const ANSWER_LINES = 8;
+const ANSWER_ROOM = 600;   // eight wrapped lines of prose, for a reply with no line breaks in it
+
+const RESTATED = /^(?:you (?:asked|wanted|requested|said)\b|the (?:request|task|ask)\b|as (?:you )?requested\b|here(?:'s| is) what (?:you asked|i)\b|to (?:summarise|summarize|recap)\b|(?:request|task|summary|recap|overview)\s*:)/i;
+const CAVEAT = /\b(?:however|failed|couldn't|could not|cannot|can't|didn't|did not|isn't|is not|doesn't|does not|not (?:yet|wired|working|done|implemented)|missing|unfinished|except)\b/i;
+const ACTIONABLE = /\b(?:open|run|serve|visit|try|start|npm|npx|node|pnpm|yarn)\b|https?:\/\/|\.(?:html?|css|jsx?|tsx?|md|json|py|rs|go)\b/i;
+const BULLET = /^\s*(?:[-*•>]|\d+[.)]|[✓✔✅☑])\s+/;
+
+export function trimAnswer(text, max = ANSWER_LINES) {
+  const all = String(text ?? '').replace(/\r/g, '').split('\n');
+
+  let start = 0;
+  while (start < all.length && (!all[start].trim() || RESTATED.test(all[start].trim()))) start++;
+  const rows = all.slice(start);
+
+  const body = rows.map((row, i) => ({ row, i })).filter((r) => r.row.trim());
+  if (!body.length) return '';
+
+  let kept;
+  if (body.length <= max) {
+    kept = body.map((r) => r.i);
+  } else {
+    // Searched from the end: the caveat and the how-to-try-it line are the
+    // last things written, and they are the two worth pulling out of the part
+    // being dropped.
+    const tail = body.slice(Math.max(1, max - 2));
+    const pick = (re) => [...tail].reverse().find((r) => re.test(r.row))?.i;
+    const rescued = [...new Set([pick(CAVEAT), pick(ACTIONABLE)])].filter((i) => i !== undefined);
+    const head = body.slice(0, max - rescued.length).map((r) => r.i);
+    kept = [...new Set([...head, ...rescued])].sort((a, b) => a - b);
+  }
+
+  const out = [];
+  let previous = -1;
+  for (const i of kept) {
+    if (previous >= 0 && i > previous + 1) out.push('');   // a gap in the middle is a paragraph break
+    // A line lifted out of a list is no longer in one.
+    out.push(previous >= 0 && i > previous + 1 ? rows[i].replace(BULLET, '') : rows[i]);
+    previous = i;
+  }
+
+  return withinRoom(out.join('\n').replace(/\n{3,}/g, '\n\n').trim());
+}
+
+/**
+ * One long paragraph is one line and fills the screen anyway. Whole sentences
+ * only: a reply cut mid-clause reads as a crash rather than as an ending.
+ */
+function withinRoom(text, room = ANSWER_ROOM) {
+  if (text.length <= room) return text;
+
+  const parts = text.split(/(?<=[.!?])(\s+)/);
+  let out = '';
+  let sentences = 0;
+  for (let i = 0; i < parts.length; i += 2) {
+    const next = out + parts[i] + (parts[i + 1] ?? '');
+    if (sentences >= 2 && next.trimEnd().length > room) break;
+    out = next;
+    sentences++;
+  }
+  return (out.trim() || text.slice(0, room)).trim();
+}

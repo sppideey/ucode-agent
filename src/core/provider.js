@@ -716,6 +716,12 @@ async function streamed(request, opts, id) {
       if (call.function?.name) slot.name += call.function.name;
       if (call.function?.arguments) slot.args += call.function.arguments;
       partial.set(call.index, slot);
+
+      // A whole app arrives as one enormous arguments string that takes a
+      // minute or two to write. Handing it over as it grows is what lets the
+      // caller say which file is being written right now, instead of showing
+      // a spinner that has meant nothing for ninety seconds.
+      if (call.function?.arguments) opts.onToolArgs?.({ index: call.index, name: slot.name, args: slot.args });
     }
   }
 

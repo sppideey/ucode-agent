@@ -598,7 +598,7 @@ section('create_app');
 const present = (rel) => fs.access(path.join(sandbox, rel)).then(() => true, () => false);
 
 await test('the starter is copied with the name filled in and npm-safe files renamed back', async () => {
-  const out = await createApp({ folder: 'newapp', name: 'Stride "Tasks"', description: 'a test', install: false });
+  const out = await createApp({ folder: 'newapp', name: 'Stride "Tasks"', description: 'a test', template: 'next-shadcn', install: false });
   ok(/\d+ files/.test(out.summary), `summary was: ${out.summary}`);
   eq(JSON.parse(await read('newapp/package.json')).name, 'stride-tasks');
   ok((await read('newapp/src/app/layout.tsx')).includes('title: "Stride Tasks"'), 'the quotes are stripped, the name is in');

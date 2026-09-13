@@ -137,13 +137,21 @@ model fixes them without being told.
 hard-linked into the next app — the same files under another name, so it costs
 no extra disk and skips the wait entirely.
 
-**Apps start from a ready-made starter.** Setting up Next.js and shadcn from
-nothing takes about four minutes — `create-next-app` and the shadcn CLI measured
-at 116s and 130s — plus a dozen model round trips. `create_app` copies ucode's
-starter instead: Next.js 16, TypeScript, Tailwind 4, shadcn/ui with 25 common
-components, light/dark mode, toasts and a considered theme, already known to
-build. The copy takes under a second, and its install runs in the background
-while the model writes the first components.
+**Apps start from a ready-made starter — and finish in the same call.**
+`create_app` copies a starter that is already known to build, and takes the
+app's files with it, so a one-page app is a single round trip: the starter
+lands, the model's files are written over it, and the starter's own files come
+back inside the result so there is nothing to read afterwards.
+
+The default starter is `plain-html`: one page, one stylesheet, one module,
+nothing to install and nothing to build. A tasks app, a game, a calculator or a
+visualisation is finished before a framework would have finished installing.
+`next-shadcn` is there for routes, a database or many screens — Next.js 16,
+TypeScript, Tailwind 4, shadcn/ui with 25 components, light/dark, toasts and a
+considered theme. Setting that up by hand is about four minutes
+(`create-next-app` and the shadcn CLI measured at 116s and 130s) plus a dozen
+round trips; the copy takes under a second, and its install runs in the
+background while the model writes the first components.
 
 **Built to be fast, and measured.** A traced build of a small Next.js app went
 from 17 minutes and 116 model steps to about 6 minutes and 25 steps, by fixing
@@ -161,9 +169,30 @@ where the time actually went:
   command fixes it.
 - The starter is the shadcn models already know (Radix), so the code they write
   compiles the first time.
+- A new app goes out without the tools it has nothing to point at — no symbol
+  lookup, no rename, no type query in an empty folder — and an instruction pack
+  that loads itself sends its short form, with the full one a `load_skill`
+  away. Both are re-read by the provider on every step, so what is not in the
+  request is time off every one of them.
+- Ready-made blocks for a page with no build step as well as for React: a list you
+  can add to, tick off, rename and remove, a filter row, a localStorage store, a
+  dialog, toasts, a theme toggle. Typing is the slowest part of a build, and each
+  block is a hundred lines nobody has to type.
+- A nested argument written the wrong way — a JSON string, a { path: contents } map
+  — is read rather than refused. Each refusal was a round trip spent being told
+  something that could simply be parsed.
+- A tool that was not offered is refused rather than quietly run, so withholding one
+  from a new project, or from plan mode, means what it says.
+- The closing message is cut to eight lines. A build that ends with the request
+  read back and every feature ticked off is a status report nobody asked for,
+  and it is the last thing left on screen.
 
 `UCODE_TRACE=1` writes every model call and tool, with its duration, to
 `~/.ucode/trace.jsonl`.
+
+Measured on "build me a simple todo app" — same prompt, same model, two traced
+runs: **27 model calls, 8 failed tool calls, no finished app** before this round of
+work; **14 model calls, no failures, a working app in under two minutes** after it.
 
 **Deploy in one line.** Say "deploy it", or type `/deploy [folder]`, and the app
 goes live on Vercel. ucode picks a short project name that fits the app and is

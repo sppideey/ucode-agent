@@ -111,6 +111,19 @@ export async function projectMap(root) {
   return out.join('\n');
 }
 
+/**
+ * Is there any code here yet?
+ *
+ * Answered from the map that has just been built rather than by walking the
+ * tree a second time. A folder with no code file in it has nothing to look up,
+ * rename or type-check, so the tools that do those things are dead weight in
+ * every request of the turn — and the whole tool list is re-read by the
+ * provider on every step.
+ */
+export function hasCode(map) {
+  return /\.(?:[cm]?[jt]sx?|py|go|rs|vue|svelte)(?![\w-])/i.test(String(map ?? ''));
+}
+
 async function readCapped(file) {
   try {
     const text = (await fs.readFile(file, 'utf8')).trim();

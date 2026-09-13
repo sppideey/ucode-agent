@@ -14,6 +14,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, dim, boxTop, boxBottom, boxRow,
   BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine,
+  tidyReply, trimAnswer,
 } from './theme.js';
 import { formatDuration, doneLine } from './activity.js';
 import { renderer, render } from './markdown.js';
@@ -185,8 +186,9 @@ export class Plain {
     for (const line of lines) this.output.write(`    ${dim(line)}\n`);
   }
 
-  assistant(text) {
-    const out = render(this.md, text);
+  assistant(text, { closing = false } = {}) {
+    const body = closing ? trimAnswer(tidyReply(text)) : tidyReply(text);
+    const out = render(this.md, body);
     if (!out) return;
     this.stopSpinner();
     this.output.write(`\n${out}\n\n`);
