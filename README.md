@@ -19,32 +19,37 @@ corner:
   ╭──────────────────────────────────────────────────────────────────────────────╮
   │ › Ask anything…                                                              │
   │                                                                              │
-  │ ◆ Build · North Mini Code                                                 0% │
+  │  BUILD   North Mini Code                                                  0% │
   ╰──────────────────────────────────────────────────────────────────────────────╯
 
+   try   build me a landing page for a coffee shop
+         explain what this project does and how it fits together
+         add a dark mode toggle that remembers the choice
 
-                                                                            v1.2.0
+
+                                                                           v1.29.0
 ```
 
-and once you are talking, each message you send is boxed in the same blue as
-the input, so your own words are easy to find in a long session:
+A light crosses the wordmark once as it opens, and the three lines under the box
+are there so an empty screen has something to say. Once you are talking, each
+message you send is marked down its left edge in the same blue as the input, so
+your own words are easy to find in a long session — and each step the agent
+takes carries the shape of the work: a hollow diamond to look, a filled one to
+change, an arrow to run.
 
 ```
-╭──────────────────────────────────────────────────────────────────────────────────╮
-│ › build a notes dashboard                                                        │
-╰──────────────────────────────────────────────────────────────────────────────────╯
-● Writing index.html
-  └ created · 148 lines
-       1 + <!doctype html>
-       2 + <html lang="en">
-         … 146 more lines
-● Running npm run dev
-  └ ready · http://localhost:3000 · PID 4812
+▌ build a notes dashboard
+
+◇ Read 3 files
+◆ Writing index.html +148 -0
+▸ Running npm run dev
+
+The dashboard is at http://localhost:3000, and `npm run dev` brings it back up.
 
 ╭──────────────────────────────────────────────────────────────────────────────────╮
 │ › now add a dark mode toggle                                                     │
 │                                                                                  │
-│ ◆ Build · North Mini Code                                                     4% │
+│  BUILD   North Mini Code                                                      4% │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
 

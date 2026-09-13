@@ -13,7 +13,7 @@ import readline from 'node:readline';
 import chalk from 'chalk';
 import {
   theme, blue, sky, dim, boxTop, boxBottom, boxRow,
-  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine, bannerPaint,
+  BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine, bannerPaint, modeChip, narrationMark, groupKind,
   tidyReply, trimAnswer,
 } from './theme.js';
 import { formatDuration, doneLine } from './activity.js';
@@ -132,8 +132,8 @@ export class Plain {
   /** The same three facts the full screen shows, on the row under the header. */
   statusRow() {
     const inner = this.width() - 2;
-    const chip = this.mode === 'plan' ? `${sky('◇')} ${sky('Plan')}` : `${blue('◆')} ${blue('Build')}`;
-    const left = ` ${chip} ${dim('·')} ${chalk.white(this.model || '—')}`;
+    const chip = modeChip(this.mode);
+    const left = ` ${chip}  ${chalk.white(this.model || '—')}`;
     const percent = Math.round(this.percent ?? 0);
     const right = `${percent >= 75 ? theme.warn(`${percent}%`) : dim(`${percent}%`)} `;
     const pad = Math.max(1, inner - visLen(left) - visLen(right));
@@ -142,7 +142,7 @@ export class Plain {
 
   toolCall(label) {
     this.stopSpinner();
-    this.output.write(`${blue('●')} ${asLabel(label)}\n`);
+    this.output.write(`${narrationMark(groupKind(label))} ${asLabel(label)}\n`);
   }
 
   plan(items) {

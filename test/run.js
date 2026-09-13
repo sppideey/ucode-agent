@@ -172,7 +172,7 @@ function fakeScreen(cols = 100, rows = 30) {
 await test('it carries the mode, the model and the percentage — and nothing else', () => {
   const { screen } = fakeScreen();
   const row = bare(screen.statusRow());
-  ok(row.includes('Build'), `no mode in "${row}"`);
+  ok(row.includes('BUILD'), `no mode in "${row}"`);
   ok(row.includes('Nemotron 3 Ultra'), `no model in "${row}"`);
   ok(/\b4%/.test(row), `no percentage in "${row}"`);
   ok(!/OpenRouter/i.test(row), 'the provider name should be gone');
@@ -190,8 +190,8 @@ await test('the mode switches the chip', () => {
   const { screen } = fakeScreen();
   screen.mode = 'plan';
   const row = bare(screen.statusRow());
-  ok(row.includes('Plan'));
-  ok(!row.includes('Build'));
+  ok(row.includes('PLAN'));
+  ok(!row.includes('BUILD'));
 });
 
 await test('a busy turn borrows the middle and gives the percentage back', () => {
@@ -201,7 +201,7 @@ await test('a busy turn borrows the middle and gives the percentage back', () =>
   ok(row.includes('Writing src/App.jsx'), `spinner text missing from "${row}"`);
   ok(row.includes('esc to stop'));
   ok(row.trimEnd().endsWith('4%'), 'the percentage keeps its place while working');
-  ok(row.includes('Build'), 'the mode keeps its place too');
+  ok(row.includes('BUILD'), 'the mode keeps its place too');
   ok(/\s{2,}4% $/.test(row), `the number needs a gap in front of it: "${row.slice(-30)}"`);
 });
 
@@ -220,7 +220,7 @@ await test('it lives inside the input box, with a blank row above it', () => {
   ok(bare(box[0]).startsWith('╭'));
   ok(bare(box[1]).includes('›'), 'the typed line');
   ok(/^│\s+│$/.test(bare(box[2])), 'a blank row separating the two');
-  ok(bare(box[3]).includes('Build'), 'the status row');
+  ok(bare(box[3]).includes('BUILD'), 'the status row');
   ok(bare(box[3]).startsWith('│') && bare(box[3]).endsWith('│'), 'framed on both sides');
   ok(bare(box[4]).startsWith('╰'));
 });

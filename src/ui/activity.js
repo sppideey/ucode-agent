@@ -12,7 +12,7 @@
  */
 
 import chalk, { Chalk } from 'chalk';
-import { dim, sky, theme, clip, SPINNER } from './theme.js';
+import { dim, sky, theme, clip, SPINNER, bannerRGB, bannerPaint } from './theme.js';
 
 /** One painter per colour level, so a test can ask for truecolour on a pipe. */
 const painters = new Map();
@@ -103,6 +103,59 @@ export function shimmer(text, t, { level = chalk.level } = {}) {
     const step = Math.round(k * STEPS);
     if (step !== runStep) { flush(); runStep = step; }
     run += s[i];
+  }
+  flush();
+  return out;
+}
+
+/**
+ * The wordmark with a light passing across it, once, at launch.
+ *
+ * The first thing anyone sees of a program is the half second before they can
+ * type, and ucode was spending it showing a finished picture. A band of light
+ * crossing the mark left to right in that same half second costs nothing, is
+ * over before it can annoy anyone, and is the difference between a logo that
+ * was printed and one that arrived.
+ *
+ * Every row is swept from the same clock, so the light is a vertical bar
+ * travelling across the whole wordmark rather than six separate glints. It
+ * blends out of the row's own gradient colour, not out of a flat blue, so the
+ * moment it passes the mark is exactly what it will look like at rest.
+ *
+ * Below 256 colours there are no in-between shades to fade through, so the
+ * mark is simply drawn finished — a two-colour "sweep" is a flicker.
+ */
+export const SWEEP_MS = 620;
+
+/** Half the width of the travelling band, in characters. */
+const SWEEP_BAND = 7;
+
+export function bannerSweep(line, row, rows, elapsed, { level = chalk.level } = {}) {
+  const text = String(line ?? '');
+  const rest = bannerRGB(row, rows);
+  const progress = SWEEP_MS > 0 ? elapsed / SWEEP_MS : 1;
+  if (level < 2 || !text || progress >= 1 || progress < 0) return bannerPaint(row, rows)(text);
+
+  // The centre starts off the left edge and ends off the right, so the band
+  // enters and leaves rather than appearing in the middle of the letters.
+  const centre = progress * (text.length + SWEEP_BAND * 2) - SWEEP_BAND;
+
+  let out = '';
+  let run = '';
+  let runStep = -1;
+  const flush = () => {
+    if (!run) return;
+    const [r, g, b] = mix(rest, PEAK_RGB, runStep / STEPS);
+    out += painter(level).rgb(r, g, b)(run);
+    run = '';
+  };
+
+  for (let i = 0; i < text.length; i++) {
+    const distance = Math.abs(i - centre);
+    const k = distance < SWEEP_BAND ? (Math.cos((Math.PI * distance) / SWEEP_BAND) + 1) / 2 : 0;
+    const step = Math.round(k * STEPS);
+    if (step !== runStep) { flush(); runStep = step; }
+    run += text[i];
   }
   flush();
   return out;

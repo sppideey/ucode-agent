@@ -40,8 +40,9 @@ import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
-  bannerPaint, RAIL } from './theme.js';
-import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
+  bannerPaint, RAIL, modeChip } from './theme.js';
+import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint, bannerSweep, SWEEP_MS } from './activity.js';
+import { gitBranch } from '../core/git.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
 
@@ -129,6 +130,28 @@ const WORKING_HINT = 'Working… type to queue your next message';
 const WORKING_HINT_SHORT = 'Working…';
 const WORKING_HINT_NEEDS = WORKING_HINT.length + 8;
 
+/**
+ * Three things to try, under the box, on a screen with nothing on it yet.
+ *
+ * A wordmark over an empty field is handsome and tells you nothing you can act
+ * on — the first thing a new user has to do is guess what this accepts. Three
+ * greyed lines answer that in one glance, and they say something about the
+ * range of it too: build something new, understand something that exists,
+ * change something small. They are dim, and they are gone the moment anything
+ * is on the screen.
+ */
+const SUGGESTIONS = [
+  'build me a landing page for a coffee shop',
+  'explain what this project does and how it fits together',
+  'add a dark mode toggle that remembers the choice',
+];
+
+/** The width of the `try` label, so the three lines share one left edge. */
+const SUGGEST_LABEL = 6;
+
+/** Rows the suggestions occupy under the box: one of air, then the three. */
+const SUGGEST_ROWS = SUGGESTIONS.length + 1;
+
 export class Screen {
   constructor({ cwd, input = process.stdin, output = process.stdout } = {}) {
     this.cwd = cwd;
@@ -160,7 +183,10 @@ export class Screen {
     this.paintedBusy = false;  // whose turn the frame on screen was drawn for
     this.activity = null; // the turn in flight: when it began, how many steps
     this.tick = 0;        // animation frames painted, for the spinner
+    this.intro = 0;       // when the launch sweep began, 0 once it is over
+    this.introTimer = null;
     this.pendingPrompt = null;
+    this.facts.branch = gitBranch(cwd);
 
     this.cols = output.columns || 80;
     this.rows = output.rows || 24;
@@ -186,10 +212,39 @@ export class Screen {
     this.output.on('resize', this.onResize);
 
     this.render();
+    this.startIntro();
+  }
+
+  /**
+   * The light that crosses the wordmark once, at launch.
+   *
+   * Half a second, on the start screen only, and abandoned the instant there is
+   * anything else to look at. Below 256 colours there are no shades to fade
+   * through, so it is skipped rather than flickered.
+   */
+  startIntro() {
+    if (!this.output.isTTY || chalk.level < 2 || !this.welcoming()) return;
+    this.intro = Date.now();
+    this.introTimer = setInterval(() => {
+      if (this.closed || !this.welcoming() || Date.now() - this.intro >= SWEEP_MS) this.stopIntro();
+      else this.render();
+    }, FRAME_MS);
+    this.introTimer.unref?.();
+  }
+
+  stopIntro() {
+    if (this.introTimer) clearInterval(this.introTimer);
+    this.introTimer = null;
+    if (!this.intro) return;
+    this.intro = 0;
+    if (!this.closed) this.render();
   }
 
   stop() {
     this.activity = null;
+    if (this.introTimer) clearInterval(this.introTimer);
+    this.introTimer = null;
+    this.intro = 0;
     this.stopSpinner();
     this.stopTimer();
     this.output.off?.('resize', this.onResize);
@@ -361,7 +416,7 @@ export class Screen {
         kind, count: 1, at: 0, label: clean,
         targets: [groupTarget(clean)], added: 0, removed: 0,
       };
-      this.push(`${narrationMark()} ${runLine(fresh)}`);
+      this.push(`${narrationMark(kind)} ${runLine(fresh)}`);
       fresh.at = this.lines.length - 1;
       this.run = fresh;
       this.segment.set(kind, fresh);
@@ -402,7 +457,7 @@ export class Screen {
    */
   paintRun() {
     if (!this.run) return;
-    this.lines[this.run.at] = `${narrationMark()} ${runLine(this.run)}`;
+    this.lines[this.run.at] = `${narrationMark(this.run.kind)} ${runLine(this.run)}`;
     this.render();
   }
 
@@ -628,6 +683,7 @@ export class Screen {
 
   /** Same shape as the plain UI's header(), so the loop needs no branch. */
   header({ cwd, model, used, limit, title: sessionTitle }) {
+    if (cwd && cwd !== this.facts.cwd) this.facts.branch = gitBranch(cwd);
     this.setFacts({
       cwd,
       model,
@@ -662,30 +718,46 @@ export class Screen {
 
     // Two spaces of padding, the wordmark, a gap, then the facts column.
     //
-    // Only what you cannot work out by looking: where you are, and how to get
-    // help. How full the window is belongs on the status row next to the model
-    // it describes, and the session title is already the terminal's own window
-    // title — repeating either here is a second place to keep in sync for no
-    // reader who needed it.
+    // Only what you cannot work out by looking, and never what the status row
+    // already carries: the model and how full the window is live down there,
+    // next to each other, and a second copy up here would be a second place to
+    // keep in sync for no reader who needed it. What is left is where you are,
+    // which branch that is on, which build you are running, and the two keys
+    // worth knowing before you have typed anything.
+    //
+    // Every row has something on it. Three blank rows and a credit floating
+    // under them read as a column that was meant to be filled and was not.
     const room = Math.max(8, inner - BANNER_WIDTH - 6);
+    const value = (v) => clip(String(v), Math.max(4, room - 10));
+    const branch = this.facts.branch;
     const facts = [
-      ['dir', shortenPath(this.facts.cwd ?? this.cwd, room - 9)],
-      ['keys', '/help · esc interrupts'],
+      ['dir', value(shortenPath(this.facts.cwd ?? this.cwd, room - 10))],
+      branch ? ['branch', value(branch)] : ['', ''],
+      VERSION ? ['version', value(this.facts.update ? `${VERSION} → ${this.facts.update} next start` : VERSION)] : ['', ''],
       ['', ''],
-      ['', ''],
-      ['', ''],
+      ['keys', value('/help · esc interrupts · ctrl+b plan')],
       ['', 'made with ❤️ by om dixit'],
     ];
 
     const rows = BANNER.map((art, i) => {
-      const [label, value] = facts[i] ?? ['', ''];
+      const [label, text] = facts[i] ?? ['', ''];
       const right = label
-        ? `${dim(label.padEnd(9))}${chalk.white(clip(value, room - 9))}`
-        : (value ? dim(value) : '');
+        ? `${dim(label.padEnd(10))}${chalk.white(text)}`
+        : (text ? dim(text) : '');
       return `  ${bannerPaint(i)(art)}   ${right}`;
     });
 
-    return [boxTop(width), ...rows.map((r) => boxRow(r, width)), boxBottom(width)];
+    // The frame is lit the way the wordmark inside it is: brightest along the
+    // top rule, settling to deep at the bottom. Eight rows of box for six of
+    // banner, so the borders take the two ends of the same ramp and the box
+    // reads as one object with a light above it rather than as a rule someone
+    // drew around a picture.
+    const depth = BANNER.length + 2;
+    return [
+      boxTop(width, bannerPaint(0, depth)),
+      ...rows.map((r, i) => boxRow(r, width, bannerPaint(i + 1, depth))),
+      boxBottom(width, bannerPaint(depth - 1, depth)),
+    ];
   }
 
   // -- input box -----------------------------------------------------------
@@ -809,7 +881,7 @@ export class Screen {
   // -- status row ----------------------------------------------------------
 
   modeChip() {
-    return this.mode === 'plan' ? `${sky('◇')} ${sky('Plan')}` : `${blue('◆')} ${blue('Build')}`;
+    return modeChip(this.mode);
   }
 
   /**
@@ -837,7 +909,7 @@ export class Screen {
   statusRow(width = this.width()) {
     const inner = width - 2;             // the space between the two borders
     const chip = this.modeChip();
-    const left = ` ${chip} ${dim('·')} ${chalk.white(this.model || '—')}`;
+    const left = ` ${chip}  ${chalk.white(this.model || '—')}`;
     const right = `${this.percentChip()} `;
 
     // Where a click on the bottom row still counts as hitting the mode chip.
@@ -1457,10 +1529,12 @@ export class Screen {
     const big = cols >= BANNER_WIDTH + 4 && this.rows >= 18;
     const art = big ? BANNER : ['u c o d e'];
     const inputRows = this.inputLines(boxWidth - 4).rows.length;
-    const block = art.length + 2 + inputRows + 4;          // wordmark, gap, box
+    const boxRows = inputRows + 4;                         // borders, typed rows, gap, status
+    const suggest = this.rows >= boxRows + art.length + SUGGEST_ROWS + 6;
+    const block = art.length + 2 + boxRows + (suggest ? SUGGEST_ROWS : 0);
     // A touch above true centre reads as centred; exact centre looks low.
     const top = Math.max(0, Math.floor((this.rows - block) / 2) - 1);
-    return { cols, boxWidth, left, big, art, inputRows, top, boxTop: top + art.length + 2 };
+    return { cols, boxWidth, left, big, art, inputRows, boxRows, suggest, top, boxTop: top + art.length + 2 };
   }
 
   renderWelcome() {
@@ -1471,15 +1545,27 @@ export class Screen {
     // rows. Across the rows rather than along them — a name split down its
     // middle reads as two words, where a name that fades downward reads as
     // one object with a light on it.
+    const elapsed = this.intro ? Date.now() - this.intro : Infinity;
     g.art.forEach((line, i) => {
       const pad = ' '.repeat(Math.max(0, Math.floor((g.cols - line.length) / 2)));
-      frame[g.top + i] = pad + (g.big ? bannerPaint(i, g.art.length)(line) : blue.bold(line));
+      frame[g.top + i] = pad + (g.big
+        ? bannerSweep(line, i, g.art.length, elapsed)
+        : blue.bold(line));
     });
 
     const indent = ' '.repeat(g.left);
     this.inputBox(g.boxWidth).forEach((row, i) => {
       frame[g.boxTop + i] = indent + row;
     });
+
+    // Three things to try, aligned with the text inside the box above them.
+    if (g.suggest) {
+      const at = g.boxTop + g.boxRows + 1;
+      SUGGESTIONS.forEach((text, i) => {
+        const label = i === 0 ? 'try'.padEnd(SUGGEST_LABEL) : ' '.repeat(SUGGEST_LABEL);
+        frame[at + i] = `${indent} ${dim(sky(label))}${dim(clip(text, Math.max(8, g.boxWidth - SUGGEST_LABEL - 2)))}`;
+      });
+    }
 
     // The version, in the corner, and nothing else on the screen.
     if (VERSION) {

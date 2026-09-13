@@ -90,12 +90,13 @@ export const BANNER_WIDTH = Math.max(...BANNER.map((r) => r.length));
 const GRADIENT_TOP = [0x8f, 0xbc, 0xff];      // sky, at the crown
 const GRADIENT_BOTTOM = [0x2f, 0x6f, 0xe0];   // deep, in the shadow
 
-export function bannerPaint(row, rows = BANNER.length) {
+export function bannerRGB(row, rows = BANNER.length) {
   const t = rows > 1 ? Math.min(1, Math.max(0, row / (rows - 1))) : 0;
-  const hex = GRADIENT_TOP
-    .map((from, i) => Math.round(from + (GRADIENT_BOTTOM[i] - from) * t))
-    .map((v) => v.toString(16).padStart(2, '0'))
-    .join('');
+  return GRADIENT_TOP.map((from, i) => Math.round(from + (GRADIENT_BOTTOM[i] - from) * t));
+}
+
+export function bannerPaint(row, rows = BANNER.length) {
+  const hex = bannerRGB(row, rows).map((v) => v.toString(16).padStart(2, '0')).join('');
   return chalk.hex(`#${hex}`);
 }
 
@@ -107,6 +108,24 @@ export function bannerPaint(row, rows = BANNER.length) {
  * landmark — findable at a glance, scrollable to — for a fortieth of the ink.
  */
 export const RAIL = '▌';
+
+/**
+ * Which mode is live, as a filled pill.
+ *
+ * A glyph and a word is a label; a block of colour with the word knocked out
+ * of it is a control, and the mode is the one thing on the status row you can
+ * actually change. Build is the solid blue — it may edit and run. Plan is the
+ * same shape muted, because a read-only mode should not look armed.
+ *
+ * Small enough not to be the background painting that was taken out of here
+ * once: it is the width of the word, the way a diff's tint is the width of the
+ * line it marks.
+ */
+export const BUILD_CHIP = chalk.bgHex('#4d8dff').hex('#0b1220').bold;
+export const PLAN_CHIP = chalk.bgHex('#24344f').hex('#8fbcff').bold;
+
+export const modeChip = (mode) =>
+  mode === 'plan' ? PLAN_CHIP(' PLAN ') : BUILD_CHIP(' BUILD ');
 
 /** The spinner. Braille dots, because they animate in place without jitter. */
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
@@ -361,8 +380,32 @@ export function planLine(items) {
  */
 export const narration = (text) => chalk.dim(text);
 
-/** The bullet beside a narration line: present, not loud. */
-export const narrationMark = () => chalk.dim(deep('●'));
+/**
+ * The bullet beside a narration line: present, not loud.
+ *
+ * Three shapes rather than one dot repeated. Every step drawn identically made
+ * a long transcript a column of the same mark forty times over, which reads as
+ * output rather than as work — and the shape is free, where a fourth colour
+ * would not be. A diamond is hollow when the agent is only looking at
+ * something and filled when it changes it, and a run of a command points
+ * forward. Anything unmapped keeps the original dot.
+ *
+ * All of them stay dim: the glyph carries the kind, the weight still says this
+ * is scaffolding and the answer below is the thing to read.
+ */
+const MARKS = {
+  Reading: ['◇', deep], Listing: ['◇', deep], Looking: ['◇', deep],
+  Asking: ['◇', deep], Mapping: ['◇', deep], Searching: ['◇', deep],
+  Finding: ['◇', deep],
+  Writing: ['◆', blue], Editing: ['◆', blue], Adding: ['◆', blue],
+  Renaming: ['◆', blue],
+  Running: ['▸', sky], Checking: ['▸', sky],
+};
+
+export const narrationMark = (kind) => {
+  const [glyph, paint] = MARKS[kind] ?? ['●', deep];
+  return chalk.dim(paint(glyph));
+};
 
 /**
  * The file or command a step is about, lit so the line can be scanned.
