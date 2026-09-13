@@ -256,7 +256,7 @@ export async function planSuite({ test, section, ok, eq }) {
 }
 
 export async function replySuite({ test, section, ok, eq }) {
-  const { withoutCodeBlocks } = await import('../../src/ui/theme.js');
+  const { withoutCodeBlocks, tidyReply } = await import('../../src/ui/theme.js');
 
   section('code stays in the file');
 
@@ -283,6 +283,29 @@ export async function replySuite({ test, section, ok, eq }) {
 
   await test('a block with no language named still reads properly', () => {
     ok(/\d+ lines of code/.test(withoutCodeBlocks(fence(20, ''))));
+  });
+
+  await test('a sentence introducing code goes with the code', () => {
+    // "Here is the complete app:" with the code removed is a colon pointing at
+    // nothing, which reads as the reply having been cut off mid-thought.
+    const out = tidyReply('State drives it.' + '\n\n' + 'Here is the complete app:' + '\n\n' + fence(40));
+    eq(out, 'State drives it.');
+  });
+
+  await test('a short block keeps its lead-in, because it still has something to lead to', () => {
+    const out = tidyReply('Run:' + '\n\n' + fence(2, 'bash'));
+    ok(out.includes('line 0'), out);
+    ok(out.includes('Run:'), out);
+  });
+
+  await test('a long block with no lead-in leaves the prose either side', () => {
+    eq(tidyReply('Done.' + '\n\n' + fence(40) + '\n\n' + 'Try it.'), 'Done.' + '\n\n' + 'Try it.');
+  });
+
+  await test('the step count is gone from the status row', async () => {
+    const fsp = await import('node:fs/promises');
+    const src = await fsp.readFile('src/ui/screen.js', 'utf8');
+    ok(!src.includes('text: `step '), 'it counts machinery, not progress');
   });
 
   await test('an answer with no code at all is untouched', () => {

@@ -388,6 +388,15 @@ export function runLine({ label, count = 1, targets = [], added = 0, removed = 0
  * A short block is left alone: three lines showing a command to run, or the
  * one line that changed, is the kind of thing worth having in the answer.
  */
+/**
+ * A sentence that exists only to introduce what comes next.
+ *
+ * "Here's the complete app:" followed by forty lines of code, with the code
+ * taken out, is a colon pointing at nothing — which reads as the reply having
+ * been cut off mid-thought. The lead-in goes with what it was leading to.
+ */
+const LEAD_IN = /(?:^|\n)[^\n]{0,80}:[ \t]*\n+$/;
+
 export function withoutCodeBlocks(text, keepLines = 4) {
   const FENCE = /```([A-Za-z0-9+-]*)\n([\s\S]*?)```/g;
   return String(text ?? '').replace(FENCE, (all, lang, body) => {
@@ -396,4 +405,32 @@ export function withoutCodeBlocks(text, keepLines = 4) {
     const what = lang ? `${lang} ` : '';
     return `_[${lines.length} lines of ${what}code — it is in the file, not worth repeating here]_`;
   });
+}
+
+/**
+ * The reply as it should be read: no pasted code, and no sentence left
+ * pointing at code that is no longer there.
+ */
+/**
+ * The reply as it should be read.
+ *
+ * A long pasted block goes, and so does the sentence that introduced it — a
+ * colon pointing at nothing reads as the reply having been cut off. A short
+ * block stays: three lines showing a command to run belong in an answer.
+ */
+export function tidyReply(text, keepLines = 4) {
+  const MARK = "\u0000CUT\u0000";
+  const FENCE = new RegExp("```([A-Za-z0-9+-]*)\\n([\\s\\S]*?)```", "g");
+
+  const marked = String(text ?? "").replace(FENCE, (all, lang, body) => {
+    const rows = body.replace(new RegExp("\\n+$"), "").split("\n");
+    return rows.length <= keepLines ? all : MARK;
+  });
+
+  const leadIn = new RegExp("(?:^|\\n)[^\\n]{0,80}:[ \t]*\\n+" + MARK, "g");
+  return marked
+    .replace(leadIn, "\n")
+    .split(MARK).join("")
+    .replace(new RegExp("\\n{3,}", "g"), "\n\n")
+    .trim();
 }

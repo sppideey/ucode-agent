@@ -39,7 +39,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
-  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, withoutCodeBlocks } from './theme.js';
+  shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply } from './theme.js';
 import { FRAME_MS, fitActivity, shimmer, spinnerGlyph, formatDuration, doneLine, stepPaint } from './activity.js';
 import { renderer, render, polish } from './markdown.js';
 import { VERSION } from '../core/version.js';
@@ -258,7 +258,7 @@ export class Screen {
     if (!text?.trim()) return;
     this.endRun();
     this.add('');
-    this.add(render(this.md, withoutCodeBlocks(text)));
+    this.add(render(this.md, tidyReply(text)));
     this.add('');
     this.render();
   }
@@ -777,7 +777,9 @@ export class Screen {
       const a = this.activity;
       const since = a?.start ?? this.status.since ?? now;
       const meta = [];
-      if (a?.steps) meta.push({ text: `step ${a.steps}`, paint: stepPaint(now - a.movedAt < 900) });
+      // No step count. It measures how much machinery ran, which is not
+      // something the person waiting has any use for; the elapsed time is.
+      void stepPaint;
       if (now - since >= 1000) meta.push({ text: formatDuration(now - since), keep: true });
       middle = fitActivity({
         glyph: spinnerGlyph(this.tick, now),
