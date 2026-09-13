@@ -1034,6 +1034,11 @@ export class Agent {
       if (message.short) this.short.add(skill.name);
       this.push(message);
       this.ui.note(`${skill.name} skill loaded for this${message.short ? ' (short form)' : ''}`);
+      // A clear row under it. This is bookkeeping about the turn, not part of
+      // it, and against the first line of thinking the two read as one block —
+      // the notice looks like the opening of the answer rather than a note
+      // about how the answer is being reached.
+      this.ui.blank();
     }
   }
 

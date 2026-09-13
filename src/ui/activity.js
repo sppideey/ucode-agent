@@ -109,26 +109,36 @@ export function shimmer(text, t, { level = chalk.level } = {}) {
 }
 
 /**
- * The wordmark with a light passing across it, once, at launch.
+ * The wordmark being lit, once, at launch.
  *
- * The first thing anyone sees of a program is the half second before they can
- * type, and ucode was spending it showing a finished picture. A band of light
- * crossing the mark left to right in that same half second costs nothing, is
- * over before it can annoy anyone, and is the difference between a logo that
- * was printed and one that arrived.
+ * The first thing anyone sees of a program is the moment before they can type,
+ * and ucode was spending it showing a finished picture. A band of light
+ * crossing the mark left to right costs nothing and is the difference between
+ * a logo that was printed and one that arrived.
  *
- * Every row is swept from the same clock, so the light is a vertical bar
- * travelling across the whole wordmark rather than six separate glints. It
- * blends out of the row's own gradient colour, not out of a flat blue, so the
- * moment it passes the mark is exactly what it will look like at rest.
+ * The light does not pass over a finished wordmark — it paints it. Ahead of
+ * the crest the letters sit almost unlit, a silhouette dark enough to read as
+ * "not yet" and light enough not to look like a hole in the screen. At the
+ * crest they flare to near-white. Behind it they settle into the row's own
+ * resting gradient and stay there. So the mark is drawn on by the light rather
+ * than glinting under it, and the instant the crest leaves a column that
+ * column is already exactly what it will look like for the rest of the
+ * session.
+ *
+ * Every row is lit from the same clock, so the crest is one bar standing
+ * upright and travelling across the whole wordmark rather than six separate
+ * glints, and the band is wide enough that the edge of it is never a line.
  *
  * Below 256 colours there are no in-between shades to fade through, so the
  * mark is simply drawn finished — a two-colour "sweep" is a flicker.
  */
-export const SWEEP_MS = 620;
+export const SWEEP_MS = 1300;
 
 /** Half the width of the travelling band, in characters. */
-const SWEEP_BAND = 7;
+const SWEEP_BAND = 9;
+
+/** The wordmark before the light reaches it: present, not yet lit. */
+const UNLIT_RGB = [0x16, 0x23, 0x3d];
 
 export function bannerSweep(line, row, rows, elapsed, { level = chalk.level } = {}) {
   const text = String(line ?? '');
@@ -142,19 +152,30 @@ export function bannerSweep(line, row, rows, elapsed, { level = chalk.level } = 
 
   let out = '';
   let run = '';
-  let runStep = -1;
+  let runKey = '';
+  let runRGB = null;
   const flush = () => {
     if (!run) return;
-    const [r, g, b] = mix(rest, PEAK_RGB, runStep / STEPS);
+    const [r, g, b] = runRGB;
     out += painter(level).rgb(r, g, b)(run);
     run = '';
   };
 
   for (let i = 0; i < text.length; i++) {
-    const distance = Math.abs(i - centre);
+    const offset = i - centre;
+    // Behind the crest the column is finished; ahead of it, still waiting.
+    const base = offset > 0 ? UNLIT_RGB : rest;
+    const distance = Math.abs(offset);
     const k = distance < SWEEP_BAND ? (Math.cos((Math.PI * distance) / SWEEP_BAND) + 1) / 2 : 0;
+
+    // Quantised so neighbours landing on the same shade share one escape code.
     const step = Math.round(k * STEPS);
-    if (step !== runStep) { flush(); runStep = step; }
+    const key = `${offset > 0 ? 'a' : 'b'}${step}`;
+    if (key !== runKey) {
+      flush();
+      runKey = key;
+      runRGB = mix(base, PEAK_RGB, step / STEPS);
+    }
     run += text[i];
   }
   flush();
@@ -220,10 +241,11 @@ export function indeterminate(cells, t, { level = chalk.level } = {}) {
  * The whole live line: what is happening, that it is still happening, how long
  * it has been happening, and how to stop it.
  *
- * This used to be squeezed into whatever the status row had spare between the
- * model name and the percentage, which is why the label shimmered — it was the
- * only way to look alive in twenty columns. With a row of its own the motion
- * moves to the bar and the label can simply be read.
+ * Two things move on it, and they say different things. The bar is the steady
+ * pulse that means the program is alive at all; the band of light crossing the
+ * label is on the label, so it is the thing being done right now that looks
+ * live. How long the turn has taken is not here — that is a fact about the
+ * session, and it belongs on the status row with the other two.
  *
  * Things are given up from the least useful end as the terminal narrows: the
  * hint first, then the bar shortens, then it goes, then the label is clipped.
@@ -240,7 +262,7 @@ export function workingLine({
   const shortTail = elapsed || '';
 
   const draw = (cells, tailText, labelRoom) => {
-    let out = `${glyph} ${sky(clip(text, labelRoom))}`;
+    let out = `${glyph} ${shimmer(clip(text, labelRoom), t, { level })}`;
     if (cells) out += `   ${indeterminate(cells, t, { level })}`;
     if (tailText) out += `   ${dim(tailText)}`;
     return out;
@@ -254,7 +276,7 @@ export function workingLine({
     if (labelRoom >= Math.min(MIN_LABEL, text.length)) return draw(cells, tailText, labelRoom);
   }
 
-  return `${glyph} ${sky(clip(text, Math.max(1, room - 2)))}`;
+  return `${glyph} ${shimmer(clip(text, Math.max(1, room - 2)), t, { level })}`;
 }
 
 /**

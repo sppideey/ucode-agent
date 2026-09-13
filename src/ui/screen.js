@@ -100,16 +100,10 @@ const at = (row, col) => `${ESC}[${row};${col}H`;
 const title = (t) => `${ESC}]0;${t}\x07`;
 
 /**
- * Fixed rows below the header: the gap under it, the live line, the gap above
- * the input box, the box's two borders, the blank row inside it, and the
- * status row.
- *
- * The live line's row is held whether anything is running or not. Adding it
- * only while busy would move the whole transcript up a row at the start of
- * every turn and back down at the end of it, which reads as the screen
- * flinching each time you press return.
+ * Fixed rows below the header: the gap under it, the gap above the input box,
+ * the input box's two borders, the blank row inside it, and the status row.
  */
-const CHROME_BELOW = 7;
+const CHROME_BELOW = 6;
 
 /** How long one sentence of reasoning holds the line before the next takes it. */
 const THOUGHT_HOLD_MS = 1100;
@@ -930,7 +924,15 @@ export class Screen {
     const inner = width - 2;             // the space between the two borders
     const chip = this.modeChip();
     const left = ` ${chip}  ${chalk.white(this.model || '—')}`;
-    const right = `${this.percentChip()} `;
+
+    // How long the turn has taken, back in the box beside the other two facts
+    // about the session. It is not on the live line: that line says what is
+    // being done, and a clock ticking in the middle of it competes with the
+    // words for no reason. Under a second there is no number worth reading.
+    const now = Date.now();
+    const since = this.activity?.start ?? this.status.since ?? 0;
+    const running = this.busy() && since && now - since >= 1000;
+    const right = `${running ? `${dim(formatDuration(now - since))}   ` : ''}${this.percentChip()} `;
 
     // Where a click on the bottom row still counts as hitting the mode chip.
     this.chipTo = 2 + visLen(chip);
@@ -956,20 +958,27 @@ export class Screen {
   activityLine(width = this.width()) {
     if (!this.busy()) return '';
     const now = Date.now();
-    const since = this.activity?.start ?? this.status.since ?? now;
     return workingLine({
       glyph: spinnerGlyph(this.tick, now),
       label: this.status.busy ? this.status.text : 'working',
-      elapsed: now - since >= 1000 ? formatDuration(now - since) : '',
       hint: 'esc to stop',
       room: Math.max(4, width),
       t: now,
     });
   }
 
-  /** Which row the live line is painted on, 1-based. */
+  /**
+   * Which row the live line is painted on, 1-based, or 0 when it is not shown.
+   *
+   * It is the last line of the conversation, so its row moves as the
+   * conversation grows and stops moving once the viewport is full. Scrolled
+   * back, or with the picker open, it is not on screen at all and the cheap
+   * repaint has nothing to do.
+   */
   activityRowAt() {
-    return this.rows - this.inputLines().rows.length - 5;
+    if (this.scroll > 0 || this.picker) return 0;
+    const index = Math.min(this.lines.length + 1, this.viewportHeight()) - 1;
+    return index < 0 ? 0 : this.headerHeight() + 2 + index;
   }
 
   /**
@@ -988,9 +997,10 @@ export class Screen {
     }
     const [row, col] = this.caret();
     const width = this.width();
+    const liveAt = this.activityRowAt();
     this.output.write(
       HIDE +
-      at(this.activityRowAt(), 1) + CLEAR_LINE + padVis(this.activityLine(width), width) +
+      (liveAt ? at(liveAt, 1) + CLEAR_LINE + padVis(this.activityLine(width), width) : '') +
       at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(width), width, this.borderPaint()) +
       at(row, col) + SHOW
     );
@@ -1481,18 +1491,24 @@ export class Screen {
     const width = this.width();
     const height = this.viewportHeight();
 
-    const end = Math.max(0, this.lines.length - this.scroll);
+    // The live line is the last line of the conversation, not a fixture above
+    // the input box. Pinned down there it sat at the bottom of the screen while
+    // the message that started it was at the top, with the empty middle of the
+    // viewport between them — so the thing being done looked unrelated to the
+    // thing that had been asked. On the end of the transcript it arrives
+    // directly under the prompt, which is where the eye already is.
+    const live = this.activityLine(width);
+    const said = live ? [...this.lines, live] : this.lines;
+
+    const end = Math.max(0, said.length - this.scroll);
     const start = Math.max(0, end - height);
-    const window = this.picker ? this.pickerLines(height) : this.lines.slice(start, end);
+    const window = this.picker ? this.pickerLines(height) : said.slice(start, end);
     while (window.length < height) window.push('');
 
     const frame = [
       ...this.headerLines(),
       '',
       ...window,
-      // What is happening right now, in the same column as the steps above it,
-      // because it is the next one of those. Empty between turns.
-      this.activityLine(width),
       // Always one clear row between the last thing said and the box you type
       // in. Without it the newest line of output sits against the border and
       // reads as part of the input rather than as the answer above it.
