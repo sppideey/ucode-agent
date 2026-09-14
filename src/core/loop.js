@@ -1105,6 +1105,7 @@ export class Agent {
     this.lookedThisTurn = false;
     this.reads = new Map();
     this.declines = 0;
+    this.apps = [];
     forgetReviews(); // a new request: its apps get a fresh design review
     const images = await this.attachImages(input);
     this.push(images.length
@@ -1682,6 +1683,13 @@ export class Agent {
     // a designer's review, and now the app actually driven — and it was the
     // quietest line on screen, saying only that it had happened. Its verdict
     // goes on the same line, the way a change carries its two numbers.
+    // Which app folders this turn actually made, so a second one can be
+    // refused before it is built and any leftovers can be counted at the end.
+    if (call.name === 'create_app' && call.args?.folder) {
+      const made = path.resolve(this.cwd, String(call.args.folder));
+      if (!(this.apps ??= []).includes(made)) this.apps.push(made);
+    }
+
     if (call.name === 'look_at_app') {
       const found = /^(\d+) problem/.exec(out.summary ?? '');
       this.ui.runStat?.(found ? `${found[1]} to fix` : 'clean');
@@ -1782,6 +1790,30 @@ export class Agent {
         };
       }
       this.reads.set(key, seen + 1);
+    }
+
+    // Starting a second app instead of fixing the first.
+    //
+    // A traced build hit a problem in todo/, abandoned it and made todo-fixed/
+    // — three create_app calls, two folders, one broken, the app typed twice.
+    // Starting over is never the cheap way out of a problem in a file, and it
+    // leaves the user to work out which folder is the real one.
+    if (call.name === 'create_app' && call.args?.folder && (this.apps ?? []).length) {
+      const wanted = path.resolve(this.cwd, String(call.args.folder));
+      const already = this.apps.filter((f) => f !== wanted);
+      if (already.length && !this.apps.includes(wanted)) {
+        const show = already.map((f) => path.basename(f)).join(', ');
+        throw new ToolFailure({
+          kind: 'already_building',
+          attempted: `creating ${call.args.folder}`,
+          failed: `You already made ${show} this turn, and it is still there.`,
+          fix:
+            `Fix ${show} instead of starting again — whatever is wrong with it is a smaller `
+            + 'job than writing the whole app a second time, and a half-finished folder left '
+            + `beside the real one is worse than either. If ${show} genuinely cannot be saved, `
+            + 'delete it first, then create this one.',
+        });
+      }
     }
 
     if (call.name === 'load_skill') return this.loadSkill(call.args?.name);
@@ -2081,6 +2113,23 @@ export class Agent {
 
     const live = await this.liveErrors();
     if (live) problems.push(live);
+
+    // Two app folders, one of them abandoned.
+    //
+    // A build hit a problem in todo/, started todo-fixed/, then said in its
+    // reply that it had removed the duplicate — and had not. Both were still
+    // on disk for the user to sort out, and the claim that they were not is
+    // the failure this whole checking pass exists to catch: saying a thing is
+    // done when it is not. So it is checked rather than believed.
+    const apps = this.apps ?? [];
+    if (apps.length > 1) {
+      const names = apps.map((f) => path.basename(f));
+      problems.push(
+        `There are ${apps.length} app folders here now: ${names.join(', ')}. Only one of them is `
+        + 'the app. Delete the ones you are not shipping — actually delete them, do not just say '
+        + 'you have — and make sure the one you keep is the one that works.',
+      );
+    }
 
     // Then look at it, in the same pass that type-checks — not when the model
     // remembers to. A check that runs only when it is asked for reports
