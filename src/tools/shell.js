@@ -183,6 +183,25 @@ export function serversReadySince(since = 0) {
   return readyServers.filter((s) => s.at >= since);
 }
 
+/**
+ * Shut down every dev server this session started.
+ *
+ * killTree existed and nothing ever called it, so a server outlived the
+ * session that started it — every build left one behind. Twenty-four builds
+ * in one afternoon left seventy-three node processes running, the oldest for
+ * three and a half hours, holding ports the next run then could not use.
+ *
+ * Best effort and never throws: a process that has already gone is the
+ * outcome we wanted anyway.
+ */
+export function stopServers() {
+  const stopped = readyServers.splice(0, readyServers.length);
+  for (const s of stopped) {
+    try { killTree(s.pid); } catch { /* already gone */ }
+  }
+  return stopped.length;
+}
+
 /** Every server started this session, for reading what they have logged. */
 export function runningServers() {
   return readyServers.slice();

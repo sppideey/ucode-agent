@@ -145,6 +145,16 @@ async function main() {
     await agent.persist().catch(() => {});
     agent.ui.close();
     process.exitCode = 1;
+  } finally {
+    // Take the dev servers down with the session that started them, however it
+    // ended. killTree was written for this and nothing ever called it, so every
+    // build left its server running: twenty-four builds in an afternoon left
+    // seventy-three node processes alive, the oldest for three and a half
+    // hours, holding the ports the next run wanted.
+    try {
+      const { stopServers } = await import('./src/tools/shell.js');
+      stopServers();
+    } catch { /* nothing started, or already gone */ }
   }
 }
 
