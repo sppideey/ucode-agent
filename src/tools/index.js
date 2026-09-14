@@ -95,7 +95,11 @@ export const tools = [
       'toy, a game, a visualisation, a calculator, a timer. "next-shadcn": Next.js 16, ' +
       'TypeScript, Tailwind 4 and shadcn with 33 components — only when the app genuinely ' +
       'needs routes, a database or many screens, because it costs an install and a build. ' +
-      'This is how every Next.js app begins - never run create-next-app or shadcn init.',
+      'This is how every Next.js app begins - never run create-next-app or shadcn init. ' +
+      'In "next-shadcn" every path in "files" goes under src/: a page is a route only at ' +
+      '<app>/src/app/page.tsx or <app>/src/app/<segment>/page.tsx, an API handler only at ' +
+      '<app>/src/app/api/<name>/route.ts, and components at <app>/src/components/<feature>/. ' +
+      'A page.tsx written anywhere else is an ordinary file the router never serves.',
     parameters: {
       type: 'object',
       properties: {

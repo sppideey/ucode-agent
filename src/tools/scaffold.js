@@ -173,6 +173,60 @@ async function unprefixOwnFolder(appDir, written) {
   return fixed;
 }
 
+/**
+ * Files that legitimately sit at the root of a Next.js project.
+ *
+ * Everything else a model writes there is app code that has missed src/.
+ */
+const NEXT_ROOT = /^(?:package(?:-lock)?\.json|next\.config\.[mc]?[jt]s|tsconfig\.json|postcss\.config\.[mc]?js|eslint\.config\.[mc]?js|components\.json|README\.md|TEMPLATE\.md|\.gitignore|next-env\.d\.ts)$/i;
+
+/**
+ * Put Next.js files where Next.js looks for them.
+ *
+ * Routing is folder-based and unforgiving: a page is a route only at
+ * src/app/<segment>/page.tsx. A traced build wrote page.tsx at the project
+ * root and api/expenses/route.ts beside it — the build passed, every route
+ * 404ed, and nothing said why.
+ *
+ * The guide has the tree in it, and the guide cannot help: it comes back
+ * inside the create_app result, and the model chooses these paths in the call
+ * that produces that result. It is reading the map after it has parked. So the
+ * paths are corrected on the way in, and the result says what moved and why,
+ * which is the copy that arrives in time to matter for the next file.
+ *
+ * Only for next-shadcn, only for files under the app folder, and never for the
+ * config files that genuinely belong at the root.
+ */
+function placeForNext(files, folder) {
+  const moved = [];
+
+  const out = files.map((f) => {
+    const rel = String(f.path ?? '').split('\\').join('/');
+    const prefix = `${folder}/`;
+    if (!rel.startsWith(prefix)) return f;
+
+    const inside = rel.slice(prefix.length);
+    if (!inside || inside.startsWith('src/') || inside.startsWith('public/')) return f;
+    if (NEXT_ROOT.test(inside)) return f;
+
+    // app/... is the right tree written one level too high; everything else
+    // that is app code belongs under src/ as it stands.
+    const under = inside.startsWith('app/') ? `src/${inside}` : `src/app/${inside}`;
+    const isRoute = /(?:^|\/)(?:page|layout|loading|error|not-found)\.[jt]sx?$/.test(inside)
+      || /(?:^|\/)route\.[jt]s$/.test(inside);
+    const isCode = /^(?:components|lib|hooks|styles|utils)\//.test(inside);
+
+    if (!isRoute && !isCode) return f;
+    const to = isCode ? `${prefix}src/${inside}` : `${prefix}${under}`;
+    if (to === rel) return f;
+
+    moved.push(`${inside} -> ${to.slice(prefix.length)}`);
+    return { ...f, path: to };
+  });
+
+  return { files: out, moved };
+}
+
 async function keepDesignTokens(appDir, template, written, starterCss) {
   const rel = TOKEN_FILE[template];
   if (!rel || !starterCss) return null;
@@ -366,7 +420,9 @@ export async function createApp({ folder, name, description, template = 'plain-h
 
   // The app's own files, written in this same call. Two round trips become
   // one, and round trips are nearly all of the time a build takes.
-  const mine = given;
+  // Next.js only: paths that have missed src/ are corrected before they land.
+  const placed = template === 'next-shadcn' ? placeForNext(given, path.basename(target.abs)) : { files: given, moved: [] };
+  const mine = placed.files;
   const wrote = mine.length ? await batchWrite({ files: mine }) : null;
   const written = new Set(mine.map((f) => resolveIn(f.path, 'create_app', 'files').abs));
   const keptTokens = await keepDesignTokens(target.abs, template, written, starterCss);
@@ -387,6 +443,13 @@ export async function createApp({ folder, name, description, template = 'plain-h
     `Created ${target.show} from the ${template} starter — ${copied.length} files, already known to build.\n` +
       (look ? `Design: the ${look.name} preset (${look.summary}), font ${look.fonts?.sans ?? 'Geist'}.\n` : '') +
       (wrote ? `\nYour ${mine.length} file${mine.length === 1 ? '' : 's'}:\n${wrote.content}\n` : '') +
+      (placed.moved.length
+        ? `\nMoved into place: ${placed.moved.join(', ')}. In Next.js a page is only a route at `
+          + 'src/app/<segment>/page.tsx, an API handler only at src/app/api/<name>/route.ts, and '
+          + 'components and libraries live under src/. A file written outside src/ builds fine and '
+          + 'is never served, which is the hardest kind of wrong to notice. Write the rest there '
+          + 'directly.\n'
+        : '') +
       (relinked.length
         ? `\nFixed in ${relinked.join(', ')}: links that began with "${path.basename(target.abs)}/". ` +
           'Paths in "files" are relative to the project root, but a link inside a page is ' +
