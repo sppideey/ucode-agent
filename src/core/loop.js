@@ -19,6 +19,7 @@ import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { LogWatch } from './livelog.js';
 import { checkHtml } from './htmlcheck.js';
 import { runningServers } from '../tools/shell.js';
+import { unprefixOwnFolder } from './relink.js';
 import { beginTurn, undoTurn, changedCount } from './undo.js';
 import { spawn } from 'node:child_process';
 
@@ -1912,6 +1913,17 @@ export class Agent {
     if (!changed.length) return null;
 
     const root = path.resolve(this.cwd);
+
+    // A page that links to its own folder, whoever wrote it. create_app fixes
+    // the files it is handed, but an app written across several calls — a
+    // scaffold, then two edits — reintroduces the prefix on the next write,
+    // and nothing was watching after the first one. The page then loads no
+    // stylesheet and no script, which is the difference between an app and a
+    // wall of unstyled markup, so it is corrected wherever it turns up.
+    const relinked = await unprefixOwnFolder(root, changed);
+    if (relinked.length) {
+      this.ui.toolCall(`Fixing self-referencing links in ${relinked.join(', ')}`);
+    }
     const tsRoots = new Set();
     const singles = [];
     const problems = [];
