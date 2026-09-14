@@ -103,6 +103,9 @@ const SILENT = new Set(['update_plan']);
 const MAX_FIX_ROUNDS = 3;
 
 /** Files worth checking after they change. */
+/** A file with a page in it — something a browser can be pointed at. */
+const PAGE = /\.(?:html?|tsx|jsx)$/i;
+
 const CHECKABLE = /\.(?:[cm]?[jt]sx?|py|html?)$/i;
 
 /** Where TypeScript keeps what it learned, so the next check is a quick one. */
@@ -1082,6 +1085,8 @@ export class Agent {
     // /undo can put the whole turn back.
     beginTurn();
     this.lookedThisTurn = false;
+    this.reads = new Map();
+    this.declines = 0;
     forgetReviews(); // a new request: its apps get a fresh design review
     const images = await this.attachImages(input);
     this.push(images.length
@@ -1641,7 +1646,14 @@ export class Agent {
     // changed so far; the automatic check at the end would only repeat it.
     if (call.name === 'run_command' && out.exitCode === 0 &&
         /(?:next build|npm run build|pnpm (?:run )?build|tsc)/.test(call.args?.command ?? '')) {
+      // The pages stay. A build proves the project compiles, which is not the
+      // same claim as the page working — and clearing everything here meant a
+      // Next.js app, where a passing `npm run build` is part of every turn,
+      // never reached the look at all. That is the one check that opens the
+      // thing and presses its buttons, skipped on the whole framework.
+      const pages = [...(this.sinceCheck ?? [])].filter((f) => PAGE.test(f));
       this.sinceCheck?.clear();
+      for (const p of pages) this.sinceCheck?.add(p);
     }
     if (!QUIET.has(call.name)) this.ui.toolResult(out.summary);
     // The change as its two numbers, not as a copy of the file. The diff rows
@@ -1670,11 +1682,32 @@ export class Agent {
     // user made, and anything that actually failed, still shows.
     if (err instanceof Declined) this.ui.toolFailed('declined');
     else if (err.kind !== 'bad_args') this.ui.toolFailed(`${err.kind}: ${err.failed}`);
+
+    // Declines that keep coming are not decisions, they are a wall.
+    //
+    // A traced build ran 250 steps and 32 minutes before dying on the step
+    // limit because every command it tried was declined — a piped session
+    // cannot answer "go ahead? [y/N]", so the answer is always no. The model
+    // read each refusal as being about that command, picked a different one,
+    // and was refused again. Nothing ever told it the refusals were the room
+    // rather than the request.
+    //
+    // Two are a person saying no to two things. The third is the wall, and it
+    // is worth naming, because the way out is to finish without commands
+    // rather than to keep hunting for one that is allowed.
+    this.declines = err instanceof Declined ? (this.declines ?? 0) + 1 : 0;
     this.push({
       role: 'tool',
       toolCallId: call.id,
       name: call.name,
-      content: err.forModel() + (err instanceof Declined ? '' : this.stuckNote(call, { err })),
+      content: err.forModel()
+        + (err instanceof Declined ? '' : this.stuckNote(call, { err }))
+        + (this.declines >= 3
+          ? '\n\nThat is the third command declined in a row. They are not being refused one by one — '
+            + 'nothing can be run in this session at all, and the next one will be declined too. '
+            + 'Stop trying to run things: finish the work with the files you have, and say plainly '
+            + 'in your reply which steps someone will need to run themselves.'
+          : ''),
     });
     return err.kind === 'bad_args';
   }
@@ -1703,6 +1736,34 @@ export class Agent {
         failed: `${call.name} is not available${this.ui.mode === 'plan' ? ' in plan mode' : ' in this project'}.`,
         fix: `Use one of the tools you were given: ${[...this.offering ?? []].join(', ')}.`,
       });
+    }
+
+    // Reading the same unchanged file over and over.
+    //
+    // A traced build of a one-page app spent 53 of its 80 tool calls on
+    // read_file, most of them the same handful of files again and again — six
+    // seconds and a few thousand tokens each, for text that was already in the
+    // conversation. The prompt has asked it not to since 1.27; asking is not
+    // working, so the third read of a file nothing has written to since says
+    // so instead of sending the file a third time.
+    //
+    // Two reads are left alone: the first is the work, and the second is
+    // usually a fair re-check after an edit. Only the third is a loop. And it
+    // is keyed on the file being untouched since — the moment anything writes
+    // to it, the count starts again and a real re-read goes through.
+    if (call.name === 'read_file' && call.args?.path) {
+      const key = String(call.args.path);
+      const seen = (this.reads ??= new Map()).get(key) ?? 0;
+      if (seen >= 2 && !this.sinceCheck?.has(key)) {
+        this.reads.set(key, seen + 1);
+        return {
+          content: `You have already read ${key} ${seen} times this turn and nothing has written to it since, ` +
+          'so its contents are unchanged and already above. Use what is there. If you need a part ' +
+          'you have lost, say which and read the files you still need together in one read_files.',
+          summary: 'unchanged since you last read it',
+        };
+      }
+      this.reads.set(key, seen + 1);
     }
 
     if (call.name === 'load_skill') return this.loadSkill(call.args?.name);
@@ -2036,7 +2097,7 @@ export class Agent {
   async lookOnceThisTurn(root, changed) {
     if (this.lookedThisTurn) return null;
 
-    const pages = [...changed].filter((f) => /\.(?:html?|tsx|jsx)$/i.test(f));
+    const pages = [...changed].filter((f) => PAGE.test(f));
     if (!pages.length) return null;
     this.lookedThisTurn = true;
 
@@ -2056,7 +2117,12 @@ export class Agent {
       const html = pages.find((f) => /\.html?$/i.test(f));
       if (!html) return null;
       return await withStaticServer(path.dirname(path.resolve(root, html)), look);
-    } catch {
+    } catch (err) {
+      // Say so, quietly, rather than skipping in silence. A browser that will
+      // not start is a reason to carry on without the look — but a check that
+      // stops running and never mentions it is worse than one that was never
+      // written, because everything downstream still believes it ran.
+      this.ui.note(`could not open the app to check it: ${String(err?.failed ?? err?.message ?? err).split('\n')[0]}`);
       return null;
     }
   }
