@@ -14,6 +14,7 @@
  */
 
 import { promises as fs } from 'node:fs';
+import fsSync from 'node:fs';
 import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
 import { ask } from '../core/provider.js';
@@ -269,6 +270,42 @@ async function useTheApp(page) {
 
   if (!tried.length) return null;
   return { tried, worked: moved(before, after) };
+}
+
+/**
+ * Serve a folder over http just long enough to look at it.
+ *
+ * The default starter has no dev server — three files that open straight from
+ * disk — so there was nothing for the checker to point at, and the most
+ * thorough thing ucode runs could not run on the apps it makes most often. A
+ * static server on an ephemeral port costs nothing and closes again the
+ * moment the look is done.
+ */
+export async function withStaticServer(dir, fn) {
+  const http = await import('node:http');
+  const root = path.resolve(dir);
+  const types = {
+    '.html': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
+    '.json': 'application/json', '.svg': 'image/svg+xml', '.png': 'image/png',
+  };
+
+  const server = http.createServer((req, res) => {
+    const rel = (req.url === '/' ? '/index.html' : req.url).split('?')[0];
+    const file = path.join(root, decodeURIComponent(rel));
+    if (!file.startsWith(root)) { res.writeHead(403); res.end(); return; }
+    fsSync.readFile(file, (err, buf) => {
+      if (err) { res.writeHead(404); res.end('not found'); return; }
+      res.writeHead(200, { 'content-type': types[path.extname(file).toLowerCase()] ?? 'text/plain' });
+      res.end(buf);
+    });
+  });
+
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  try {
+    return await fn(`http://127.0.0.1:${server.address().port}`);
+  } finally {
+    server.close();
+  }
 }
 
 export async function lookAtApp({ url, paths = ['/'] }) {

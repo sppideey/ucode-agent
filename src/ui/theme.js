@@ -481,10 +481,16 @@ export const groupTarget = (label) => String(label ?? '').trim().split(/\s+/).sl
  * asLabel() already: run that over this and its regexes would be reading
  * escape sequences instead of the last word.
  */
-export function runLine({ label, count = 1, targets = [], added = 0, removed = 0 }) {
+export function runLine({ label, count = 1, targets = [], added = 0, removed = 0, stat = '' }) {
+  // What came of the step, in the same place a change puts its two numbers:
+  // on the line that named the step, never underneath it. A look that found
+  // three things to fix is the one fact worth carrying out of a look, and
+  // without it the most thorough check ucode runs is the quietest thing on
+  // screen — it opens the app at two widths, screenshots both and has them
+  // reviewed, and said nothing about any of it.
   const counts = added || removed
     ? ` ${chalk.hex('#3fb950')(`+${added}`)} ${chalk.hex('#f2939c')(`-${removed}`)}`
-    : '';
+    : (stat ? `  ${sky(stat)}` : '');
   if (count <= 1) return `${paintStep(label)}${counts}`;
 
   const g = GROUPS[groupKind(label)];

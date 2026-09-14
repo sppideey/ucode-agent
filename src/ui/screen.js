@@ -60,7 +60,7 @@ export function isLabel(text) {
 export const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
   '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
-  '/stats', '/doctor', '/deploy', '/look',
+  '/stats', '/doctor', '/deploy', '/look', '/undo',
 ];
 
 // ANSI ----------------------------------------------------------------------
@@ -473,6 +473,19 @@ export class Screen {
    * there buries the answer under a copy of something already on disk, so
    * what is kept is the shape of the change: how much arrived, how much left.
    */
+  /**
+   * A one-word verdict on the step that just ran — "clean", "3 to fix".
+   *
+   * Same rule as diffStat: it goes on the line that named the step. Nothing
+   * goes underneath a bullet, and a result line per tool doubles the height of
+   * the transcript to say "ok".
+   */
+  runStat(text) {
+    if (!this.run || !text) return;
+    this.run.stat = text;
+    this.paintRun();
+  }
+
   diffStat({ added = 0, removed = 0 } = {}) {
     if (!this.run) return;
     this.run.added += added;

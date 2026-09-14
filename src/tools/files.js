@@ -8,6 +8,7 @@
  */
 
 import { promises as fs } from 'node:fs';
+import { remember } from '../core/undo.js';
 import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
 import {
@@ -297,6 +298,7 @@ async function put(target, content, { diffMax = 16 } = {}) {
 
   try {
     await fs.mkdir(path.dirname(target.abs), { recursive: true });
+    await remember(target.abs);
     await fs.writeFile(target.abs, content, 'utf8');
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
@@ -555,6 +557,7 @@ export async function editFile({ path: p, old_string, new_string }) {
   });
 
   try {
+    await remember(target.abs);
     await fs.writeFile(target.abs, text, 'utf8');
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
@@ -628,6 +631,7 @@ export async function multiEdit({ path: p, edits }) {
   }
 
   try {
+    await remember(target.abs);
     await fs.writeFile(target.abs, text, 'utf8');
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
@@ -716,7 +720,8 @@ export async function editFiles({ files }) {
 
   for (const { target, text } of planned) {
     try {
-      await fs.writeFile(target.abs, text, 'utf8');
+      await remember(target.abs);
+    await fs.writeFile(target.abs, text, 'utf8');
     } catch (err) {
       throw fsFailure(err, `editing ${target.show}`, target.show);
     }

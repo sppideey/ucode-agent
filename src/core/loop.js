@@ -19,6 +19,7 @@ import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { LogWatch } from './livelog.js';
 import { checkHtml } from './htmlcheck.js';
 import { runningServers } from '../tools/shell.js';
+import { beginTurn, undoTurn, changedCount } from './undo.js';
 import { spawn } from 'node:child_process';
 
 import {
@@ -1076,6 +1077,10 @@ export class Agent {
   }
 
   async turn(input) {
+    // From here every file this turn writes keeps a copy of how it was, so
+    // /undo can put the whole turn back.
+    beginTurn();
+    this.lookedThisTurn = false;
     forgetReviews(); // a new request: its apps get a fresh design review
     const images = await this.attachImages(input);
     this.push(images.length
@@ -1642,6 +1647,14 @@ export class Agent {
     // are still built by the tool — the model reads them in the result — they
     // simply do not go on screen.
     if (out.diff?.length) this.ui.diffStat?.(countDiff(out.diff));
+    // A look is the most thorough thing ucode runs — two widths, screenshots,
+    // a designer's review, and now the app actually driven — and it was the
+    // quietest line on screen, saying only that it had happened. Its verdict
+    // goes on the same line, the way a change carries its two numbers.
+    if (call.name === 'look_at_app') {
+      const found = /^(\d+) problem/.exec(out.summary ?? '');
+      this.ui.runStat?.(found ? `${found[1]} to fix` : 'clean');
+    }
     this.push({ role: 'tool', toolCallId: call.id, name: call.name, content: out.content + this.stuckNote(call, { out }) });
   }
 
@@ -1978,7 +1991,57 @@ export class Agent {
     const live = await this.liveErrors();
     if (live) problems.push(live);
 
+    // Then look at it, in the same pass that type-checks — not when the model
+    // remembers to. A check that runs only when it is asked for reports
+    // nothing on exactly the builds that needed it, and this is the only one
+    // that opens the page, presses its buttons and finds out whether any of it
+    // actually works.
+    if (!problems.length) {
+      const seen = await this.lookOnceThisTurn(root, changed);
+      if (seen) problems.push(seen);
+    }
+
     return problems.length ? problems.join('\n\n') : null;
+  }
+
+  /**
+   * Open what was just built and report what is wrong with it, once a turn.
+   *
+   * Points at a dev server when one is running; otherwise serves the folder
+   * holding the page that changed, which is the only way the default
+   * three-file starter gets looked at at all — it has no server to point at.
+   * Only for a turn that touched something with a page in it: there is nothing
+   * to open after a change to a utility module.
+   *
+   * Never throws. A browser that will not start is a reason to skip the look,
+   * never a reason to fail the turn that built the app.
+   */
+  async lookOnceThisTurn(root, changed) {
+    if (this.lookedThisTurn) return null;
+
+    const pages = [...changed].filter((f) => /\.(?:html?|tsx|jsx)$/i.test(f));
+    if (!pages.length) return null;
+    this.lookedThisTurn = true;
+
+    try {
+      const { lookAtApp, withStaticServer } = await import('../tools/browser.js');
+      const look = async (url) => {
+        this.ui.toolCall(`Looking at ${url} on a phone and a desktop`);
+        const out = await lookAtApp({ url });
+        const found = /^(\d+) problem/.exec(out.summary ?? '');
+        this.ui.runStat?.(found ? `${found[1]} to fix` : 'clean');
+        return found ? `I opened the app and looked at it:\n\n${out.content}` : null;
+      };
+
+      const server = runningServers().at(-1);
+      if (server?.url) return await look(server.url);
+
+      const html = pages.find((f) => /\.html?$/i.test(f));
+      if (!html) return null;
+      return await withStaticServer(path.dirname(path.resolve(root, html)), look);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2145,6 +2208,7 @@ export class Agent {
       case '/search':   return this.cmdSearch(arg);
       case '/copy':     return this.cmdCopy();
       case '/stats':    return this.cmdStats();
+      case '/undo':     return this.cmdUndo();
       case '/doctor':   return this.cmdDoctor();
       case '/look':     return this.cmdLook(arg);
       case '/deploy':   return this.cmdDeploy(arg);
@@ -2187,9 +2251,33 @@ ${out.content}` });
     }
   }
 
+  /**
+   * Put every file the last turn wrote back the way it was.
+   *
+   * The one thing an agent that edits your files on its own has to have. It
+   * covers the last turn only — the state you want back is almost always the
+   * one that just happened — and it says how many files it touched rather than
+   * listing them, the way everything else here reports work.
+   */
+  async cmdUndo() {
+    const count = changedCount();
+    if (!count) {
+      this.ui.note('nothing to undo — the last turn changed no files.');
+      return;
+    }
+
+    const { restored, removed, failed } = await undoTurn();
+    const parts = [];
+    if (restored.length) parts.push(`${restored.length} file${restored.length === 1 ? '' : 's'} put back`);
+    if (removed.length) parts.push(`${removed.length} removed`);
+    this.ui.write(`  ${theme.ok('✓')} ${parts.join(', ') || 'nothing to do'}`);
+    for (const f of failed) this.ui.write(theme.error(`  could not undo ${f}`));
+  }
+
   cmdHelp() {
     const rows = [
       ['/help', 'this list'],
+      ['/undo', 'put back every file the last turn changed'],
       ['/stats', 'time, steps and tokens this session'],
       ['/doctor', 'check that everything ucode needs is working'],
       ['/look [url]', 'open the running app and report what is on the page'],
