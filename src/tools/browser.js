@@ -179,6 +179,81 @@ export function forgetReviews() {
   reviews.clear();
 }
 
+
+/**
+ * Text typed into the app while checking it. Distinctive enough to recognise
+ * in a screenshot, and obviously not something a user wrote.
+ */
+const PROBE_TEXT = 'ucode check';
+
+/** Did anything at all happen on the page? */
+const moved = (a, b) => a.nodes !== b.nodes || a.text !== b.text || a.stored !== b.stored;
+
+/**
+ * Use the app, rather than only looking at it.
+ *
+ * Everything else here is an inspection: overflow, labels, broken images,
+ * console errors on load. All of it passes on an app whose Add button does
+ * nothing, because a page with dead JavaScript still renders, still has good
+ * contrast and still has no console errors — it simply does not work. Nothing
+ * in the harness ever pressed anything, so the model was never told, and never
+ * fixed it.
+ *
+ * So: type into the first text field, press Enter, and if that changed nothing,
+ * click the first button. Then look at whether the page has more nodes, more
+ * text, or more in localStorage than it did. Any of those moving means the core
+ * loop is wired up. None of them moving, on a page that has controls to press,
+ * means it is not.
+ *
+ * Real keyboard and mouse input through the driver, never synthetic DOM events:
+ * an implicit form submit does not fire for a dispatched event, which would
+ * report a working form as dead.
+ *
+ * A page with nothing to press — a landing page, a chart, a page of prose — is
+ * not exercised and not judged. Returning null there is the difference between
+ * a check and a false accusation.
+ */
+async function useTheApp(page) {
+  const snapshot = () => page.evaluate(() => ({
+    nodes: document.body.querySelectorAll('*').length,
+    text: document.body.innerText.replace(/\s+/g, ' ').trim().length,
+    stored: (() => { try { return JSON.stringify(localStorage).length; } catch { return 0; } })(),
+  }));
+
+  const before = await snapshot().catch(() => null);
+  if (!before) return null;
+  const tried = [];
+
+  // A field and the Enter key: the core loop of most one-page apps.
+  const field = page.locator('input[type="text"], input[type="search"], input:not([type]), textarea').first();
+  if (await field.count().catch(() => 0)) {
+    const ok = await field.fill(PROBE_TEXT, { timeout: 2_000 }).then(() => true).catch(() => false);
+    if (ok) {
+      await field.press('Enter', { timeout: 2_000 }).catch(() => {});
+      await page.waitForTimeout(300);
+      tried.push('typed into the first field and pressed Enter');
+    }
+  }
+
+  let after = await snapshot().catch(() => before);
+  if (tried.length && moved(before, after)) return { tried, worked: true };
+
+  // Nothing moved, so try the other half of the same pattern.
+  const button = page.locator('button:not([disabled]), input[type="submit"], [role="button"]').first();
+  if (await button.count().catch(() => 0)) {
+    const label = (await button.innerText().catch(() => '') || '').trim().replace(/\s+/g, ' ').slice(0, 24);
+    const ok = await button.click({ timeout: 2_000 }).then(() => true).catch(() => false);
+    if (ok) {
+      await page.waitForTimeout(300);
+      tried.push(`clicked ${label ? `"${label}"` : 'the first button'}`);
+      after = await snapshot().catch(() => after);
+    }
+  }
+
+  if (!tried.length) return null;
+  return { tried, worked: moved(before, after) };
+}
+
 export async function lookAtApp({ url, paths = ['/'] }) {
   const base = String(url ?? '').trim().replace(/\/+$/, '');
   if (!LOCAL.test(`${base}/`)) {
@@ -217,6 +292,7 @@ export async function lookAtApp({ url, paths = ['/'] }) {
 
     const target = `${base}${pagePath}`;
     let loadError = null;
+    let used = null;
     try {
       // 'load', not 'networkidle': a dev server holds a hot-reload
       // connection open and polls, so the network may never go quiet and
@@ -246,6 +322,12 @@ export async function lookAtApp({ url, paths = ['/'] }) {
         });
         await fs.writeFile(file, buffer);
         shot = { label: `${pagePath} at ${size.width}px (${size.name})`, dataUrl: `data:image/jpeg;base64,${buffer.toString('base64')}` };
+
+        // Once per look, not once per width: pressing the same button four
+        // times says nothing the first press did not, and costs four seconds.
+        if (size.name === 'desktop' && pagePath === pages[0]) {
+          used = await useTheApp(page).catch(() => null);
+        }
       }
     } catch (err) {
       loadError = `the page broke while being checked: ${String(err.message).split('\n')[0]}`;
@@ -270,11 +352,25 @@ export async function lookAtApp({ url, paths = ['/'] }) {
       if (facts?.noAlt) lines.push(`- ${facts.noAlt} image(s) without alt text.`);
       if (facts?.tiny) lines.push(`- ${facts.tiny} tap target(s) smaller than 32px on a phone.`);
       if (facts?.smallText) lines.push(`- ${facts.smallText} text element(s) under 12px.`);
+      if (used && !used.worked) {
+        lines.push(
+          `- NOTHING HAPPENS WHEN YOU USE IT. I ${used.tried.join(', then ')} — and the page`,
+          '  gained no elements, changed no text and stored nothing. The markup and the styling',
+          '  are there; the behaviour is not wired to them. Find the listener that was never',
+          '  attached, or the handler that throws before it does anything, and fix that first:',
+          '  everything else on this page is decoration until it works.',
+        );
+        problems++;
+      } else if (used) {
+        lines.push(`- Core loop works: I ${used.tried.join(', then ')}, and the page responded.`);
+      }
     }
     if (errors.length) { lines.push('- Console errors:', ...[...new Set(errors)].slice(0, 6).map((e) => `  - ${e}`)); problems++; }
     if (failed.length) { lines.push('- Failed requests:', ...[...new Set(failed)].slice(0, 6).map((f) => `  - ${f}`)); problems++; }
     if (lines.length === 2 && !loadError) lines.push('- No errors, no overflow, nothing unlabeled.');
-    const broken = Boolean(loadError || errors.length || facts?.empty);
+    // A dead core loop counts as broken: a screenshot of an app that does not
+    // work is not worth a paragraph on its typography.
+    const broken = Boolean(loadError || errors.length || facts?.empty || (used && !used.worked));
     return { section: lines.join('\n'), shot, problems, broken };
   })));
 

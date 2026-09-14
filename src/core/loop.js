@@ -1931,7 +1931,12 @@ export class Agent {
     }
 
     const check = async (label, command, cwd) => {
-      this.ui.toolCall(label);
+      // The spinner only, never a transcript line. This pass runs after the
+      // model has finished speaking, so a step logged here is the last thing
+      // left on screen — the session ends on "Checking tasker/app.js" instead
+      // of on the answer, and it reads as though something was still going
+      // when it stopped. A check that passes has nothing to say, and one that
+      // fails goes back to the model, which says it in words.
       this.ui.startSpinner(label);
       const { out, err } = await this.execute({
         id: 'check', name: 'run_command',
