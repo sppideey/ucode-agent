@@ -594,7 +594,7 @@ export class Screen {
   narrate(text) {
     const line = asLabel(text);
     if (!line) return;
-    this.push(dim(`  ⋮ ${clip(line, this.width() - 6)}`));
+    this.push(`${dim('⋮')} ${dim(clip(line, this.width() - 4))}`);
     this.updateSpinner(line);
   }
 

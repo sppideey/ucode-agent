@@ -269,7 +269,25 @@ async function useTheApp(page) {
   }
 
   if (!tried.length) return null;
-  return { tried, worked: moved(before, after) };
+  if (!moved(before, after)) return { tried, worked: false };
+
+  // It worked. Did any of it last?
+  //
+  // An app that writes to localStorage and never reads it back looks perfect
+  // for as long as you stay on the page, and loses everything the moment
+  // anyone refreshes. Only asked when the app actually stored something —
+  // otherwise no persistence was intended, and reporting its absence would be
+  // inventing a requirement nobody asked for.
+  if (after.stored > before.stored) {
+    try {
+      await page.reload({ waitUntil: 'load', timeout: 20_000 });
+      await page.waitForTimeout(400);
+      const reloaded = await snapshot();
+      if (reloaded.text <= before.text) return { tried, worked: true, lost: true };
+    } catch { /* a reload that will not happen is not evidence of anything */ }
+  }
+
+  return { tried, worked: true };
 }
 
 /**
@@ -415,8 +433,16 @@ export async function lookAtApp({ url, paths = ['/'] }) {
           '  everything else on this page is decoration until it works.',
         );
         problems++;
+      } else if (used?.lost) {
+        lines.push(
+          `- It works until you refresh. I ${used.tried.join(', then ')}, the page`,
+          '  responded, and it wrote to localStorage — but after a reload it was back to',
+          '  empty. Something is being saved and never read back at start-up. Load the',
+          '  stored state when the page boots, and check it survives a refresh.',
+        );
+        problems++;
       } else if (used) {
-        lines.push(`- Core loop works: I ${used.tried.join(', then ')}, and the page responded.`);
+        lines.push(`- Core loop works: I ${used.tried.join(', then ')}, the page responded, and it survived a reload.`);
       }
     }
     if (errors.length) { lines.push('- Console errors:', ...[...new Set(errors)].slice(0, 6).map((e) => `  - ${e}`)); problems++; }

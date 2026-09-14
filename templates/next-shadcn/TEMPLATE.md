@@ -73,6 +73,31 @@ useEffect(() => { localStorage.setItem("bill", bill); }, [bill]);
 // next-themes — there is no "next-themes/dist/types". Import from "next-themes".
 ```
 
+## Where a file goes
+
+Routing is folder-based and it is **not** flexible: a page is only a route if
+it sits at `src/app/<segment>/page.tsx`. A `page.tsx` anywhere else is an
+ordinary file that nothing ever renders.
+
+```
+src/
+  app/
+    layout.tsx            the shell, already written
+    page.tsx              /
+    globals.css           the design tokens — re-tint these
+    expenses/page.tsx     /expenses
+    api/expenses/route.ts GET/POST /api/expenses
+  components/
+    expenses/list.tsx     feature components, one per file
+    ui/                   the 33 shadcn primitives, already here
+  lib/
+    store.ts              data, schemas, anything the server owns
+```
+
+Wrong, and it silently does nothing: `expenses/page.tsx` at the project root,
+or `components/` beside `src/` instead of inside it. The app builds, the
+route 404s, and nothing tells you why.
+
 ## Conventions
 
 - Components are named exports — `export function BillInput()` — imported with

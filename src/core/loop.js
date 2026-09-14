@@ -13,7 +13,7 @@
 
 import path from 'node:path';
 import os from 'node:os';
-import { appendFileSync } from 'node:fs';
+import { appendFileSync, existsSync } from 'node:fs';
 import { readFile, access, mkdir } from 'node:fs/promises';
 import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { LogWatch } from './livelog.js';
@@ -1348,6 +1348,7 @@ export class Agent {
       if (streaming) this.ui.streamEnd({ asNarration: narrating, closing });
       else if (reply.text && narrating && isLabel(reply.text)) this.ui.narrate(reply.text);
       else if (reply.text) this.ui.assistant(reply.text, { closing });
+      if (closing && reply.text) this.checkClaims(reply.text);
 
       if (reply.toolCalls.length === 0) {
         // The answer stopped at the provider's output cap rather than at the
@@ -1695,6 +1696,34 @@ export class Agent {
       this.ui.runStat?.(found ? `${found[1]} to fix` : 'clean');
     }
     this.push({ role: 'tool', toolCallId: call.id, name: call.name, content: out.content + this.stuckNote(call, { out }) });
+  }
+
+  /**
+   * Files the closing message points at, checked rather than taken on trust.
+   *
+   * A build told the user it had removed two folders it had not removed. The
+   * same habit sends someone to open a file that was never written. Saying a
+   * thing is done when it is not is the one failure that costs the reader
+   * their time rather than the writer's, and it is cheap to check: a path the
+   * reply names in backticks either exists or it does not.
+   *
+   * Only paths with a file extension, only inside the project, and only a note
+   * on screen — the turn is over by now, so this is for the person reading it,
+   * not another round with the model.
+   */
+  checkClaims(text) {
+    const named = [...String(text).matchAll(/`([\w./-]+\.[a-z]{1,5})`/gi)].map((m) => m[1]);
+    const root = path.resolve(this.cwd);
+
+    const missing = [...new Set(named)].filter((f) => {
+      const abs = path.resolve(root, f);
+      return abs.startsWith(root) && !existsSync(abs);
+    });
+
+    if (missing.length) {
+      const is = missing.length === 1 ? 'is' : 'are';
+      this.ui.note(`mentions ${missing.join(', ')} — ${is} not on disk`);
+    }
   }
 
   /** Show a tool failure, hand it to the model, and say if it was bad arguments. */

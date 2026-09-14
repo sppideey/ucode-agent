@@ -108,6 +108,18 @@ first time; then the server route with the real integration; then the core
 loop UI wired to it; then every state — empty, loading, success, error,
 invalid input; then polish: motion, responsive, copy, title and metadata.
 
+## 5b. Tests, where there is a runner
+
+`next-shadcn` ships vitest and one passing test, so `npm test` works from
+the first minute — add cases for the core loop as you build it, not after, and
+ucode will run the ones that touch whatever you change. Assert behaviour: that
+adding an item puts it in the list, that the total is right, that an empty
+input is refused.
+
+`plain-html` has no runner and installs nothing, by design. Its test is the
+browser check: ucode opens the app, types into the first field, presses Enter
+and clicks the button that submits. Make sure that path is the one that works.
+
 ## 6. Prove it works, then report
 
 `npm run build` type-checks and lints — a build that fails is not done. Start

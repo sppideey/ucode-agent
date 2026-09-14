@@ -155,7 +155,68 @@ export const boxRow = (content, width, paint = blue) =>
 
 /** The string with its colour codes stripped — what the terminal actually shows. */
 export const bare = (s) => String(s).replace(/\x1b\[[0-9;]*m/g, '');
-export const visLen = (s) => bare(s).length;
+
+/**
+ * How many columns one character occupies.
+ *
+ * Not every character is one cell wide, and counting them as though they were
+ * is how a box tears: the right border of a row holding CJK or an emoji lands
+ * one or two columns early, and every frame after it looks broken. It cost us
+ * a crooked credit line in the header for months — and any app whose name the
+ * model writes in Japanese would have done the same to the transcript.
+ *
+ * Three widths. Combining marks and the variation selectors hang off the
+ * character before them and take no room of their own. The wide ranges — CJK,
+ * Hangul, kana, fullwidth forms, and the emoji planes — are drawn two cells
+ * wide by every terminal worth supporting. Everything else is one.
+ *
+ * Ranges rather than a dependency: this is the whole of what a terminal needs,
+ * and a table of every Unicode width would be a megabyte to get the last
+ * fraction of a percent right.
+ */
+export function charWidth(code) {
+  // Zero: combining marks, joiners, variation selectors.
+  if ((code >= 0x0300 && code <= 0x036f)
+    || (code >= 0x200b && code <= 0x200f)
+    || (code >= 0xfe00 && code <= 0xfe0f)
+    || (code >= 0xe0100 && code <= 0xe01ef)
+    || code === 0x200d) return 0;
+
+  // Two: the wide and fullwidth blocks, and the emoji planes.
+  if ((code >= 0x1100 && code <= 0x115f)
+    || (code >= 0x2e80 && code <= 0x303e)
+    || (code >= 0x3041 && code <= 0x33ff)
+    || (code >= 0x3400 && code <= 0x4dbf)
+    || (code >= 0x4e00 && code <= 0x9fff)
+    || (code >= 0xa000 && code <= 0xa4cf)
+    || (code >= 0xac00 && code <= 0xd7a3)
+    || (code >= 0xf900 && code <= 0xfaff)
+    || (code >= 0xfe30 && code <= 0xfe6f)
+    || (code >= 0xff00 && code <= 0xff60)
+    || (code >= 0xffe0 && code <= 0xffe6)
+    || (code >= 0x1f300 && code <= 0x1f64f)
+    || (code >= 0x1f680 && code <= 0x1f6ff)
+    || (code >= 0x1f900 && code <= 0x1f9ff)
+    || (code >= 0x20000 && code <= 0x3fffd)) return 2;
+
+  return 1;
+}
+
+/** The columns a string takes up once its colour codes are discounted. */
+export function visLen(s) {
+  const text = bare(s);
+  let cells = 0;
+  for (let i = 0; i < text.length;) {
+    const cp = text.codePointAt(i);
+    const ch = String.fromCodePoint(cp);
+    i += ch.length;
+    // A variation selector turns the character before it into an emoji, and
+    // an emoji is two cells wide however narrow its text form was.
+    if (text.codePointAt(i) === 0xfe0f) { cells += 2; i += 1; continue; }
+    cells += charWidth(cp);
+  }
+  return cells;
+}
 
 /** The first `width` visible characters, with escape sequences left intact. */
 export function sliceVis(s, width) {
@@ -166,9 +227,17 @@ export function sliceVis(s, width) {
       const m = /^\x1b\[[0-9;]*m/.exec(s.slice(i));
       if (m) { out += m[0]; i += m[0].length - 1; continue; }
     }
-    if (seen >= width) break;
-    out += s[i];
-    seen++;
+    // A wide character that would straddle the edge is left off entirely:
+    // half of one is a replacement glyph in most terminals and a torn border
+    // in the rest.
+    const cp = s.codePointAt(i);
+    const ch = String.fromCodePoint(cp);
+    const selector = s.codePointAt(i + ch.length) === 0xfe0f;
+    const w = selector ? 2 : charWidth(cp);
+    if (seen + w > width) break;
+    out += selector ? ch + String.fromCodePoint(0xfe0f) : ch;
+    i += (selector ? ch.length + 1 : ch.length) - 1;
+    seen += w;
   }
   return out;
 }
@@ -229,8 +298,11 @@ export function wrapAnsi(text, width) {
       }
     }
     if (text[i] === ' ') { lastSpace = line.length; lastSpaceSeen = seen; }
-    line += text[i];
-    seen++;
+    const cp = text.codePointAt(i);
+    const ch = String.fromCodePoint(cp);
+    line += ch;
+    i += ch.length - 1;
+    seen += charWidth(cp);
     if (seen >= width) {
       // Break at a word boundary unless that would leave a stub behind.
       if (lastSpace > 0 && lastSpaceSeen > width * 0.4) flush(lastSpace);
@@ -348,12 +420,16 @@ export function planRows(items) {
   const done = list.filter((i) => i?.done).length;
   const current = list.findIndex((i) => !i?.done);
 
-  const rows = [`  ${progressBar(done, list.length)}  ${sky(`${done}/${list.length}`)}`];
+  // One left edge for the whole transcript: markers in column zero, every
+  // piece of content at column two. The plan used to sit at two and four, so
+  // three different margins ran down the page and the eye had no line to
+  // follow.
+  const rows = [`${progressBar(done, list.length)}  ${sky(`${done}/${list.length}`)}`];
   list.forEach((item, i) => {
     const text = clip(String(item?.text ?? '').trim(), 64);
-    if (item?.done) rows.push(`    ${theme.ok('✓')} ${dim(text)}`);
-    else if (i === current) rows.push(`    ${blue('▸')} ${chalk.white(text)}`);
-    else rows.push(`    ${dim('○')} ${dim(text)}`);
+    if (item?.done) rows.push(`  ${theme.ok('✓')} ${dim(text)}`);
+    else if (i === current) rows.push(`  ${blue('▸')} ${chalk.white(text)}`);
+    else rows.push(`  ${dim('○')} ${dim(text)}`);
   });
   return rows;
 }

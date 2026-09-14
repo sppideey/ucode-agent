@@ -1,6 +1,6 @@
 {
   "name": "ucode-agent",
-  "version": "1.41.1",
+  "version": "1.42.0",
   "description": "ucode - a terminal coding agent that reads, edits and runs your code, on NVIDIA and Cohere models.",
   "type": "module",
   "main": "ucode.js",
@@ -16,7 +16,8 @@
   "scripts": {
     "start": "node ucode.js",
     "test": "node test/run.js",
-    "prepublishOnly": "node scripts/no-bundled-key.js && node test/run.js"
+    "prepublishOnly": "node scripts/no-bundled-key.js && node test/run.js",
+    "hooks": "node scripts/install-hooks.js"
   },
   "repository": {
     "type": "git",

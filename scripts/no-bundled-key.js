@@ -16,8 +16,10 @@ import { readFileSync } from 'node:fs';
 
 if (readFileSync('src/core/provider.js', 'utf8').includes('BUNDLED_KEY')) {
   console.error(
-    '\n  Refusing to publish: an API key is compiled into src/core/provider.js.'
-    + '\n  Remove BUNDLED_KEY, or publish from a branch that never carried it.\n'
+    '\n  Refused: an API key is compiled into src/core/provider.js.'
+    + '\n  Remove BUNDLED_KEY before publishing or committing — a key in a package'
+    + '\n  is read by everyone who installs it, and a key in a commit is there for'
+    + '\n  good the moment the branch is pushed.\n'
   );
   process.exit(1);
 }
