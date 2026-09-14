@@ -795,6 +795,69 @@ function scalarArgs(text) {
   return out;
 }
 
+/**
+ * Rebuild the edits out of a broken edit_file or edit_files call.
+ *
+ * The same problem as a broken write, one level down: an edit carries two
+ * slabs of somebody's source as escaped JSON strings, and one stray character
+ * loses the call. edit_files failed this way three times in a row in a traced
+ * build, at the end of a turn, which is a turn that ends having undone nothing
+ * and fixed nothing.
+ *
+ * Safer than it sounds. Every edit is applied by replaceOnce, which requires
+ * old_string to appear exactly once and refuses otherwise — so an edit
+ * recovered wrongly does not corrupt a file, it fails to match and says so.
+ * The risk of guessing is a clear error; the cost of not guessing is the whole
+ * call. Truncated replies are still refused upstream, where half a string
+ * would mean half a file.
+ *
+ * Each edit is attributed to the nearest "path" before it, which is how
+ * edit_files nests them; edit_file has exactly one of each.
+ */
+export function salvageEdits(text) {
+  const heads = [...text.matchAll(/"old_string"\s*:\s*"/g)];
+  if (!heads.length) return null;
+
+  const paths = [...text.matchAll(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"/g)];
+  const NEW = '"new_string"';
+  const out = [];
+
+  for (let i = 0; i < heads.length; i++) {
+    const oldFrom = heads[i].index + heads[i][0].length;
+    const newKey = text.indexOf(NEW, oldFrom);
+    if (newKey < 0) return null;
+
+    const opens = /^\s*:\s*"/.exec(text.slice(newKey + NEW.length));
+    if (!opens) return null;
+    const newFrom = newKey + NEW.length + opens[0].length;
+
+    // The value runs until whatever structure comes next — the following edit,
+    // or the following file — and the trailing JSON punctuation comes off.
+    const nextEdit = i + 1 < heads.length ? heads[i + 1].index : text.length;
+    const nextPath = paths.find((m) => m.index > newFrom)?.index ?? text.length;
+    const strip = (v) => v.replace(/"[\s,{}[\]]*$/, '');
+
+    const old_string = unescapeLoose(strip(text.slice(oldFrom, newKey)));
+    const new_string = unescapeLoose(strip(text.slice(newFrom, Math.min(nextEdit, nextPath))));
+    const owner = paths.filter((m) => m.index < heads[i].index).pop();
+
+    if (!owner || !old_string) return null;
+    out.push({ path: unescapeLoose(owner[1]), old_string, new_string });
+  }
+
+  return out.length ? out : null;
+}
+
+/** The same edits, grouped under their file, which is edit_files' own shape. */
+export function groupEdits(edits) {
+  const byPath = new Map();
+  for (const { path, old_string, new_string } of edits) {
+    if (!byPath.has(path)) byPath.set(path, []);
+    byPath.get(path).push({ old_string, new_string });
+  }
+  return [...byPath].map(([path, list]) => ({ path, edits: list }));
+}
+
 export function salvageWrites(text) {
   const heads = [...text.matchAll(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"content"\s*:\s*"/g)];
   if (!heads.length) return null;
@@ -866,6 +929,18 @@ export function readCall({ id, name, raw, cutOff = false }) {
           return call;
         }
       } catch { /* beyond general repair — try the file-write shape next */ }
+
+      if (name === 'edit_file' || name === 'edit_files' || name === 'multi_edit') {
+        const edits = salvageEdits(text);
+        if (edits) {
+          if (name === 'edit_file') call.args = edits[0];
+          else if (name === 'multi_edit') {
+            call.args = { path: edits[0].path, edits: edits.map(({ old_string, new_string }) => ({ old_string, new_string })) };
+          } else call.args = { files: groupEdits(edits) };
+          call.repaired = true;
+          return call;
+        }
+      }
 
       const salvaged = SALVAGEABLE.has(name) ? salvageWrites(text) : null;
       if (salvaged) {

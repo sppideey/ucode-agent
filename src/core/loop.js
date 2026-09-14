@@ -2008,10 +2008,15 @@ export class Agent {
     // nothing on exactly the builds that needed it, and this is the only one
     // that opens the page, presses its buttons and finds out whether any of it
     // actually works.
-    if (!problems.length) {
-      const seen = await this.lookOnceThisTurn(root, changed);
-      if (seen) problems.push(seen);
-    }
+    // Whatever else is wrong. It used to wait until everything else was clean,
+    // which meant the one check that opens the page and presses its buttons
+    // was skipped on exactly the builds going badly — and a type error and a
+    // dead button are two separate things to fix, so finding them in one pass
+    // costs a round trip less than finding them in two. The visual review
+    // inside the look still stands itself down on a page that is broken;
+    // reviewing the typography of an error overlay helps nobody.
+    const seen = await this.lookOnceThisTurn(root, changed);
+    if (seen) problems.push(seen);
 
     return problems.length ? problems.join('\n\n') : null;
   }
