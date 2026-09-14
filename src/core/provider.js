@@ -765,6 +765,36 @@ async function streamed(request, opts, id) {
  * "path", then "content", then either the next file or the end. Splitting on
  * that shape and escaping the stray quotes gets every file back.
  */
+/**
+ * Which calls can be rebuilt out of broken JSON.
+ *
+ * All three carry file contents — hundreds of lines of HTML, CSS and
+ * JavaScript escaped into a JSON string — which is the one argument shape a
+ * model gets wrong often enough to matter. Everything else is short enough
+ * that a parse failure is a real mistake, worth reporting rather than guessing
+ * around.
+ */
+const SALVAGEABLE = new Set(['write_file', 'batch_write', 'create_app']);
+
+/**
+ * The plain string arguments sitting beside a files array, read off the raw
+ * text when the object as a whole will not parse.
+ *
+ * Only the keys create_app needs, and only from before the files begin, so a
+ * "name" belonging to something nested inside a file cannot be mistaken for
+ * the app's own.
+ */
+function scalarArgs(text) {
+  const at = text.search(/"files"\s*:/);
+  const head = at > 0 ? text.slice(0, at) : text;
+  const out = {};
+  for (const key of ['folder', 'name', 'description', 'template', 'design']) {
+    const hit = new RegExp(`"${key}"\\s*:\\s*"((?:[^"\\\\]|\\\\.)*)"`).exec(head);
+    if (hit) out[key] = hit[1].replace(/\\(["\\/])/g, '$1');
+  }
+  return out;
+}
+
 export function salvageWrites(text) {
   const heads = [...text.matchAll(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"\s*,\s*"content"\s*:\s*"/g)];
   if (!heads.length) return null;
@@ -837,9 +867,17 @@ export function readCall({ id, name, raw, cutOff = false }) {
         }
       } catch { /* beyond general repair — try the file-write shape next */ }
 
-      const salvaged = (name === 'write_file' || name === 'batch_write') ? salvageWrites(text) : null;
+      const salvaged = SALVAGEABLE.has(name) ? salvageWrites(text) : null;
       if (salvaged) {
-        call.args = name === 'write_file' ? salvaged[0] : { files: salvaged };
+        if (name === 'write_file') call.args = salvaged[0];
+        // create_app carries the app in the same { path, content } shape, with
+        // a few plain strings beside it. Losing the entire call because one of
+        // several hundred lines of HTML held a raw newline is how a build ends
+        // with no files at all — which is what it did: refused three times,
+        // the folder never created, the turn over in sixty-six seconds having
+        // produced nothing. The scalars are read back off the same text.
+        else if (name === 'create_app') call.args = { ...scalarArgs(text), files: salvaged };
+        else call.args = { files: salvaged };
         call.repaired = true;
         return call;
       }

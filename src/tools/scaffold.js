@@ -131,6 +131,48 @@ const TOKEN_FILE = { 'plain-html': 'styles.css' };
  * a stylesheet with no :root variables at all gets the starter's block put
  * back above it, where every rule underneath can reach it.
  */
+const ASSET_REF = /\b(href|src)=("|')(?!https?:|\/\/|\/|data:|#|mailto:|tel:)([^"']+)\2/g;
+
+/**
+ * Take the app's own folder back out of its own links.
+ *
+ * create_app wants paths relative to the project root — "todo/index.html" —
+ * because that is where every other file tool works from. The model then
+ * carries the same prefix into the markup and writes
+ * <link href="todo/styles.css"> inside todo/index.html, where it resolves to
+ * todo/todo/styles.css and 404s. The page comes up as bare markup with no
+ * stylesheet and no script: no design, no behaviour, nothing in the console
+ * but two failed requests.
+ *
+ * It is the tool's own convention leaking into the file, so the tool takes it
+ * back out. Only a leading "<folder>/" on a relative reference, which inside
+ * that folder is always wrong — absolute paths, URLs, data: and anchors are
+ * left exactly as they are.
+ */
+async function unprefixOwnFolder(appDir, written) {
+  const prefix = `${path.basename(appDir)}/`;
+  const fixed = [];
+
+  for (const abs of written) {
+    if (!/\.html?$/i.test(abs)) continue;
+    const text = await fs.readFile(abs, 'utf8').catch(() => null);
+    if (text === null) continue;
+
+    let hits = 0;
+    const next = text.replace(ASSET_REF, (all, attr, quote, value) => {
+      if (!value.startsWith(prefix)) return all;
+      hits++;
+      return `${attr}=${quote}${value.slice(prefix.length)}${quote}`;
+    });
+
+    if (hits) {
+      await fs.writeFile(abs, next, 'utf8');
+      fixed.push(`${path.relative(appDir, abs).split(path.sep).join('/')} (${hits})`);
+    }
+  }
+  return fixed;
+}
+
 async function keepDesignTokens(appDir, template, written, starterCss) {
   const rel = TOKEN_FILE[template];
   if (!rel || !starterCss) return null;
@@ -319,6 +361,7 @@ export async function createApp({ folder, name, description, template = 'plain-h
   const wrote = mine.length ? await batchWrite({ files: mine }) : null;
   const written = new Set(mine.map((f) => resolveIn(f.path, 'create_app', 'files').abs));
   const keptTokens = await keepDesignTokens(target.abs, template, written, starterCss);
+  const relinked = await unprefixOwnFolder(target.abs, written);
 
   // The starter's own files, in full, so there is never a reason to read them
   // back — and only the ones this call did not already write over. A read is
@@ -335,6 +378,13 @@ export async function createApp({ folder, name, description, template = 'plain-h
     `Created ${target.show} from the ${template} starter — ${copied.length} files, already known to build.\n` +
       (look ? `Design: the ${look.name} preset (${look.summary}), font ${look.fonts?.sans ?? 'Geist'}.\n` : '') +
       (wrote ? `\nYour ${mine.length} file${mine.length === 1 ? '' : 's'}:\n${wrote.content}\n` : '') +
+      (relinked.length
+        ? `\nFixed in ${relinked.join(', ')}: links that began with "${path.basename(target.abs)}/". ` +
+          'Paths in "files" are relative to the project root, but a link inside a page is ' +
+          'relative to that page — so "index.html" beside "styles.css" links to it as ' +
+          '"styles.css", never "app/styles.css". Written that way the stylesheet and the ' +
+          'script 404 and the page comes up as bare markup.\n'
+        : '') +
       (keptTokens
         ? `\nYour ${keptTokens} arrived with no :root block, so the starter's was kept above it — ` +
           'the palette, the spacing scale (--s1 to --s5), the radius and the motion timings. ' +

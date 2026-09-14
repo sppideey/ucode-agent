@@ -238,15 +238,32 @@ async function useTheApp(page) {
   let after = await snapshot().catch(() => before);
   if (tried.length && moved(before, after)) return { tried, worked: true };
 
-  // Nothing moved, so try the other half of the same pattern.
-  const button = page.locator('button:not([disabled]), input[type="submit"], [role="button"]').first();
-  if (await button.count().catch(() => 0)) {
-    const label = (await button.innerText().catch(() => '') || '').trim().replace(/\s+/g, ' ').slice(0, 24);
-    const ok = await button.click({ timeout: 2_000 }).then(() => true).catch(() => false);
-    if (ok) {
+  // Nothing moved, so try the other half of the same pattern — the button that
+  // submits, before any other. Taking simply the first button in the document
+  // finds the theme toggle in the header, clicks it, and reports a working app
+  // as dead because switching to dark mode adds no elements.
+  const candidates = [
+    page.locator('form button[type="submit"], form input[type="submit"], button[type="submit"], input[type="submit"]'),
+    page.locator('form button:not([disabled])'),
+    page.locator('button:not([disabled]), [role="button"]'),
+  ];
+
+  const pressed = new Set();
+  for (const group of candidates) {
+    const count = Math.min(await group.count().catch(() => 0), 3);
+    for (let i = 0; i < count; i++) {
+      const button = group.nth(i);
+      const label = (await button.innerText().catch(() => '') || '').trim().replace(/\s+/g, ' ').slice(0, 24);
+      if (pressed.has(label || `#${i}`)) continue;
+      pressed.add(label || `#${i}`);
+
+      const ok = await button.click({ timeout: 2_000 }).then(() => true).catch(() => false);
+      if (!ok) continue;
       await page.waitForTimeout(300);
-      tried.push(`clicked ${label ? `"${label}"` : 'the first button'}`);
+      tried.push(`clicked ${label ? `"${label}"` : 'a button'}`);
+
       after = await snapshot().catch(() => after);
+      if (moved(before, after)) return { tried, worked: true };
     }
   }
 
