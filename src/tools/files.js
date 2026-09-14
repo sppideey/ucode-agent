@@ -454,12 +454,13 @@ function replaceOnce(text, { old_string, new_string }, { show, attempted, label 
       fix: 'edit_file replaces existing text. Use write_file to create a file.',
     });
   }
+  // An edit whose two halves are the same asks for the file to stay as it is,
+  // which it will. Refusing that was a hard failure, and the model answered it
+  // by sending the same edit again — the stuck detector carries a special case
+  // for exactly this loop. Saying "already done" ends it in one step.
   if (old_string === new_string) {
-    throw new ToolFailure({
-      kind: 'bad_args', attempted,
-      failed: `${prefix}old_string and new_string are identical, so the edit would change nothing.`,
-      fix: 'Set new_string to the text you actually want there.',
-    });
+    const found = text.indexOf(old_string);
+    return { text, at: found < 0 ? 1 : toLines(text.slice(0, found)).length, loose: false };
   }
 
   // Models write \n. A file checked out on Windows is often \r\n, and then an

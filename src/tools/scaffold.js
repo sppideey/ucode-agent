@@ -304,12 +304,21 @@ export async function createApp({ folder, name, description, template = 'plain-h
   } catch {
     existing = [];
   }
-  if (existing.length) {
+  // A folder with something already in it, and the whole app passed in
+  // alongside: that is the second attempt at a build that half happened.
+  // Refusing it is how a Next.js build spent two calls being told no and then
+  // started over from nothing. The starter is already on disk — take the files
+  // and write them into it.
+  //
+  // With no files it is still a refusal, because then there is nothing to do
+  // but copy a starter over work that is already there.
+  const adopt = existing.length > 0 && given.length > 0;
+  if (existing.length && !adopt) {
     throw new ToolFailure({
       kind: 'not_empty',
       attempted,
       failed: `${target.show} already has ${existing.length} item(s) in it: ${existing.slice(0, 5).join(', ')}.`,
-      fix: 'Pick a new folder name. If this folder is the app from an earlier attempt, work in it instead of creating it again.',
+      fix: 'Pick a new folder name, or pass the app in "files" to write it into the folder that is already there.',
     });
   }
 
@@ -320,10 +329,10 @@ export async function createApp({ folder, name, description, template = 'plain-h
     __APP_DESCRIPTION__: plain(description) || display,
   };
 
-  const copied = await copyTree(path.join(TEMPLATES, template), target.abs, fill);
+  const copied = adopt ? [] : await copyTree(path.join(TEMPLATES, template), target.abs, fill);
   // Next.js serves static files from public/; a plain page has no such place
   // and an empty folder in a three-file app is clutter.
-  if (template !== 'plain-html') await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
+  if (!adopt && template !== 'plain-html') await fs.mkdir(path.join(target.abs, 'public'), { recursive: true });
   const look = await applyDesign(target.abs, design);
 
   // Read before the app's own files land on top of it, so the tokens can be
@@ -336,7 +345,7 @@ export async function createApp({ folder, name, description, template = 'plain-h
   // tree in, which is seconds where npm is a minute. Otherwise install as
   // usual, and keep the result so the next app is instant.
   let linked = 0;
-  const needsInstall = template !== 'plain-html';
+  const needsInstall = !adopt && template !== 'plain-html';
   if (install && needsInstall) {
     // Keyed on the starter's lockfile, which is the same for every app made
     // from it — the app's own is rewritten by npm as it installs.

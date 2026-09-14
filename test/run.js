@@ -544,8 +544,13 @@ await test('a miss points at where the first line does appear', async () => {
   ok(err.failed.includes('line 1'), `should name the line: ${err.failed}`);
 });
 
-await test('an edit that changes nothing is refused', async () => {
-  await throws(() => editFile({ path: 'c.js', old_string: 'same', new_string: 'same' }), 'bad_args');
+await test('an edit that changes nothing is a no-op, not a failure', async () => {
+  // It used to be a hard refusal, and the model answered it by sending the
+  // same edit again — the stuck detector still carries a special case for that
+  // loop. Asking for the file to stay as it is is a request the file can meet.
+  await write('same.js', 'let a = 1;\n');
+  await editFile({ path: 'same.js', old_string: 'let a = 1;', new_string: 'let a = 1;' });
+  eq(await read('same.js'), 'let a = 1;\n', 'and the file is untouched');
 });
 
 await test('multi_edit applies in order', async () => {

@@ -27,7 +27,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                                                           v1.29.0
+                                                                           v1.36.0
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box
@@ -107,12 +107,14 @@ of what ucode is asked to do, and it answers far sooner than the big reasoning
 models. Switch to Ultra when a problem needs the million-token window more than
 the speed.
 
-**A busy model never stops a build.** Free endpoints are shared, and "too many
-requests" is routine. ucode waits it out with growing pauses, and if the model
-stays busy it carries on with the next one — North Mini Code, then Nemotron 3.5
-Lightning, Super, Ultra — from exactly where it was, and tells you it switched.
-If every model is busy at once it waits a minute and goes round again. Your
-chosen model gets another go a few minutes later.
+**The model you chose is the model you keep.** Free endpoints are shared and
+"too many requests" is routine, so ucode waits it out with growing pauses and
+comes back to the same model. It does not quietly hand your build to a
+different one: a build that starts on one model and finishes on another
+finishes to a different standard, and the swap lands exactly when you are least
+placed to work out why the output changed. Set `UCODE_FALLBACK=1` if you would
+rather it moved down the list — North Mini Code, Nemotron 3.5 Lightning, Super,
+Ultra — when a model stays busy.
 
 ## What it does
 
@@ -211,6 +213,13 @@ same link. Needs a token from vercel.com/account/tokens in `~/.ucode/.env` as
 sunset, graphite, violet or citrus — each a full light and dark palette with its
 own font, so apps stop looking like the same default blue.
 
+**Every turn can be taken back.** `/undo` puts back every file the last turn
+changed — a rewritten file returns byte for byte, a file that did not exist
+before is removed again. Each write keeps the original the first time that turn
+touches it, so what comes back is the state before the turn rather than before
+the last of six edits to the same file. An agent that writes to your disk on
+its own should be able to take it back, whether or not the project has git.
+
 **It notices when it is going round in circles.** The same failing edit, an edit
 that changes nothing, or a build failing on the same errors three times gets a
 firm, specific note; if that does not work, the turn moves to another model.
@@ -238,13 +247,23 @@ written, its install starts in the background while the rest of the app is
 still being written. An install the model asks for later waits for that one
 instead of running twice, and anything run in that folder waits for it too.
 
-**It looks at what it built.** `look_at_app` opens the running app in a real
-browser — the Edge or Chrome already on your machine, so there is nothing extra
-to download — at 375px and 1440px. It reports console errors, failed requests,
-content that spills off a phone screen, broken images and unlabeled controls,
-saves screenshots to `.ucode/screenshots`, and has Nemotron Nano Omni review them
-the way a designer would. The model fixes what it finds before calling the app
-done. Both widths load at once, and the designer review — the slow part — runs
+**It opens what it built and uses it.** Every app build ends with a look — not
+when the model remembers to ask for one, but as part of the same pass that
+type-checks. It opens the app in a real browser (the Edge or Chrome already on
+your machine, so there is nothing extra to download) at 375px and 1440px, and
+serves the folder itself when there is no dev server to point at, which is how
+a three-file app gets checked at all.
+
+Then it uses the app. It types into the first field, presses Enter, and clicks
+the button that submits — and if the page gains no elements, changes no text
+and stores nothing, that is reported as the thing to fix before anything else.
+A page that renders and has no working behaviour passes a type check, a syntax
+check and a screenshot; the only way to find out is to press something.
+
+It also reports console errors, failed requests, content that spills off a
+phone screen, broken images and unlabeled controls, saves screenshots to
+`.ucode/screenshots`, and has Nemotron Nano Omni review them the way a designer
+would. The model fixes what it finds before calling the app done. Both widths load at once, and the designer review — the slow part — runs
 on the first look at an app in each request and is skipped, not waited on, when
 the vision model is busy. The look after the fixes re-runs only the fast checks:
 a few seconds.
@@ -355,6 +374,11 @@ Everything after the frontmatter is the instruction.
 | `/session delete 2,5` | delete saved conversations by number (or `d d` in the list) |
 | `/new` | save this one and start fresh |
 | `/remember <note>` | add a standing note to this project's `UCODE.md` |
+| `/undo` | put back every file the last turn changed |
+| `/look [url]` | open the running app and report what is on the page |
+| `/deploy [folder]` | put the app online and get its link |
+| `/stats` | time, steps and tokens this session |
+| `/doctor` | check that everything ucode needs is working |
 | `/skills` | what it knows how to do, and what is loaded |
 | `/search <query>` | look something up on the web |
 | `/copy` | last reply to the clipboard |
