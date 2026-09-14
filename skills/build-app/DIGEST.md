@@ -44,7 +44,34 @@ instead of four is most of how long the build takes.
 - Never run `create-next-app` or `shadcn init`. Nothing you run has a
   keyboard: every scaffolder needs its answers as flags up front.
 
-## 2b. Do not type what already exists
+## 2a. Paths in `files` are not the paths in the page
+
+The two are relative to different things, and getting them confused is the
+commonest way a finished build comes up as bare markup. `files` paths are
+relative to the **project root**, so they carry the app folder. A link inside a
+page is relative to **that page**, so it must not.
+
+```
+create_app({ folder: "tide", name: "Tide", files: [
+  { path: "tide/index.html", content: "... <link rel=stylesheet href=\"styles.css\">
+                                            <script type=module src=\"app.js\"></script> ..." },
+  { path: "tide/styles.css", content: "..." },
+  { path: "tide/app.js",     content: "..." },
+]})
+```
+
+Wrong, and it 404s: `href="tide/styles.css"` inside `tide/index.html` — the
+browser resolves that to `tide/tide/styles.css`, so no stylesheet and no script
+load, and the page is unstyled markup with dead buttons.
+
+## 2b. Look before you create
+
+`create_app` refuses a folder that already has something in it unless you pass
+the app in `files` — and a folder you half-made on an earlier attempt counts.
+One `list_dir` in front of it costs a second and tells you whether you are
+starting or resuming. The same goes for any command that makes a directory.
+
+## 2c. Do not type what already exists
 
 `add_block` has the pieces every app needs, written for whichever starter this
 one uses: a list you can add to, tick off, rename and remove; a filter row; a
