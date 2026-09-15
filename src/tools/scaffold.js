@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolFailure } from '../core/failure.js';
-import { resolveIn, guard, result } from './shared.js';
+import { resolveIn, guard, result, askedForPlainHtml } from './shared.js';
 import { batchWrite } from './files.js';
 import { packageJsonWritten, installIn } from './shell.js';
 import { restore, populate } from './cache.js';
@@ -340,6 +340,16 @@ export async function createApp({ folder, name, description, template = 'plain-h
     });
   }
 
+  // The user said no framework. A starter that costs an npm install and a
+  // build is then not a judgement call the model gets to make on their behalf
+  // — it is the one thing they ruled out, and the cost of getting it wrong is
+  // minutes of their time plus a rebuild from nothing.
+  let overrode = false;
+  if (template === 'next-shadcn' && askedForPlainHtml()) {
+    template = 'plain-html';
+    overrode = true;
+  }
+
   const target = resolveIn(folder, 'create_app', 'folder');
   const attempted = `creating an app in ${target.show}`;
   if (target.show === '.') {
@@ -440,7 +450,12 @@ export async function createApp({ folder, name, description, template = 'plain-h
   }
 
   const out = result(
-    `Created ${target.show} from the ${template} starter — ${copied.length} files, already known to build.\n` +
+    (overrode
+      ? 'You asked for next-shadcn, but the request said plain HTML and no framework, so ' +
+        'this is the plain-html starter instead: three files, no install, no build. Write ' +
+        'the app in them.\n'
+      : '') +
+      `Created ${target.show} from the ${template} starter — ${copied.length} files, already known to build.\n` +
       (look ? `Design: the ${look.name} preset (${look.summary}), font ${look.fonts?.sans ?? 'Geist'}.\n` : '') +
       (wrote ? `\nYour ${mine.length} file${mine.length === 1 ? '' : 's'}:\n${wrote.content}\n` : '') +
       (placed.moved.length

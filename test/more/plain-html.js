@@ -2,6 +2,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createApp, TEMPLATE_NAMES, TEMPLATE_NOTES } from '../../src/tools/scaffold.js';
+import { setRequest, askedForPlainHtml } from '../../src/tools/shared.js';
 
 export default async function ({ test, section, ok, eq, sandbox }) {
   section('the plain html starter');
@@ -62,6 +63,55 @@ export default async function ({ test, section, ok, eq, sandbox }) {
     catch (err) { threw = err.kind === 'bad_args'; }
     ok(threw, 'an unknown starter is a clear error');
   });
+
+  section('a framework the user ruled out is not chosen for them');
+
+  const asked = (request) => { setRequest(request); return askedForPlainHtml(); };
+
+  await test('asking for html in so many words settles it', () => {
+    ok(asked('make me a html app'));
+    ok(asked('build a plain html todo list'));
+    ok(asked('a simple html page that converts currencies'));
+    ok(asked('vanilla js, no build step'));
+  });
+
+  await test('so does ruling a framework out', () => {
+    ok(asked('build me a dashboard, no framework'));
+    ok(asked('a notes app without react'));
+    ok(asked('make a timer, do not use next.js'));
+  });
+
+  await test('an ordinary request is left to the model', () => {
+    ok(!asked('make me a dashboard with user accounts'));
+    ok(!asked('build a next.js blog'));
+  });
+
+  // Naming the framework on purpose is a specific request, and specific beats
+  // a keyword: this one mentions html and still means Next.
+  await test('naming a framework on purpose outranks the word html', () => {
+    ok(!asked('export this next.js app as static html'));
+    ok(!asked('a react app that renders html previews'));
+  });
+
+  await test('create_app overrides the starter rather than installing one', async () => {
+    setRequest('make me a plain html stopwatch');
+    const out = await createApp({
+      folder: 'watch', name: 'Watch', template: 'next-shadcn', install: false,
+    });
+    ok(out.content.includes('plain-html starter'), out.content.slice(0, 300));
+    ok(await there('watch/index.html'), 'the html starter landed');
+    ok(!(await there('watch/package.json')), 'and nothing needs installing');
+  });
+
+  await test('and leaves the choice alone when nothing was ruled out', async () => {
+    setRequest('build me a blog with posts and an admin page');
+    const out = await createApp({
+      folder: 'blog', name: 'Blog', template: 'next-shadcn', install: false,
+    });
+    ok(!out.content.includes('plain-html starter instead'), out.content.slice(0, 200));
+  });
+
+  setRequest('');
 }
 
 export async function htmlCheckSuite({ test, section, ok, eq }) {

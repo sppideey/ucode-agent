@@ -380,6 +380,36 @@ export function asLabel(text) {
     .replace(/(?<=[\w)\]"'`])[.。…]+$/, '');
 }
 
+/** The longest a narration line may be before it is clipped. */
+const NARRATION_MAX = 120;
+
+/**
+ * Any reply that came alongside a tool call, cut down to one status line.
+ *
+ * Mid-build the model narrates: a paragraph on what it is about to do, then a
+ * tool call that does it. Printed in full that paragraph is the loudest thing
+ * on screen and it is about work that has not happened yet — the file being
+ * written scrolls past underneath it. Only the closing message is an answer;
+ * everything before it is commentary, and commentary belongs on one dim line.
+ *
+ * The first sentence is kept because that is the one saying what is happening
+ * now. Code blocks, headings and bullets are dropped outright: none of them
+ * survive being squeezed into a single line, and half a fence is worse than
+ * no fence.
+ */
+export function asNarrationLine(text) {
+  const flat = String(text ?? '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/^\s*#{1,6}\s*/gm, '')
+    .replace(/^\s*[-*+]\s+/gm, '')
+    .replace(/^\s*\d+[.)]\s+/gm, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (!flat) return '';
+  const first = /^(.+?[.!?])(?:\s|$)/.exec(flat);
+  return asLabel((first?.[1] ?? flat).slice(0, NARRATION_MAX));
+}
+
 /**
  * The model's checklist, as one short line — done ticked, the current item
  * marked, the rest dim — so progress is visible without taking over the screen.
@@ -712,7 +742,15 @@ export function withoutRestatement(text, prompt = '') {
  * admits something is unfinished, and the line naming a file or a command —
  * the two the user actually acts on, and both of them live at the end.
  */
-export const ANSWER_LINES = 8;
+/**
+ * The closing message is read once, at the end, by someone who watched the
+ * whole build happen. What was made, where to see it, what is in it — that is
+ * three lines and a spare. Eight was room to re-narrate the build, and that is
+ * exactly what it filled with: the request read back, every feature ticked
+ * off, every file listed, none of it news to the person who just watched it
+ * scroll past.
+ */
+export const ANSWER_LINES = 5;
 const ANSWER_ROOM = 600;   // eight wrapped lines of prose, for a reply with no line breaks in it
 
 export const RESTATED = /^(?:(?:sure|ok|okay|got it|understood|alright|right)\b[\s,!.—-]*)?(?:you(?:'ve| have)? (?:asked|want|wanted|requested|said|would like|need)\b|the (?:request|task|ask)\b|as (?:you )?requested\b|here(?:'s| is) what (?:you asked|i)\b|i(?:'ll| will|'m going to| am going to) (?:build|create|make|add|write|implement)\b|let(?:'s| us) (?:build|create|make|add|write|implement)\b|to (?:summarise|summarize|recap)\b|(?:request|task|summary|recap|overview)\s*:)/i;

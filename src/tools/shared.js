@@ -76,6 +76,52 @@ export async function confirm(action, detail, risk = 'write') {
 }
 
 // ---------------------------------------------------------------------------
+// The request behind the call
+// ---------------------------------------------------------------------------
+
+/**
+ * What the user asked for this turn, in their own words.
+ *
+ * A tool cannot normally see the request that led to it, and for almost
+ * everything that is right — a tool should act on its arguments. The starter
+ * is the exception. "Make me a plain HTML app" is not a preference to be
+ * weighed against the convenience of a framework, but the model weighs it
+ * anyway: it reads "app", reaches for the starter with the component library
+ * in it, and the user waits through an npm install they explicitly said they
+ * did not want. Keeping the request here lets create_app check the instruction
+ * rather than trust the argument it was handed.
+ */
+let request = '';
+
+export function setRequest(text) {
+  request = String(text ?? '');
+}
+
+/** "plain html", "vanilla js", "simple static page". */
+const WANTS_PLAIN = /\b(?:plain|pure|vanilla|static|simple|basic|raw|just)\s+(?:html|js|javascript|css)\b/i;
+/** "an html app", "one html page". */
+const HTML_THING = /\bhtml\s+(?:app|page|site|website|file|thing)\b/i;
+/** "no framework", "without react", "don't use next". */
+const NO_FRAMEWORK =
+  /\b(?:no|without|not?\s+use|don'?t\s+use|do\s+not\s+use|skip)\s+(?:a\s+|any\s+)?(?:framework|frameworks|react|next\.?js|next|npm|node|build\s+step|bundler)\b/i;
+/** Naming one on purpose outranks every hint above. */
+const NAMES_FRAMEWORK = /\b(?:next\.?js|nextjs|react|tailwind|shadcn|typescript|database|api\s+routes?|server\s+side|auth)\b/i;
+
+/**
+ * Did the user rule out a framework in so many words?
+ *
+ * Saying "no react" settles it on its own. Asking for "an html app" settles it
+ * only when the same breath does not also ask for Next.js — "export this
+ * Next.js app as static html" names the framework on purpose, and a request
+ * that specific is not one to overrule.
+ */
+export function askedForPlainHtml() {
+  if (NO_FRAMEWORK.test(request)) return true;
+  if (!WANTS_PLAIN.test(request) && !HTML_THING.test(request)) return false;
+  return !NAMES_FRAMEWORK.test(request);
+}
+
+// ---------------------------------------------------------------------------
 // Paths
 // ---------------------------------------------------------------------------
 

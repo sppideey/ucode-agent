@@ -16,7 +16,7 @@ import { createApp, TEMPLATE_NAMES, TEMPLATE_NOTES } from './scaffold.js';
 import { deploy } from './deploy.js';
 import { clip, READ_LINES } from './shared.js';
 
-export { setRoot, setConfirm, getRoot } from './shared.js';
+export { setRoot, setConfirm, setRequest, getRoot } from './shared.js';
 
 const str = (description) => ({ type: 'string', description });
 const int = (description) => ({ type: 'integer', description });
@@ -124,7 +124,10 @@ export const tools = [
         },
         template: {
           type: 'string',
-          enum: ['next-shadcn', 'plain-html'],
+          // The default goes first: a model picking from an enum reaches for
+          // the head of the list, and the head of this one used to be the
+          // starter that costs an install and a build.
+          enum: ['plain-html', 'next-shadcn'],
           description:
             'Which starter. "plain-html" (the default) for one page, a toy, a game, or any ' +
             'app that does not need a server: no install, no build, nothing to wait for. ' +

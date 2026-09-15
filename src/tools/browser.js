@@ -349,7 +349,6 @@ export async function lookAtApp({ url, paths = ['/'] }) {
   // Every page at every width opens at once, each in its own context: the
   // wait is for the slowest one, not the sum of them all.
   const checks = await Promise.all(pages.flatMap((pagePath) => WIDTHS.map(async (size) => {
-    let problems = 0;
     let shot = null;
     const context = await b.newContext({ viewport: { width: size.width, height: size.height }, deviceScaleFactor: 1 });
     const page = await context.newPage();
@@ -407,57 +406,108 @@ export async function lookAtApp({ url, paths = ['/'] }) {
       await context.close().catch(() => {});
     }
 
-    const lines = [`### ${pagePath} at ${size.width}px (${size.name})`];
-    if (loadError) {
-      lines.push(`Could not load: ${loadError}`);
-      problems++;
-    } else {
-      lines.push(`Screenshot: ${path.relative(getRoot(), file).split(path.sep).join('/')}`);
-      if (facts?.empty) { lines.push('- The page rendered no visible text at all.'); problems++; }
-      if (facts?.overflow) {
-        lines.push(`- Content is ${facts.overflow}px wider than the screen, so it scrolls sideways:`, ...facts.wide.map((w) => `  - ${w}`));
-        problems++;
-      }
-      if (facts?.broken?.length) { lines.push(`- Broken images: ${facts.broken.join(', ')}`); problems++; }
-      if (facts?.unnamed?.length) { lines.push(`- Buttons or links with no accessible name: ${facts.unnamed.join(', ')}`); problems++; }
-      if (facts?.inputsNoLabel) { lines.push(`- ${facts.inputsNoLabel} form field(s) without a label.`); problems++; }
-      if (facts?.noAlt) lines.push(`- ${facts.noAlt} image(s) without alt text.`);
-      if (facts?.tiny) lines.push(`- ${facts.tiny} tap target(s) smaller than 32px on a phone.`);
-      if (facts?.smallText) lines.push(`- ${facts.smallText} text element(s) under 12px.`);
-      if (used && !used.worked) {
-        lines.push(
-          `- NOTHING HAPPENS WHEN YOU USE IT. I ${used.tried.join(', then ')} — and the page`,
-          '  gained no elements, changed no text and stored nothing. The markup and the styling',
-          '  are there; the behaviour is not wired to them. Find the listener that was never',
-          '  attached, or the handler that throws before it does anything, and fix that first:',
-          '  everything else on this page is decoration until it works.',
-        );
-        problems++;
-      } else if (used?.lost) {
-        lines.push(
-          `- It works until you refresh. I ${used.tried.join(', then ')}, the page`,
-          '  responded, and it wrote to localStorage — but after a reload it was back to',
-          '  empty. Something is being saved and never read back at start-up. Load the',
-          '  stored state when the page boots, and check it survives a refresh.',
-        );
-        problems++;
-      } else if (used) {
-        lines.push(`- Core loop works: I ${used.tried.join(', then ')}, the page responded, and it survived a reload.`);
-      }
-    }
-    if (errors.length) { lines.push('- Console errors:', ...[...new Set(errors)].slice(0, 6).map((e) => `  - ${e}`)); problems++; }
-    if (failed.length) { lines.push('- Failed requests:', ...[...new Set(failed)].slice(0, 6).map((f) => `  - ${f}`)); problems++; }
-    if (lines.length === 2 && !loadError) lines.push('- No errors, no overflow, nothing unlabeled.');
-    // A dead core loop counts as broken: a screenshot of an app that does not
-    // work is not worth a paragraph on its typography.
-    const broken = Boolean(loadError || errors.length || facts?.empty || (used && !used.worked));
-    return { section: lines.join('\n'), shot, problems, broken };
+    const rel = loadError ? null : path.relative(getRoot(), file).split(path.sep).join('/');
+    return { pagePath, size, facts, errors, failed, loadError, shot, used, rel };
   })));
 
-  const sections = checks.map((c) => c.section);
-  const toReview = checks.map((c) => c.shot).filter(Boolean);
-  const problems = checks.reduce((n, c) => n + c.problems, 0);
-  const broken = checks.some((c) => c.broken);
+  // One section per page, not one per page and width.
+  //
+  // Almost everything these checks find is a fact about the page and comes
+  // back identical at every width: an image that is broken at 375px is broken
+  // at 1440px, a console error fires in both, an unlabelled field is
+  // unlabelled twice. Printed per width, every one of those lines appeared
+  // twice over — and counted twice, so one broken image read as two problems
+  // and a clean page still produced two near-identical paragraphs to read.
+  //
+  // What genuinely changes with the viewport is the layout: overflow, tap
+  // targets, type size. Only those are still named by width.
+  const uniq = (xs) => [...new Set(xs)];
+  const sections = [];
+  const toReview = [];
+  let problems = 0;
+  let broken = false;
+
+  for (const pagePath of pages) {
+    const shots = checks.filter((c) => c.pagePath === pagePath);
+    const lines = [`### ${pagePath}`];
+    const loaded = shots.filter((s) => !s.loadError);
+
+    if (!loaded.length) {
+      lines.push(`Could not load: ${shots[0]?.loadError ?? 'no response'}`);
+      problems++;
+      broken = true;
+      sections.push(lines.join('\n'));
+      continue;
+    }
+
+    // The desktop render is where the page-wide facts are read from, and the
+    // only one the core loop was exercised on.
+    const main = loaded.find((s) => s.size.name === 'desktop') ?? loaded[0];
+    const facts = main.facts ?? {};
+    const errors = uniq(loaded.flatMap((s) => s.errors));
+    const failed = uniq(loaded.flatMap((s) => s.failed));
+    const used = loaded.find((s) => s.used)?.used ?? null;
+
+    lines.push(`Screenshots: ${loaded.map((s) => `${s.rel} (${s.size.name})`).join(', ')}`);
+    for (const s of loaded) if (s.shot) toReview.push(s.shot);
+
+    if (facts.empty) { lines.push('- The page rendered no visible text at all.'); problems++; }
+    if (facts.broken?.length) { lines.push(`- Broken images: ${facts.broken.join(', ')}`); problems++; }
+    if (facts.unnamed?.length) { lines.push(`- Buttons or links with no accessible name: ${facts.unnamed.join(', ')}`); problems++; }
+    if (facts.inputsNoLabel) { lines.push(`- ${facts.inputsNoLabel} form field(s) without a label.`); problems++; }
+    if (facts.noAlt) lines.push(`- ${facts.noAlt} image(s) without alt text.`);
+
+    // A width that failed on its own — the phone render timed out, the desktop
+    // one came back — is still a failure, and grouping by page must not let it
+    // disappear behind the width that worked.
+    for (const s of shots.filter((c) => c.loadError)) {
+      lines.push(`- At ${s.size.width}px (${s.size.name}) it could not load: ${s.loadError}`);
+      problems++;
+      broken = true;
+    }
+
+    for (const s of loaded) {
+      const f = s.facts ?? {};
+      const at = `At ${s.size.width}px (${s.size.name})`;
+      if (f.overflow) {
+        lines.push(`- ${at}: content is ${f.overflow}px wider than the screen, so it scrolls sideways:`,
+          ...f.wide.map((w) => `  - ${w}`));
+        problems++;
+      }
+      if (f.tiny) lines.push(`- ${at}: ${f.tiny} tap target(s) smaller than 32px.`);
+      if (f.smallText) lines.push(`- ${at}: ${f.smallText} text element(s) under 12px.`);
+    }
+
+    if (used && !used.worked) {
+      lines.push(
+        `- NOTHING HAPPENS WHEN YOU USE IT. I ${used.tried.join(', then ')} — and the page`,
+        '  gained no elements, changed no text and stored nothing. The markup and the styling',
+        '  are there; the behaviour is not wired to them. Find the listener that was never',
+        '  attached, or the handler that throws before it does anything, and fix that first:',
+        '  everything else on this page is decoration until it works.',
+      );
+      problems++;
+    } else if (used?.lost) {
+      lines.push(
+        `- It works until you refresh. I ${used.tried.join(', then ')}, the page`,
+        '  responded, and it wrote to localStorage — but after a reload it was back to',
+        '  empty. Something is being saved and never read back at start-up. Load the',
+        '  stored state when the page boots, and check it survives a refresh.',
+      );
+      problems++;
+    } else if (used) {
+      lines.push(`- Core loop works: I ${used.tried.join(', then ')}, the page responded, and it survived a reload.`);
+    }
+
+    if (errors.length) { lines.push('- Console errors:', ...errors.slice(0, 6).map((e) => `  - ${e}`)); problems++; }
+    if (failed.length) { lines.push('- Failed requests:', ...failed.slice(0, 6).map((f) => `  - ${f}`)); problems++; }
+    if (lines.length === 2) lines.push('- No errors, no overflow, nothing unlabeled.');
+
+    // A dead core loop counts as broken: a screenshot of an app that does not
+    // work is not worth a paragraph on its typography.
+    if (errors.length || facts.empty || (used && !used.worked)) broken = true;
+    sections.push(lines.join('\n'));
+  }
 
   // A page that crashed or threw is fixed first; reviewing a screenshot of an
   // error overlay is a minute spent on nothing.

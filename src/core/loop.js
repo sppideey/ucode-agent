@@ -14,10 +14,11 @@
 import path from 'node:path';
 import os from 'node:os';
 import { appendFileSync, existsSync } from 'node:fs';
-import { readFile, access, mkdir } from 'node:fs/promises';
+import { readFile, readdir, access, mkdir } from 'node:fs/promises';
 import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { LogWatch } from './livelog.js';
 import { checkHtml } from './htmlcheck.js';
+import { checkCss } from './csscheck.js';
 import { runningServers } from '../tools/shell.js';
 import { unprefixOwnFolder } from './relink.js';
 import { beginTurn, undoTurn, changedCount } from './undo.js';
@@ -28,7 +29,8 @@ import {
   MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor,
 } from './provider.js';
 import {
-  tools, runTool, describe, setRoot, setConfirm, PARALLEL_SAFE, WRITES, FILE_WRITES,
+  tools, runTool, describe, setRoot, setConfirm, setRequest,
+  PARALLEL_SAFE, WRITES, FILE_WRITES,
 } from '../tools/index.js';
 import { projectMap, loadMemory, hasCode, remember, MEMORY_FILE } from './context.js';
 import { autoUpdate } from './updater.js';
@@ -38,14 +40,16 @@ import {
 } from './history.js';
 import { fold, usage, tooBig, SUMMARY_PROMPT, forSummary } from './window.js';
 import { loadSkills, catalogue, findSkill, skillMessage, autoLoadFor } from './skills.js';
-import { Screen, isLabel } from '../ui/screen.js';
+import { Screen } from '../ui/screen.js';
 import { Plain } from '../ui/plain.js';
-import { theme, blue, sky, dim, formatTokens, relativeTime, shortenPath, clip } from '../ui/theme.js';
+import { theme, blue, sky, dim, formatTokens, relativeTime, shortenPath, clip,
+  asNarrationLine } from '../ui/theme.js';
 import { Failure, ToolFailure, Declined } from './failure.js';
 import { StuckWatch, eventFor, describeHit } from './stuck.js';
 import { serversReadySince } from '../tools/shell.js';
 import { formatDuration } from '../ui/activity.js';
 import { runDoctor } from './doctor.js';
+import { JS_LOGIC } from './jslogic.js';
 import { deploy } from '../tools/deploy.js';
 
 /**
@@ -605,13 +609,13 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  - One line when you move between the big pieces of work: "The layout is done,',
     '    now the animations."',
     '  - One line at the end saying what it does and how to try it.',
-    'That closing line is ONE OR TWO SENTENCES, and SIX LINES IS THE HARD CEILING.',
+    'That closing line is ONE OR TWO SENTENCES, and FIVE LINES IS THE HARD CEILING.',
     'Never a checklist, never a feature list, never ticks or bullets walking through',
     'the request item by item, never a list of the files you touched - the user',
     'watched them go past. "Tide is built - open tide/index.html, or serve the folder',
     'and visit it." Anything longer is a status report nobody asked for, and it is',
     'the last thing on screen, so it is what the whole session looks like. ucode cuts',
-    'the closing message to eight lines before it is drawn, so anything past that is',
+    'the closing message to five lines before it is drawn, so anything past that is',
     'written for nobody: say the one thing that matters and stop.',
     'That is all. A line before every tool call is not narration, it is noise: the',
     'steps already show on screen, and repeating them in words buries the few',
@@ -631,6 +635,13 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '"I need to", never "Let me", never a plan of which files you will touch, never',
     'the request repeated back. Say it the way you would to someone watching over',
     'your shoulder, who can already see the screen.',
+    '',
+    'Every one of those lines is ONE SENTENCE, because that is all that is drawn:',
+    'anything you write beside a tool call is cut to a single status line, so a',
+    'paragraph there loses everything after its first sentence. The closing message',
+    '- the one with no tool call after it - is the only prose the user reads.',
+    '',
+    JS_LOGIC,
     '',
 
     '',
@@ -1107,6 +1118,7 @@ export class Agent {
     this.declines = 0;
     this.apps = [];
     forgetReviews(); // a new request: its apps get a fresh design review
+    setRequest(input); // create_app checks this before choosing a starter
     const images = await this.attachImages(input);
     this.push(images.length
       ? { role: 'user', content: input, images }
@@ -1346,7 +1358,10 @@ export class Agent {
       // message, the last thing on screen, and it gets cut to eight lines.
       const closing = !narrating && (this.touched.size > 0 || this.ranSomething);
       if (streaming) this.ui.streamEnd({ asNarration: narrating, closing });
-      else if (reply.text && narrating && isLabel(reply.text)) this.ui.narrate(reply.text);
+      // Anything said beside a tool call is narration, however long it ran on:
+      // it is cut to a status line instead of being printed as an answer. Only
+      // the closing message — the one with no tool call after it — is prose.
+      else if (reply.text && narrating) this.ui.narrate(asNarrationLine(reply.text));
       else if (reply.text) this.ui.assistant(reply.text, { closing });
       if (closing && reply.text) this.checkClaims(reply.text);
 
@@ -2093,6 +2108,55 @@ export class Agent {
       }
       if (owner && (await exists(path.join(owner, 'node_modules', 'typescript')))) tsRoots.add(owner);
       else if (/\.[cm]?js$/i.test(rel)) singles.push({ abs, rel, command: `node --check "${abs}"` });
+    }
+
+    // CSS is checked a folder at a time, not a file at a time: a token
+    // declared in styles.css and reached for from an inline <style> is
+    // defined, and either file read on its own would call it undefined.
+    // Definitions are gathered from everything beside the changed files;
+    // problems are reported only in the files this turn actually wrote, so a
+    // build is never interrupted by something it did not touch.
+    const rels = (abs) => path.relative(root, abs).split(path.sep).join('/');
+    const group = (found) => {
+      const by = new Map();
+      for (const b of found) {
+        if (!by.has(b.rel)) by.set(b.rel, []);
+        by.get(b.rel).push(b);
+      }
+      return by;
+    };
+    const cssDirs = new Set();
+    for (const rel of changed) {
+      if (/\.(?:css|html?)$/i.test(rel)) cssDirs.add(path.dirname(path.resolve(root, rel)));
+    }
+    if (cssDirs.size) {
+      const sources = [];
+      const seen = new Set();
+      const take = async (abs) => {
+        if (seen.has(abs)) return;
+        seen.add(abs);
+        const text = await readFile(abs, 'utf8').catch(() => null);
+        if (text !== null) sources.push({ rel: rels(abs), text });
+      };
+      for (const dir of cssDirs) {
+        for (const entry of await readdir(dir, { withFileTypes: true }).catch(() => [])) {
+          if (entry.isFile() && /\.(?:css|html?|[cm]?js)$/i.test(entry.name)) {
+            await take(path.join(dir, entry.name));
+          }
+        }
+      }
+      const mine = new Set(changed.map((rel) => rels(path.resolve(root, rel))));
+      for (const rel of changed) await take(path.resolve(root, rel));
+
+      const undefinedVars = checkCss(sources).filter((b) => mine.has(b.rel));
+      for (const [rel, found] of group(undefinedVars)) {
+        problems.push(
+          `${rel} — ${found.length === 1 ? 'a custom property is' : `${found.length} custom properties are`} ` +
+          'used and never defined. CSS does not warn about this: the browser throws away the whole ' +
+          'declaration, so the value is silently missing and the page still renders.\n' +
+          found.map((b) => `  line ${b.line}: var(${b.name})`).join('\n')
+        );
+      }
     }
 
     const check = async (label, command, cwd) => {

@@ -40,7 +40,7 @@ import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
-  bannerPaint, RAIL, modeChip } from './theme.js';
+  bannerPaint, RAIL, modeChip, asNarrationLine } from './theme.js';
 import { FRAME_MS, spinnerGlyph, formatDuration, doneLine, workingLine, bannerSweep, SWEEP_MS } from './activity.js';
 import { gitBranch } from '../core/git.js';
 import { renderer, render, polish } from './markdown.js';
@@ -646,7 +646,14 @@ export class Screen {
     this.streamAt = undefined;
     this.streamBuf = '';
 
-    if (asNarration && isLabel(text)) this.narrate(text);
+    // Mid-build the model's prose is commentary on work that has not happened
+    // yet, so it is condensed to one line rather than printed whole — long or
+    // short, it never becomes a block of text above the file being written.
+    if (asNarration) {
+      const line = asNarrationLine(text);
+      if (line) this.narrate(line);
+      else this.render();
+    }
     else if (text.trim()) this.assistant(text, { closing });
     else this.render();
     return text;

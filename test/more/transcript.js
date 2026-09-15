@@ -1,6 +1,6 @@
 // The transcript is a record of what was done, not a copy of what was written.
 import chalk from 'chalk';
-import { runLine, groupTarget, bare } from '../../src/ui/theme.js';
+import { runLine, groupTarget, bare, asNarrationLine } from '../../src/ui/theme.js';
 import { Screen } from '../../src/ui/screen.js';
 import { countDiff } from '../../src/core/loop.js';
 
@@ -314,7 +314,7 @@ export async function replySuite({ test, section, ok, eq }) {
     eq(withoutCodeBlocks(plain), plain);
   });
 
-  section('the closing message is eight lines at most');
+  section('the closing message is five lines at most');
 
   // What a model hands over at the end of a build when nothing stops it: the
   // request read back, every feature ticked off, every file listed.
@@ -342,8 +342,8 @@ export async function replySuite({ test, section, ok, eq }) {
 
   const rows = (text) => text.split('\n').filter((row) => row.trim()).length;
 
-  await test('a closing status report is cut to eight lines', () => {
-    ok(rows(trimAnswer(report)) <= 8, trimAnswer(report));
+  await test('a closing status report is cut to five lines', () => {
+    ok(rows(trimAnswer(report)) <= 5, trimAnswer(report));
   });
 
   await test('the line saying how to try it survives the cut', () => {
@@ -377,5 +377,43 @@ export async function replySuite({ test, section, ok, eq }) {
     ok(src.includes('closing ? trimAnswer(tidy) : tidy'), 'the cap is gated on closing');
     ok(src.includes('tidyReply(text, 4, this.lastPrompt)'),
       'and every reply, closing or not, is checked against what was typed');
+  });
+
+  section('nothing but a status line while the work is happening');
+
+  // What a model writes beside a tool call: a paragraph about work that has
+  // not happened yet, printed above the file it is about to write.
+  await test('a paragraph beside a tool call becomes one line', () => {
+    const out = asNarrationLine(
+      'I will now create the files.\n\nFirst the HTML, then the stylesheet, then the module.');
+    eq(out, 'I will now create the files');
+    ok(!out.includes('\n'), out);
+  });
+
+  await test('a heading and a list are flattened, not printed', () => {
+    const out = asNarrationLine('## Plan\n\n- write index.html\n- write styles.css');
+    ok(!out.includes('#') && !out.includes('- '), out);
+    ok(!out.includes('\n'), out);
+  });
+
+  await test('a code block on its own narrates nothing', () => {
+    eq(asNarrationLine('```js\nconst x = 1;\n```'), '');
+  });
+
+  await test('a line that was already short is left alone', () => {
+    eq(asNarrationLine('Now the filter row'), 'Now the filter row');
+  });
+
+  await test('a sentence that runs on is clipped, not wrapped', () => {
+    const out = asNarrationLine('I am building the app ' + 'and then some more '.repeat(40));
+    ok(out.length <= 120, `${out.length} characters`);
+    ok(!out.includes('\n'), out);
+  });
+
+  await test('prose beside a tool call never reaches assistant()', async () => {
+    const fsp = await import('node:fs/promises');
+    const src = await fsp.readFile('src/core/loop.js', 'utf8');
+    ok(src.includes('narrating) this.ui.narrate(asNarrationLine(reply.text))'),
+      'narration is condensed rather than gated on being short already');
   });
 }
