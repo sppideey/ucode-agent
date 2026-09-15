@@ -20,7 +20,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolFailure } from '../core/failure.js';
-import { resolveIn, guard, result } from './shared.js';
+import { resolveIn, guard, result, writeTracked } from './shared.js';
 
 const BLOCKS = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', '..', 'templates', 'blocks');
 
@@ -193,7 +193,7 @@ export async function addBlock({ name, folder = '.' }) {
   }
 
   await fs.mkdir(path.dirname(dest), { recursive: true });
-  await fs.writeFile(dest, source, 'utf8');
+  await writeTracked(dest, source);
 
   const first = catalogue[wanted].exports.split(',')[0].trim();
   return result(

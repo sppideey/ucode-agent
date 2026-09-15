@@ -14,7 +14,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { ToolFailure } from '../core/failure.js';
-import { resolveIn, guard, result, askedForPlainHtml } from './shared.js';
+import { resolveIn, guard, result, askedForPlainHtml, writeTracked } from './shared.js';
 import { batchWrite } from './files.js';
 import { packageJsonWritten, installIn } from './shell.js';
 import { restore, populate } from './cache.js';
@@ -92,7 +92,7 @@ async function copyTree(from, to, fill) {
     } else if (TEXT.test(entry.name) || entry.name in RENAME) {
       let text = await fs.readFile(src, 'utf8');
       for (const [token, value] of Object.entries(fill)) text = text.split(token).join(value);
-      await fs.writeFile(dest, text, 'utf8');
+      await writeTracked(dest, text);
       copied.push(name);
     } else {
       await fs.copyFile(src, dest);
@@ -166,7 +166,7 @@ async function unprefixOwnFolder(appDir, written) {
     });
 
     if (hits) {
-      await fs.writeFile(abs, next, 'utf8');
+      await writeTracked(abs, next);
       fixed.push(`${path.relative(appDir, abs).split(path.sep).join('/')} (${hits})`);
     }
   }

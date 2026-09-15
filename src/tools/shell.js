@@ -178,6 +178,17 @@ function stopHint(pid) {
 /** Dev servers that said they were ready, newest last — for opening the app when a turn ends. */
 const readyServers = [];
 
+/**
+ * Every process started in the background, ready or not.
+ *
+ * readyServers only ever held the ones that printed a URL, and stopServers
+ * only ever killed those — so a server that died slowly, or started without
+ * announcing itself, was never tracked and never stopped. It outlived the
+ * session holding its port, which is the exact leak stopServers was written
+ * to end. Tracking starts at spawn instead, and an exit takes it off the list.
+ */
+const backgrounded = new Map(); // pid -> { command, at }
+
 /** Servers that became ready at or after `since` (epoch ms). */
 export function serversReadySince(since = 0) {
   return readyServers.filter((s) => s.at >= since);
@@ -195,11 +206,13 @@ export function serversReadySince(since = 0) {
  * outcome we wanted anyway.
  */
 export function stopServers() {
-  const stopped = readyServers.splice(0, readyServers.length);
-  for (const s of stopped) {
-    try { killTree(s.pid); } catch { /* already gone */ }
+  readyServers.splice(0, readyServers.length);
+  const pids = [...backgrounded.keys()];
+  backgrounded.clear();
+  for (const pid of pids) {
+    try { killTree(pid); } catch { /* already gone */ }
   }
-  return stopped.length;
+  return pids.length;
 }
 
 /** Every server started this session, for reading what they have logged. */
@@ -259,13 +272,15 @@ function startServer(command, workdir, { env } = {}) {
     closeSync(fd);
     child.unref();
 
+    backgrounded.set(child.pid, { command, at: Date.now() });
+
     const started = Date.now();
     let exitCode = null;
     let spawnError = null;
     let urlSeenAt = null;
     let done = false;
 
-    child.on('exit', (code) => { exitCode = code ?? -1; });
+    child.on('exit', (code) => { exitCode = code ?? -1; backgrounded.delete(child.pid); });
     child.on('error', (err) => { spawnError = err; });
 
     const finish = (build) => {
@@ -441,6 +456,17 @@ export function packageJsonWritten(file, content) {
   if (Object.keys(deps).length === 0) return;
 
   const dir = path.dirname(file);
+
+  // Only for a project that has never been installed.
+  //
+  // This exists so a freshly scaffolded app is installing while the model is
+  // still writing its components. In a project that already has node_modules
+  // it is something else entirely: touching a version number in an existing
+  // repo would silently rewrite the lockfile and the dependency tree, minutes
+  // of work nobody asked for, on a turn that meant to change one line. There
+  // the model runs the install itself, in the open, when it means to.
+  try { statSync(path.join(dir, 'node_modules')); return; } catch { /* never installed */ }
+
   const running = installs.get(dir);
   if (running) running.stale = true;
   else runInstall(dir);

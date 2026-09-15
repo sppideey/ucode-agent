@@ -16,6 +16,7 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
+import { writeTracked } from '../tools/shared.js';
 
 /** Relative href/src only — absolute paths, URLs, data: and anchors are left alone. */
 const ASSET_REF = /\b(href|src)=("|')(?!https?:|\/\/|\/|data:|#|mailto:|tel:)([^"']+)\2/g;
@@ -53,7 +54,7 @@ export async function unprefixOwnFolder(root, files) {
 
     if (!hits) continue;
     try {
-      await fs.writeFile(abs, next, 'utf8');
+      await writeTracked(abs, next);
       fixed.push(`${rel} (${hits})`);
     } catch { /* unwritable: leave it, and say nothing that is not true */ }
   }

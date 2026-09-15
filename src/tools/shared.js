@@ -387,3 +387,83 @@ export async function walk(base, { includeSkipped = false, limit = 20_000 } = {}
 
 /** How many directories, or files, are read at the same time. */
 export const WALK_WIDTH = 32;
+
+// ---------------------------------------------------------------------------
+// Files as ucode last left them
+// ---------------------------------------------------------------------------
+
+/**
+ * abs path -> the modification time ucode last saw, after reading or writing it.
+ *
+ * An agent that rewrites a whole file is trusting that the file still says what
+ * it said when it was read. That holds right up until someone has the editor
+ * open beside the terminal, saves a change mid-turn, and has it overwritten
+ * without a word — the one failure here that costs work nobody can get back,
+ * since the undo only holds what the turn itself replaced.
+ *
+ * So every read and every write leaves a stamp, and a whole-file overwrite
+ * checks it first. Edits do not need the check: they read the file again a
+ * moment before they touch it, and match their old_string against what is
+ * actually there.
+ */
+const known = new Map();
+
+/** Record a file as ucode now knows it. Never throws: a missing stamp only costs the check. */
+export async function noteFile(abs) {
+  try {
+    known.set(abs, (await fs.stat(abs)).mtimeMs);
+  } catch {
+    known.delete(abs);
+  }
+}
+
+/**
+ * Write a file and stamp it, so the next overwrite knows this change was ours.
+ *
+ * @param {string} abs
+ * @param {string} data
+ * @param {BufferEncoding} [encoding]
+ */
+export async function writeTracked(abs, data, encoding = 'utf8') {
+  await fs.writeFile(abs, data, encoding);
+  await noteFile(abs);
+}
+
+/** Forget a file, so the next write to it goes through unchallenged. */
+export function forgetFile(abs) {
+  known.delete(abs);
+}
+
+/**
+ * Refuse to overwrite a file that somebody else has changed since ucode read it.
+ *
+ * Only ever fires once per file: the stamp is dropped on the way out, so the
+ * model reads the file again — which is what the message tells it to do — and
+ * the next attempt writes normally. A file ucode has never seen is not guarded,
+ * because there is nothing to compare it against and a first write is not a
+ * clobber.
+ */
+export async function assertUnchanged(abs, show) {
+  const seen = known.get(abs);
+  if (seen === undefined) return;
+
+  let now;
+  try {
+    now = (await fs.stat(abs)).mtimeMs;
+  } catch {
+    return; // gone, or unreadable — the write itself will say so
+  }
+  // Filesystems report times at different resolutions; a millisecond of slack
+  // costs nothing and stops a same-second write reading as someone else's.
+  if (Math.abs(now - seen) < 1) return;
+
+  known.delete(abs);
+  throw new ToolFailure({
+    kind: 'changed_on_disk',
+    attempted: `overwriting ${show}`,
+    failed: `${show} has changed on disk since you last read it — someone else has edited it.`,
+    fix:
+      `Read ${show} again, fold your change into what is there now, and write it once more. ` +
+      'Writing the version you had would throw their edit away.',
+  });
+}

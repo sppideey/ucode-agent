@@ -14,6 +14,7 @@ import { ToolFailure } from '../core/failure.js';
 import {
   resolveIn, guard, result, fsFailure, looksBinary, toLines, bytes,
   changedRegion, renderDiff, renderNewFile, READ_LINES, MAX_FILE_OUTPUT,
+  noteFile, writeTracked, assertUnchanged,
 } from './shared.js';
 import { packageJsonWritten } from './shell.js';
 import { parse as parseSource } from '@babel/parser';
@@ -54,6 +55,10 @@ export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
       fix: 'ucode reads text only. Inspect it with run_command and a tool built for the format.',
     });
   }
+
+  // Read at this moment, so a later whole-file overwrite can tell its own
+  // change apart from somebody else's.
+  await noteFile(target.abs);
 
   const lines = toLines(buf.toString('utf8'));
   const from = Math.max(1, Math.floor(Number(offset) || 1));
@@ -296,10 +301,12 @@ async function put(target, content, { diffMax = 16 } = {}) {
     previous = null; // missing, or binary — either way it is treated as new
   }
 
+  if (previous !== null) await assertUnchanged(target.abs, target.show);
+
   try {
     await fs.mkdir(path.dirname(target.abs), { recursive: true });
     await remember(target.abs);
-    await fs.writeFile(target.abs, content, 'utf8');
+    await writeTracked(target.abs, content);
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
   }
@@ -559,7 +566,7 @@ export async function editFile({ path: p, old_string, new_string }) {
 
   try {
     await remember(target.abs);
-    await fs.writeFile(target.abs, text, 'utf8');
+    await writeTracked(target.abs, text);
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
   }
@@ -633,7 +640,7 @@ export async function multiEdit({ path: p, edits }) {
 
   try {
     await remember(target.abs);
-    await fs.writeFile(target.abs, text, 'utf8');
+    await writeTracked(target.abs, text);
   } catch (err) {
     throw fsFailure(err, attempted, target.show);
   }
@@ -722,7 +729,7 @@ export async function editFiles({ files }) {
   for (const { target, text } of planned) {
     try {
       await remember(target.abs);
-    await fs.writeFile(target.abs, text, 'utf8');
+    await writeTracked(target.abs, text);
     } catch (err) {
       throw fsFailure(err, `editing ${target.show}`, target.show);
     }

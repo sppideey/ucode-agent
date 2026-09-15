@@ -26,7 +26,7 @@ import { spawn } from 'node:child_process';
 
 import {
   ask, model, setModel, modelName, modelList, contextLimit, rateLimits,
-  MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor,
+  estimateConversation, MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor,
 } from './provider.js';
 import {
   tools, runTool, describe, setRoot, setConfirm, setRequest,
@@ -185,6 +185,44 @@ function thinArgs(value) {
  * size; the files are on disk, and the model re-reads one when it needs it.
  * Call ids and results stay paired, and the saved session keeps everything.
  */
+
+/**
+ * The identity of a type error, without its line number.
+ *
+ * tsc prints "src/a.ts(12,5): error TS2322: ...". The line moves every time
+ * anything above it is edited, so where an error sits cannot be part of what
+ * makes it the same error as before; the file, the code and the message can.
+ */
+export function typeErrorKey(line) {
+  const m = /^(.*?)[(](\d+),(\d+)[)]:\s*(error TS\d+:.*)$/.exec(String(line).trim());
+  return m ? `${m[1]}|${m[4]}` : String(line).trim();
+}
+
+/** The file an error line is about, or null. */
+export function typeErrorFile(line) {
+  const m = /^(.*?)[(]\d+,\d+[)]:/.exec(String(line).trim());
+  return m ? m[1].trim() : null;
+}
+
+/**
+ * Shrink a worker's conversation in place, oldest tool results first.
+ *
+ * Nothing is removed, so every tool call keeps its answer and the transcript
+ * stays valid - a long result is replaced by a note of its size. The last few
+ * steps are left whole, which is the part a worker is actually working from.
+ */
+export function thinWorker(messages, budget, keep = 12) {
+  if (estimateConversation(messages) <= budget) return messages;
+  const from = Math.max(2, messages.length - keep);
+  for (let i = 0; i < from; i++) {
+    const m = messages[i];
+    if (m.role !== 'tool' || (m.content?.length ?? 0) < 400 || m.thinned) continue;
+    m.content = `[${m.content.length} characters, trimmed to stay inside the window - read the file again if you still need it]`;
+    m.thinned = true;
+  }
+  return messages;
+}
+
 /** Tools whose result is the contents of one named thing, so re-reads repeat. */
 const RE_READ = new Set(['read_file', 'read_files', 'list_dir', 'grep', 'glob']);
 
@@ -868,14 +906,45 @@ export class Agent {
     return missing.length;
   }
 
-  async persist() {
-    try {
-      this.session.model = model();
-      await save(this.session);
-    } catch (err) {
-      // Losing the save must not lose the turn.
-      this.ui.error(err, { debug: this.debug });
+  /**
+   * Write the session out - without the turn waiting for it.
+   *
+   * The whole file is rewritten every time, and this is called after every
+   * model reply and every round of tools. On a long build that was the same
+   * growing file serialized hundreds of times, on the critical path, so the
+   * loop sat waiting on the disk for work it had already finished.
+   *
+   * Now a save that is already running absorbs the next request rather than
+   * queueing behind it: the writer loops until nothing is dirty, and what it
+   * writes is always the newest state, because the snapshot is taken inside
+   * save(). Callers may still await this - it settles at once - and everywhere
+   * durability actually matters (the end of a turn, shutdown, a signal) awaits
+   * settled() as well.
+   */
+  persist() {
+    this.session.model = model();
+    this.dirty = true;
+    if (!this.saving) {
+      this.saving = (async () => {
+        try {
+          while (this.dirty) {
+            this.dirty = false;
+            await save(this.session);
+          }
+        } catch (err) {
+          // Losing the save must not lose the turn.
+          this.ui.error(err, { debug: this.debug });
+        } finally {
+          this.saving = null;
+        }
+      })();
     }
+    return Promise.resolve();
+  }
+
+  /** Wait for whatever is being written to reach the disk. */
+  async settled() {
+    while (this.saving) await this.saving;
   }
 
   // -- startup -------------------------------------------------------------
@@ -1046,6 +1115,7 @@ export class Agent {
     this.ui.stopSpinner();
     if (this.session.messages.length) {
       await this.persist();
+      await this.settled();
       this.ui.write(dim(`\n  saved · ${this.session.title}`));
     }
     this.ui.close();
@@ -1183,6 +1253,7 @@ export class Agent {
       this.ui.stopTimer?.();
       this.activity = null;
       await this.persist();
+      await this.settled();
       if (this.full) this.showHeader({ clear: false });
       if (finished) this.openWhenReady(turnStarted);
       // Last, so "Done" is the last thing that happens rather than the last
@@ -1998,6 +2069,12 @@ export class Agent {
 
       let reply;
       const asked = Date.now();
+      // A worker never folded its own conversation, so sixty steps of reading
+      // files ended in a window error and a worker that reported "Failed:"
+      // having done most of its job. No summary call is needed here: the old
+      // tool results are what is large, the files are on disk, and reading one
+      // again costs far less than carrying the whole history.
+      thinWorker(messages, contextLimit(workerModel) * 0.6);
       try {
         reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel });
       } catch (err) {
@@ -2030,7 +2107,15 @@ export class Agent {
       for (const call of reply.toolCalls) {
         this.ui.toolCall(`${name} › ${describe(call.name, call.args)}`);
         if (FILE_WRITES.has(call.name)) for (const p of pathsOf(call)) touched.add(p);
-        const { out, err } = FILE_WRITES.has(call.name)
+        // Writes and commands both take turns.
+        //
+        // Only file writes were serialized, so three workers could run three
+        // installs in one folder, or race for the same port, at the same
+        // moment - the two things the shell code goes furthest out of its way
+        // to prevent everywhere else.
+        const exclusive =
+          FILE_WRITES.has(call.name) || call.name === 'run_command' || call.name === 'run_commands';
+        const { out, err } = exclusive
           ? await this.fileLock(() => this.execute(call))
           : await this.execute(call);
         if (err) {
@@ -2186,8 +2271,43 @@ export class Agent {
       }
       if (out.exitCode === 0) { this.ui.toolResult('types check out'); continue; }
       const errors = out.content.split('\n').filter((l) => /error TS\d+/.test(l));
-      this.ui.toolFailed(`${errors.length || 'some'} type error${errors.length === 1 ? '' : 's'}`);
-      problems.push(`In ${show} (tsc --noEmit):\n${(errors.length ? errors : out.content.split('\n')).slice(0, 40).join('\n')}`);
+
+      /**
+       * Only the errors this turn is answerable for.
+       *
+       * tsc reports the whole project, and a real project usually has errors
+       * in it already that have nothing to do with the file just edited.
+       * Handing those back reads as "you broke this, fix it": the model spends
+       * its three fix rounds on somebody else's type errors, in files it has
+       * never opened, and the thing the user asked for never gets finished.
+       *
+       * So the first check of a project in this session records what was
+       * already wrong outside the files this turn touched, and after that only
+       * errors that are not on that list are reported. Anything genuinely
+       * introduced - in a changed file, or anywhere a change knocked on to -
+       * is new, and still goes straight back.
+       */
+      const mine = new Set(changed.map((rel) => path.resolve(root, rel)));
+      const isMine = (line) => {
+        const file = typeErrorFile(line);
+        return file ? mine.has(path.resolve(dir, file)) : false;
+      };
+      let base = (this.tsBaseline ??= new Map()).get(dir);
+      let fresh;
+      if (!base) {
+        base = new Set(errors.filter((l) => !isMine(l)).map(typeErrorKey));
+        this.tsBaseline.set(dir, base);
+        fresh = errors.filter(isMine);
+      } else {
+        fresh = errors.filter((l) => !base.has(typeErrorKey(l)));
+      }
+
+      if (!fresh.length) {
+        this.ui.toolResult(errors.length ? `no new type errors (${errors.length} already there)` : 'types check out');
+        continue;
+      }
+      this.ui.toolFailed(`${fresh.length} type error${fresh.length === 1 ? '' : 's'}`);
+      problems.push(`In ${show} (tsc --noEmit):\n${fresh.slice(0, 40).join('\n')}`);
     }
 
     for (const f of singles) {

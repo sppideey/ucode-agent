@@ -100,7 +100,12 @@ export async function save(session, { home = HOME } = {}) {
   const temp = `${target}.${process.pid}.tmp`;
 
   try {
-    await fs.writeFile(temp, JSON.stringify(session, null, 2), 'utf8');
+    // Compact, not pretty. The whole file is rewritten after every tool
+    // result, and on a long build with file contents in it the indentation was
+    // roughly half of what got written each time — for a file read by programs,
+    // not by people. `node -e "console.log(require('./x.json').messages)"` or
+    // /resume reads it either way.
+    await fs.writeFile(temp, JSON.stringify(session), 'utf8');
     await fs.rename(temp, target);
   } catch (err) {
     await fs.rm(temp, { force: true }).catch(() => {});

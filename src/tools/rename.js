@@ -18,7 +18,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
-import { resolveIn, guard, result, walk } from './shared.js';
+import { resolveIn, guard, result, walk, writeTracked } from './shared.js';
 
 const SOURCE = /\.(?:[cm]?[jt]sx?|py)$/i;
 const IDENT = /^[A-Za-z_$][\w$]*$/;
@@ -133,7 +133,7 @@ export async function renameSymbol({ name, to, path: p = '.' }) {
     if (before === null || !before.includes(from)) continue;
     const { text, lines } = renameIn(before, from, into);
     if (!lines.length || text === before) continue;
-    await fs.writeFile(abs, text, 'utf8');
+    await writeTracked(abs, text);
     changed.push({ rel: rel || target.show, lines });
     total += lines.length;
   }
