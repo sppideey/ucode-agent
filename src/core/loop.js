@@ -1952,11 +1952,19 @@ export class Agent {
     const from = model();
     let next = fallbackFor(from, this.tried);
 
+    const why = err.kind === 'rate_limit' ? 'busy' : err.kind === 'timeout' ? 'too slow to answer' : 'not answering';
+
     if (!next) {
-      const until = Date.now() + 60_000;
-      this.ui.startSpinner('every model is busy');
+      // With fallback off this is the ordinary path, so the wait names the one
+      // model being waited on. A rate limit needs the full minute to clear; a
+      // timeout has already cost minutes of silence, and waiting longer before
+      // asking again buys nothing.
+      const alone = process.env.UCODE_FALLBACK !== '1';
+      const who = alone ? modelName(from) : 'every model';
+      const until = Date.now() + (err.kind === 'rate_limit' || !alone ? 60_000 : 5_000);
+      this.ui.startSpinner(`${who} is ${why}`);
       while (Date.now() < until && !this.abort?.signal.aborted) {
-        this.ui.updateSpinner(`every model is busy — trying again in ${Math.ceil((until - Date.now()) / 1000)}s`);
+        this.ui.updateSpinner(`${who} is ${why} — trying again in ${Math.ceil((until - Date.now()) / 1000)}s`);
         await wait(1000);
       }
       this.ui.stopSpinner();
@@ -1968,8 +1976,9 @@ export class Agent {
     this.tried.add(next);
     setModel(next);
     this.cooldownUntil = Date.now() + COOLDOWN;
-    const why = err.kind === 'rate_limit' ? 'busy' : err.kind === 'timeout' ? 'too slow to answer' : 'not answering';
-    this.ui.note(`${modelName(from)} is ${why} — carrying on with ${modelName(next)}`);
+    this.ui.note(next === from
+      ? `${modelName(from)} was ${why} — asking it again`
+      : `${modelName(from)} is ${why} — carrying on with ${modelName(next)}`);
     if (this.full) this.showHeader({ clear: false });
     return true;
   }

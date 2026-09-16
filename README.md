@@ -416,6 +416,7 @@ ucode [options]
 Environment overrides: `UCODE_MODEL`, `UCODE_WORKER_MODEL` (a faster model for
 parallel workers), `UCODE_WORKER_STEPS`, `UCODE_MAX_CONTEXT_TOKENS`,
 `UCODE_MAX_STEPS`, `UCODE_MAX_TOOL_OUTPUT`, `UCODE_REQUEST_TIMEOUT_MS`,
+`UCODE_STALL_MS` (how long a silent reply is waited on before asking again, 60s),
 `UCODE_BASE_URL`, `UCODE_NO_UPDATE`.
 
 Web search needs a Tavily key — free, 1000 searches a month, no card. Without

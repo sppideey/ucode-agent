@@ -137,6 +137,21 @@ export function fallbackFor(id, tried = new Set()) {
 /** Seconds to wait on successive rate limits that come with no retry-after. */
 const RATE_LIMIT_BACKOFF = [5, 10, 20];
 
+/**
+ * How long a stream may go without a single chunk before it counts as frozen.
+ *
+ * A free endpoint can accept a request and then send nothing at all, and the
+ * only thing that used to end that was the five-minute request timeout — five
+ * minutes of a spinner, then the same again on the retry. Reasoning streams
+ * as it is produced, so even the slowest thinker sends something well inside
+ * a minute; silence for that long means nobody is working on the reply.
+ */
+export const stallLimit = () => Number(process.env.UCODE_STALL_MS) || 60_000;
+
+/** Freezes in a row before ucode stops asking and says to switch models. */
+export const MAX_STALLS = 3;
+let stalls = 0;
+
 let current = process.env.UCODE_MODEL || DEFAULT_MODEL;
 let client = null;
 
@@ -622,15 +637,33 @@ export async function ask(messages, tools = [], opts = {}) {
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
-      if (opts.onText) return await streamed(request, callOpts, id);
+      if (opts.onText) {
+        const reply = await streamed(request, callOpts, id);
+        stalls = 0;
+        return reply;
+      }
       const { data, response } = await connection().chat.completions
         .create(request, { signal: opts.signal })
         .withResponse();
       noteLimits(response?.headers);
+      stalls = 0;
       return normalize(data, id);
     } catch (err) {
       noteLimits(err?.headers);
       problem = explain(err, id);
+
+      // Retrying a model that keeps freezing only repeats the wait. After a
+      // few in a row, say so and hand the choice back.
+      if (problem.detail?.stalled && ++stalls >= MAX_STALLS) {
+        stalls = 0;
+        throw new Failure({
+          kind: 'stalled',
+          attempted: `asking ${modelName(id)} for a reply`,
+          failed: `${modelName(id)} froze ${MAX_STALLS} times in a row — it took the request and then sent nothing.`,
+          fix: 'Its free endpoint is struggling right now. Run /model and pick another one; North Mini Code answers soonest.',
+          cause: problem,
+        });
+      }
 
       // A per-minute limit is a wait, not a failure. Sit it out rather than
       // making the user retype their message. Free endpoints often refuse
@@ -656,6 +689,7 @@ export async function ask(messages, tools = [], opts = {}) {
         problem.kind === 'server' || problem.kind === 'network' || problem.kind === 'timeout';
       if (!worthRetrying || attempt === attempts || opts.signal?.aborted) break;
       if (printed > 0) break; // half an answer is on screen; do not print it twice
+      if (problem.detail?.handed) break; // its first tool calls are already running
 
       // A stalled provider needs longer to come back than a dropped socket
       // does, and the wait is narrated so a slow turn never looks like a hang.
@@ -675,13 +709,17 @@ export async function ask(messages, tools = [], opts = {}) {
 
 /** Collect a streamed reply, handing deltas out as they land. */
 async function streamed(request, opts, id) {
-  const { data: stream, response } = await connection().chat.completions
-    .create(
-      { ...request, stream: true, stream_options: { include_usage: true } },
-      { signal: opts.signal }
-    )
-    .withResponse();
-  noteLimits(response?.headers);
+  // A watchdog of its own, so a frozen stream can be ended without it looking
+  // like the user pressed stop.
+  const quiet = new AbortController();
+  const stop = () => quiet.abort();
+  opts.signal?.addEventListener('abort', stop, { once: true });
+  let stalled = false;
+  let timer;
+  const alive = () => {
+    clearTimeout(timer);
+    timer = setTimeout(() => { stalled = true; quiet.abort(); }, stallLimit());
+  };
 
   let text = '';
   let reasoning = '';
@@ -691,57 +729,82 @@ async function streamed(request, opts, id) {
   const handed = new Set();
   let highest = -1;
 
-  for await (const chunk of stream) {
-    if (opts.signal?.aborted) break;
-    if (chunk.usage) usage = chunk.usage;
+  try {
+    alive();
+    const { data: stream, response } = await connection().chat.completions
+      .create(
+        { ...request, stream: true, stream_options: { include_usage: true } },
+        { signal: quiet.signal }
+      )
+      .withResponse();
+    noteLimits(response?.headers);
 
-    const choice = chunk.choices?.[0];
-    if (!choice) continue;
-    if (choice.finish_reason) finishReason = choice.finish_reason;
-    const delta = choice.delta ?? {};
+    for await (const chunk of stream) {
+      alive();
+      if (opts.signal?.aborted) break;
+      if (chunk.usage) usage = chunk.usage;
 
-    // Reasoning arrives on a separate channel: `reasoning` on OpenRouter,
-    // `reasoning_content` on some upstreams.
-    const thinking = delta.reasoning ?? delta.reasoning_content;
-    if (thinking) {
-      reasoning += thinking;
-      opts.onThinking?.(thinking);
-    }
+      const choice = chunk.choices?.[0];
+      if (!choice) continue;
+      if (choice.finish_reason) finishReason = choice.finish_reason;
+      const delta = choice.delta ?? {};
 
-    if (delta.content) {
-      text += delta.content;
-      opts.onText(delta.content);
-    }
-
-    // A tool call's name and arguments arrive across several chunks, keyed by
-    // index, so they are stitched back together here.
-    for (const call of delta.tool_calls ?? []) {
-      // Calls arrive one after another, so the first chunk of call N means
-      // every call before it is complete. Those are handed over at once, and
-      // the caller can start running them while the rest are still being
-      // written — the reply streaming and the tools working overlap.
-      if (opts.onToolCall && call.index > highest) {
-        for (const [index, slot] of partial) {
-          if (index < call.index && !handed.has(index)) {
-            handed.add(index);
-            opts.onToolCall(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args }));
-          }
-        }
-        highest = call.index;
+      // Reasoning arrives on a separate channel: `reasoning` on OpenRouter,
+      // `reasoning_content` on some upstreams.
+      const thinking = delta.reasoning ?? delta.reasoning_content;
+      if (thinking) {
+        reasoning += thinking;
+        opts.onThinking?.(thinking);
       }
 
-      const slot = partial.get(call.index) ?? { id: '', name: '', args: '' };
-      if (call.id) slot.id = call.id;
-      if (call.function?.name) slot.name += call.function.name;
-      if (call.function?.arguments) slot.args += call.function.arguments;
-      partial.set(call.index, slot);
+      if (delta.content) {
+        text += delta.content;
+        opts.onText(delta.content);
+      }
 
-      // A whole app arrives as one enormous arguments string that takes a
-      // minute or two to write. Handing it over as it grows is what lets the
-      // caller say which file is being written right now, instead of showing
-      // a spinner that has meant nothing for ninety seconds.
-      if (call.function?.arguments) opts.onToolArgs?.({ index: call.index, name: slot.name, args: slot.args });
+      // A tool call's name and arguments arrive across several chunks, keyed by
+      // index, so they are stitched back together here.
+      for (const call of delta.tool_calls ?? []) {
+        // Calls arrive one after another, so the first chunk of call N means
+        // every call before it is complete. Those are handed over at once, and
+        // the caller can start running them while the rest are still being
+        // written — the reply streaming and the tools working overlap.
+        if (opts.onToolCall && call.index > highest) {
+          for (const [index, slot] of partial) {
+            if (index < call.index && !handed.has(index)) {
+              handed.add(index);
+              opts.onToolCall(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args }));
+            }
+          }
+          highest = call.index;
+        }
+
+        const slot = partial.get(call.index) ?? { id: '', name: '', args: '' };
+        if (call.id) slot.id = call.id;
+        if (call.function?.name) slot.name += call.function.name;
+        if (call.function?.arguments) slot.args += call.function.arguments;
+        partial.set(call.index, slot);
+
+        // A whole app arrives as one enormous arguments string that takes a
+        // minute or two to write. Handing it over as it grows is what lets the
+        // caller say which file is being written right now, instead of showing
+        // a spinner that has meant nothing for ninety seconds.
+        if (call.function?.arguments) opts.onToolArgs?.({ index: call.index, name: slot.name, args: slot.args });
+      }
     }
+  } catch (err) {
+    if (!stalled || opts.signal?.aborted) throw err;
+    throw new Failure({
+      kind: 'timeout',
+      attempted: `asking ${modelName(id)} for a reply`,
+      failed: `${modelName(id)} went silent for ${Math.round(stallLimit() / 1000)}s, so ucode stopped waiting.`,
+      fix: 'ucode asks again by itself. If it keeps freezing, /model to North Mini Code.',
+      detail: { stalled: true, handed: handed.size },
+      cause: err,
+    });
+  } finally {
+    clearTimeout(timer);
+    opts.signal?.removeEventListener('abort', stop);
   }
 
   const toolCalls = [];

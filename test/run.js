@@ -30,8 +30,9 @@ import { usage, tooBig, fold, forSummary } from '../src/core/window.js';
 import {
   MODELS, DEFAULT_MODEL, setModel, model, modelName, modelList,
   estimateTokens, estimateConversation, contextLimit, explain, fallbackFor, FALLBACKS, readCall,
+  ask, resetConnection, MAX_STALLS,
 } from '../src/core/provider.js';
-import { lean } from '../src/core/loop.js';
+import { Agent, lean } from '../src/core/loop.js';
 import { newer } from '../src/core/updater.js';
 import { Failure, ToolFailure, Declined, isFailure } from '../src/core/failure.js';
 
@@ -1116,6 +1117,109 @@ await test('the context limit follows the model', () => {
   } finally {
     setModel(before);
   }
+});
+
+await test('a retry on the same model does not claim to have switched', async () => {
+  const before = model();
+  const fallback = process.env.UCODE_FALLBACK;
+  delete process.env.UCODE_FALLBACK;
+  try {
+    setModel('nex-agi/nex-n2.5-pro:free');
+    const agent = new Agent({ cwd: process.cwd() });
+    const notes = [];
+    agent.full = false;
+    agent.ui = { note: (t) => notes.push(t), startSpinner() {}, updateSpinner() {}, stopSpinner() {} };
+    agent.failovers = 0;
+    agent.tried = new Set([model()]);
+    const started = Date.now();
+    ok(await agent.failover({ kind: 'timeout' }));
+    eq(model(), 'nex-agi/nex-n2.5-pro:free');
+    eq(notes, ['Nex N2.5 Pro was too slow to answer — asking it again']);
+    ok(Date.now() - started < 15_000, 'a timeout should not sit out the rate-limit minute');
+  } finally {
+    if (fallback !== undefined) process.env.UCODE_FALLBACK = fallback;
+    setModel(before);
+  }
+});
+
+// A stand-in for OpenRouter: `reply(res, n)` decides what request n gets.
+async function fakeProvider(reply, fn) {
+  const http = await import('node:http');
+  let n = 0;
+  const server = http.createServer((req, res) => {
+    req.resume();
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      reply(res, ++n);
+    });
+  });
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const saved = { url: process.env.UCODE_BASE_URL, stall: process.env.UCODE_STALL_MS, key: process.env.UCODE_API_KEY };
+  process.env.UCODE_BASE_URL = `http://127.0.0.1:${server.address().port}`;
+  process.env.UCODE_STALL_MS = '400';
+  process.env.UCODE_API_KEY ||= 'sk-or-test';
+  resetConnection();
+  try {
+    return await fn(() => n);
+  } finally {
+    for (const [k, v] of [['UCODE_BASE_URL', saved.url], ['UCODE_STALL_MS', saved.stall], ['UCODE_API_KEY', saved.key]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    resetConnection();
+    server.closeAllConnections();
+    server.close();
+  }
+}
+
+const chunk = (delta, finish = null) =>
+  `data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
+
+await test('a stream that goes silent is dropped and asked again, not waited on for minutes', async () => {
+  await fakeProvider(
+    (res, n) => {
+      if (n === 1) return; // takes the request, then says nothing
+      res.write(chunk({ content: 'hello' }));
+      res.end(chunk({}, 'stop') + 'data: [DONE]\n\n');
+    },
+    async (count) => {
+      const started = Date.now();
+      const reply = await ask([{ role: 'user', content: 'hi' }], [], { onText() {} });
+      eq(reply.text, 'hello');
+      eq(count(), 2);
+      ok(Date.now() - started < 10_000, 'the freeze should cost the stall limit, not the request timeout');
+    }
+  );
+});
+
+await test('a slow stream that keeps sending is left alone', async () => {
+  await fakeProvider(
+    (res) => {
+      let i = 0;
+      const tick = setInterval(() => {
+        res.write(chunk({ reasoning: 'thinking ' }));
+        if (++i === 4) {
+          clearInterval(tick);
+          res.end(chunk({ content: 'done' }, 'stop') + 'data: [DONE]\n\n');
+        }
+      }, 250); // each gap is inside the limit, the whole reply is well past it
+    },
+    async (count) => {
+      const reply = await ask([{ role: 'user', content: 'hi' }], [], { onText() {} });
+      eq(reply.text, 'done');
+      eq(count(), 1);
+    }
+  );
+});
+
+await test('a model that keeps freezing stops the turn and says to switch', async () => {
+  await fakeProvider(
+    () => {},
+    async (count) => {
+      const err = await throws(() => ask([{ role: 'user', content: 'hi' }], [], { onText() {} }), 'stalled');
+      eq(count(), MAX_STALLS);
+      ok(/\/model/.test(err.fix));
+    }
+  );
 });
 
 await test('token estimates scale with the text', () => {
