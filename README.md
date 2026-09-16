@@ -1,8 +1,8 @@
 # ucode
 
 A coding agent that lives in your terminal. It reads your code, edits it, runs
-your commands, and keeps every conversation on disk. It runs on NVIDIA and
-Cohere models, all of them free.
+your commands, and keeps every conversation on disk. It runs on NVIDIA,
+Cohere and Nex AGI models, all of them free.
 
 It opens on a quiet screen — the name, the place to type, and the version in the
 corner:
@@ -87,8 +87,8 @@ Needs Node 22 or newer.
 
 ## The models
 
-Five, and no picker full of names nobody recognises. NVIDIA and Cohere both
-serve capable models free, and both handle tool calling
+Six, and no picker full of names nobody recognises. NVIDIA, Cohere and Nex AGI
+all serve capable models free, and all handle tool calling
 properly, which is the thing an agent actually depends on.
 
 | Model | Context | For |
@@ -98,6 +98,7 @@ properly, which is the thing an agent actually depends on.
 | Nemotron 3 Super | 262k | strong all-rounder, quick to start |
 | Nemotron 3 Nano Omni | 256k | small, fast, reasoning tuned |
 | **North Mini Code** ★ | 256k | the default — built for code and interface work, quick to answer |
+| Nex N2.5 Pro | 262k | new agentic coder, on trial — can stall on big builds |
 
 `/model` shows them and switches. `ucode -m cohere/north-mini-code:free`
 starts on one.

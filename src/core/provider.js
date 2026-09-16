@@ -46,9 +46,9 @@ dotenv.config({ path: join(PACKAGE_ROOT, '.env'), quiet: true });
 /**
  * The whole model list. Not a starting point — the list.
  *
- * ucode runs on NVIDIA and Cohere only. Both vendors serve genuinely capable
- * models free through OpenRouter, both handle tool calling properly, and
- * keeping the set to five means every one of them has been used in anger
+ * ucode runs on NVIDIA, Cohere and Nex AGI only. All three serve genuinely
+ * capable models free through OpenRouter, all handle tool calling properly,
+ * and keeping the set to six means every one of them has been used in anger
  * rather than listed on the strength of a benchmark. A picker offering sixty
  * models is a picker nobody reads.
  *
@@ -81,6 +81,13 @@ export const MODELS = {
     context: 256_000,
     star: true,
     note: 'the default — built for code and interface work, quick to answer',
+  },
+  // On trial, so not the default and not in FALLBACKS yet. Nex AGI is its only
+  // upstream, so a stall there has nowhere else to go.
+  'nex-agi/nex-n2.5-pro:free': {
+    name: 'Nex N2.5 Pro',
+    context: 262_144,
+    note: 'new agentic coder, on trial — can stall on big builds',
   },
 };
 
@@ -151,7 +158,7 @@ export function setModel(id) {
     throw new Failure({
       kind: 'bad_model',
       attempted: `switching to "${wanted}"`,
-      failed: 'ucode only runs NVIDIA and Cohere models, and that is not one of them.',
+      failed: 'ucode only runs NVIDIA, Cohere and Nex AGI models, and that is not one of them.',
       fix: `Run /model to choose from: ${Object.keys(MODELS).join(', ')}`,
     });
   }

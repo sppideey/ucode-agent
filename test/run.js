@@ -1036,11 +1036,11 @@ await test('tool traffic is trimmed for the summarizer', () => {
 
 section('models');
 
-await test('exactly the NVIDIA and Cohere models are offered', () => {
+await test('exactly the NVIDIA, Cohere and Nex AGI models are offered', () => {
   const ids = Object.keys(MODELS);
-  eq(ids.length, 5);
+  eq(ids.length, 6);
   for (const id of ids) {
-    ok(/^(nvidia|cohere)\//.test(id), `${id} is not NVIDIA or Cohere`);
+    ok(/^(nvidia|cohere|nex-agi)\//.test(id), `${id} is not NVIDIA, Cohere or Nex AGI`);
     ok(id.endsWith(':free'), `${id} is not free`);
     ok(MODELS[id].name && MODELS[id].note, `${id} needs a name and a note`);
   }
