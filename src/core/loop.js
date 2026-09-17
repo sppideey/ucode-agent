@@ -51,6 +51,7 @@ import { formatDuration } from '../ui/activity.js';
 import { runDoctor } from './doctor.js';
 import { JS_LOGIC } from './jslogic.js';
 import { deploy } from '../tools/deploy.js';
+import { normaliseFiles } from '../tools/scaffold.js';
 
 /**
  * Tool calls allowed in one turn.
@@ -450,7 +451,9 @@ function pathsOf(call) {
   // create_app writes the app in the same call it scaffolds it, so those
   // files are changes like any other: they are checked, and they are counted.
   if (call.name === 'batch_write' || call.name === 'edit_files' || call.name === 'create_app') {
-    return (a.files ?? []).map((f) => f?.path).filter(Boolean);
+    // Read the way the tools read it: the list can arrive as a JSON string or
+    // a { path: contents } map, and a string has a .length but no .map.
+    return normaliseFiles(a.files).map((f) => f?.path).filter((p) => typeof p === 'string' && p);
   }
   return a.path ? [a.path] : [];
 }

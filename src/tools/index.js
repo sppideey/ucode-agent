@@ -12,7 +12,7 @@ import { addBlock, BLOCK_NAMES, PLAIN_BLOCK_NAMES, ALL_BLOCK_NAMES } from './blo
 import { typeOf } from './types.js';
 import { runCommand, runCommands } from './shell.js';
 import { webSearch } from './web.js';
-import { createApp, TEMPLATE_NAMES, TEMPLATE_NOTES } from './scaffold.js';
+import { createApp, normaliseFiles, TEMPLATE_NAMES, TEMPLATE_NOTES } from './scaffold.js';
 import { deploy } from './deploy.js';
 import { clip, READ_LINES } from './shared.js';
 
@@ -702,13 +702,15 @@ export function describe(name, args = {}) {
       return `Running ${args.commands?.length ?? 0} commands together`;
     case 'deploy':
       return `Deploying ${clip(args.folder || '.', 30)} to Vercel`;
-    case 'create_app':
+    case 'create_app': {
+      const files = normaliseFiles(args.files).length;
       // Say which starter it actually is. Hardcoding one of them meant a plain
       // HTML app announced itself as Next.js, which is a line that is simply
       // untrue on screen while the opposite happens on disk.
       return `Creating ${clip(args.name || args.folder, 30)} from the ` +
         `${args.template === 'next-shadcn' ? 'Next.js' : 'HTML'} starter` +
-        `${args.files?.length ? ` with ${args.files.length} file${args.files.length === 1 ? '' : 's'}` : ''}`;
+        `${files ? ` with ${files} file${files === 1 ? '' : 's'}` : ''}`;
+    }
     case 'look_at_app':
       return `Looking at ${clip(args.url, 40)} on a phone and a desktop`;
     case 'web_search':

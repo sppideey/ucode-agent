@@ -1222,6 +1222,14 @@ await test('a model that keeps freezing stops the turn and says to switch', asyn
   );
 });
 
+await test('a file list sent as text is counted as files, not characters', () => {
+  // Laguna sent create_app's files as a string that would not parse. Its
+  // .length was shown as "12251 files", and .map on it crashed the turn.
+  eq(describe('create_app', { name: 'Remind', files: 'x'.repeat(12251) }), 'Creating Remind from the HTML starter');
+  eq(describe('create_app', { name: 'Remind', files: JSON.stringify([{ path: 'a.js', content: '' }, { path: 'b.css', content: '' }]) }),
+    'Creating Remind from the HTML starter with 2 files');
+});
+
 await test('token estimates scale with the text', () => {
   eq(estimateTokens(''), 0);
   eq(estimateTokens('abcd'), 1);

@@ -48,7 +48,7 @@ const SHOW_BACK = { 'plain-html': ['index.html', 'styles.css', 'app.js'] };
  * something adjacent. Each of those, refused, is a round trip spent being
  * told what could have been read — so they are all read.
  */
-function normaliseFiles(files) {
+export function normaliseFiles(files) {
   let value = files;
   if (typeof value === 'string') {
     try { value = JSON.parse(value); } catch { return []; }
