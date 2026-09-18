@@ -94,6 +94,10 @@ export const MODELS = {
   'deepseek/deepseek-v4-flash-0731:free': {
     name: 'DeepSeek V4 Flash',
     context: 1_048_576,
+    // Left to itself it thinks for minutes before every step — over two
+    // minutes of nothing on screen before its first word. Low effort answers
+    // in seconds and still plans the build.
+    reasoning: { effort: 'low' },
     note: 'fast DeepSeek coder, 1M context — on trial',
   },
   'qwen/qwen3.8-27b:free': {
@@ -162,6 +166,9 @@ export const stallLimit = () => Number(process.env.UCODE_STALL_MS) || 60_000;
 
 /** Freezes in a row before ucode stops asking and says to switch models. */
 export const MAX_STALLS = 3;
+
+/** How long a reply may go quiet once it has started writing a tool call. */
+const WRITING_LIMIT = 300_000;
 let stalls = 0;
 
 let current = process.env.UCODE_MODEL || DEFAULT_MODEL;
@@ -632,7 +639,8 @@ export async function ask(messages, tools = [], opts = {}) {
   }
   if (opts.temperature !== undefined) request.temperature = opts.temperature;
   if (opts.maxOutputTokens) request.max_tokens = opts.maxOutputTokens;
-  if (opts.reasoning) request.reasoning = opts.reasoning;
+  const reasoning = opts.reasoning ?? MODELS[id]?.reasoning;
+  if (reasoning) request.reasoning = reasoning;
 
   // A side call (the design review) passes fewer: it is better skipped than
   // waited on through a string of rate-limit pauses.
@@ -728,9 +736,14 @@ async function streamed(request, opts, id) {
   opts.signal?.addEventListener('abort', stop, { once: true });
   let stalled = false;
   let timer;
+  // Once a tool call has begun, the silence may be the call being written.
+  // DeepSeek's free upstream holds a create_app back until the whole app is
+  // done — two or three quiet minutes — and a one-minute watchdog killed every
+  // build it started. So a call in progress gets WRITING_LIMIT instead.
   const alive = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => { stalled = true; quiet.abort(); }, stallLimit());
+    const limit = partial.size ? Math.max(stallLimit(), WRITING_LIMIT) : stallLimit();
+    timer = setTimeout(() => { stalled = true; quiet.abort(); }, limit);
   };
 
   let text = '';

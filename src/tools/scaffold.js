@@ -431,6 +431,18 @@ export async function createApp({ folder, name, description, template = 'plain-h
   // The app's own files, written in this same call. Two round trips become
   // one, and round trips are nearly all of the time a build takes.
   // Next.js only: paths that have missed src/ are corrected before they land.
+  // Paths are relative to the project root, but a model will name a file
+  // "index.html" meaning the app's own. DeepSeek did: its tasker went to the
+  // project root and the starter was left in tasker/ as the app. A path that
+  // is not already under the folder is put under it.
+  const home = resolveIn(folder, 'create_app', 'folder').abs;
+  for (const f of given) {
+    const abs = resolveIn(f.path, 'create_app', 'files').abs;
+    const rel = path.relative(home, abs);
+    if (rel.startsWith('..') || path.isAbsolute(rel)) {
+      f.path = path.join(String(folder), String(f.path).replace(/^[./\\]+/, ''));
+    }
+  }
   const placed = template === 'next-shadcn' ? placeForNext(given, path.basename(target.abs)) : { files: given, moved: [] };
   const mine = placed.files;
   const wrote = mine.length ? await batchWrite({ files: mine }) : null;
