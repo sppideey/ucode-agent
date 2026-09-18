@@ -1911,6 +1911,31 @@ export class Agent {
       this.reads.set(key, seen + 1);
     }
 
+    // create_app again for the app this turn already made. DeepSeek scaffolded
+    // tasker with no files, then called create_app twice more — once with no
+    // folder or name at all — and was refused both times while the empty
+    // starter sat there. The folder and name are known, so fill them in; with
+    // no files there is nothing to create, and the next step is batch_write.
+    if (call.name === 'create_app' && this.apps?.length === 1) {
+      const made = this.apps[0];
+      const args = (call.args ??= {});
+      if (!args.folder) args.folder = path.relative(this.cwd, made) || '.';
+      if (!args.name) args.name = path.basename(made);
+      const files = args.files;
+      const none = files == null || files === ''
+        || (Array.isArray(files) ? !files.length : typeof files === 'object' && !Object.keys(files).length);
+      if (none && path.resolve(this.cwd, String(args.folder)) === made) {
+        const show = path.relative(this.cwd, made) || '.';
+        throw new ToolFailure({
+          kind: 'already_made',
+          attempted: `creating ${show}`,
+          failed: `${show} was already created this turn, with the starter files in it.`,
+          fix: `Do not call create_app again. Write the app into ${show} with one batch_write, `
+            + 'replacing the starter files with the finished ones.',
+        });
+      }
+    }
+
     // Starting a second app instead of fixing the first.
     //
     // A traced build hit a problem in todo/, abandoned it and made todo-fixed/

@@ -581,6 +581,18 @@ function check(name, args) {
     return ['the arguments must be a JSON object'];
   }
 
+  // One file named as "path" where the tool takes a list called "paths".
+  // DeepSeek did it to four read_files at once, a whole round trip spent being
+  // told a plural it could simply have been given.
+  for (const key of schema.required ?? []) {
+    const one = key.endsWith('s') ? key.slice(0, -1) : '';
+    if (args[key] == null && one && !schema.properties[one] && args[one] != null
+      && schema.properties[key]?.type === 'array') {
+      args[key] = Array.isArray(args[one]) ? args[one] : [args[one]];
+      delete args[one];
+    }
+  }
+
   for (const key of schema.required ?? []) {
     if (args[key] === undefined || args[key] === null) problems.push(`"${key}" is required and missing`);
   }
