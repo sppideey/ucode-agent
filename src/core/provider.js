@@ -168,7 +168,7 @@ export const stallLimit = () => Number(process.env.UCODE_STALL_MS) || 60_000;
 export const MAX_STALLS = 3;
 
 /** How long a reply may go quiet once it has started writing a tool call. */
-const WRITING_LIMIT = 300_000;
+const writingLimit = () => Number(process.env.UCODE_STALL_MS) || 300_000;
 let stalls = 0;
 
 let current = process.env.UCODE_MODEL || DEFAULT_MODEL;
@@ -739,10 +739,10 @@ async function streamed(request, opts, id) {
   // Once a tool call has begun, the silence may be the call being written.
   // DeepSeek's free upstream holds a create_app back until the whole app is
   // done — two or three quiet minutes — and a one-minute watchdog killed every
-  // build it started. So a call in progress gets WRITING_LIMIT instead.
+  // build it started. So a call in progress gets five minutes instead.
   const alive = () => {
     clearTimeout(timer);
-    const limit = partial.size ? Math.max(stallLimit(), WRITING_LIMIT) : stallLimit();
+    const limit = partial.size ? writingLimit() : stallLimit();
     timer = setTimeout(() => { stalled = true; quiet.abort(); }, limit);
   };
 
