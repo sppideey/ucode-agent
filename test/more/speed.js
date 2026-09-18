@@ -45,7 +45,11 @@ export default async function ({ test, section, ok, eq, sandbox }) {
       files: [{ path: 'partial/app.js', content: 'const mine = 1;\n' }],
     });
     ok(!out.content.includes('=== partial/app.js ==='), 'no point returning what was just sent');
-    ok(out.content.includes('=== partial/styles.css ==='), 'the other two still come back');
+    // Printed in full, the starter's placeholders read as the app having been
+    // overwritten, so with the app passed in they are only named.
+    ok(!out.content.includes('=== partial/styles.css ==='), 'the starter is not printed over the app');
+    ok(out.content.includes('partial/styles.css'), 'but the untouched starter files are named');
+    ok(out.content.includes('nothing overwrote them'), 'and the model is told its files stand');
   });
 
   await test('those files count as changes, so the checks see them', () => {

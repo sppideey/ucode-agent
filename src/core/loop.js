@@ -306,6 +306,9 @@ export function lean(messages, keep = 3) {
   });
 }
 
+/** Tools that write whole files, whose sizes are remembered for the turn. */
+const WHOLE_WRITES = new Set(['write_file', 'batch_write', 'create_app']);
+
 function trace(event) {
   if (!TRACE_FILE) return;
   try { appendFileSync(TRACE_FILE, `${JSON.stringify({ at: Date.now(), ...event })}
@@ -1189,6 +1192,7 @@ export class Agent {
     this.reads = new Map();
     this.declines = 0;
     this.apps = [];
+    this.wrote = new Map();
     forgetReviews(); // a new request: its apps get a fresh design review
     setRequest(input); // create_app checks this before choosing a starter
     const images = await this.attachImages(input);
@@ -1776,6 +1780,7 @@ export class Agent {
     // goes on the same line, the way a change carries its two numbers.
     // Which app folders this turn actually made, so a second one can be
     // refused before it is built and any leftovers can be counted at the end.
+    if (WHOLE_WRITES.has(call.name)) for (const f of this.writesOf(call)) this.wrote?.set(f.abs, f.size);
     if (call.name === 'create_app' && call.args?.folder) {
       const made = path.resolve(this.cwd, String(call.args.folder));
       if (!(this.apps ??= []).includes(made)) this.apps.push(made);
@@ -1857,6 +1862,21 @@ export class Agent {
     return err.kind === 'bad_args';
   }
 
+  /** The files a whole-file write names, resolved the way the tool will resolve them. */
+  writesOf(call) {
+    const a = call.args ?? {};
+    const list = call.name === 'write_file' ? [{ path: a.path, content: a.content }] : normaliseFiles(a.files);
+    const home = call.name === 'create_app' && a.folder ? path.resolve(this.cwd, String(a.folder)) : null;
+    return list
+      .filter((f) => typeof f?.path === 'string' && typeof f?.content === 'string')
+      .map((f) => {
+        let abs = path.resolve(this.cwd, f.path);
+        const rel = home ? path.relative(home, abs) : '';
+        if (home && (rel.startsWith('..') || path.isAbsolute(rel))) abs = path.resolve(home, f.path.replace(/^[./\\]+/, ''));
+        return { abs, size: f.content.length, path: f.path };
+      });
+  }
+
   async dispatch(call) {
     // The model emitted arguments that were not valid JSON. Hand the parser's
     // own complaint straight back so it can correct itself next step.
@@ -1881,6 +1901,21 @@ export class Agent {
         failed: `${call.name} is not available${this.ui.mode === 'plan' ? ' in plan mode' : ' in this project'}.`,
         fix: `Use one of the tools you were given: ${[...this.offering ?? []].join(', ')}.`,
       });
+    }
+
+    // A read of "index.html" right after create_app put it in tasker/. The
+    // model named the file that way, so it looks for it that way: DeepSeek got
+    // three not-founds and wrote the whole app again. A missing path that
+    // exists inside the one app made this turn is read from there.
+    if ((call.name === 'read_files' || call.name === 'read_file') && this.apps?.length === 1) {
+      const home = this.apps[0];
+      const inApp = (p) => {
+        if (typeof p !== 'string' || existsSync(path.resolve(this.cwd, p))) return p;
+        const there = path.resolve(home, p.replace(/^[./\\]+/, ''));
+        return existsSync(there) ? path.relative(this.cwd, there) : p;
+      };
+      if (call.name === 'read_file') call.args.path = inApp(call.args.path);
+      else if (Array.isArray(call.args?.paths)) call.args.paths = call.args.paths.map(inApp);
     }
 
     // Reading the same unchanged file over and over.
@@ -1924,6 +1959,23 @@ export class Agent {
       const files = args.files;
       const none = files == null || files === ''
         || (Array.isArray(files) ? !files.length : typeof files === 'object' && !Object.keys(files).length);
+      // Its files already written this turn, and create_app called over them
+      // again. DeepSeek does this to "verify" — and twice the second version
+      // was the broken one. The first stands; changes go through edit_file.
+      const written = [...(this.wrote?.keys() ?? [])].some((f) => {
+        const rel = path.relative(made, f);
+        return !rel.startsWith('..') && !path.isAbsolute(rel);
+      });
+      if (written && path.resolve(this.cwd, String(args.folder)) === made) {
+        const show = path.relative(this.cwd, made) || '.';
+        throw new ToolFailure({
+          kind: 'already_made',
+          attempted: `creating ${show} again`,
+          failed: `${show} was already created and written this turn; nothing was changed.`,
+          fix: 'The app is on disk as you wrote it. To check it, read it with read_files. To fix '
+            + 'something in it, use edit_file on that part. Do not call create_app again.',
+        });
+      }
       if (none && path.resolve(this.cwd, String(args.folder)) === made) {
         const show = path.relative(this.cwd, made) || '.';
         throw new ToolFailure({
@@ -1933,6 +1985,24 @@ export class Agent {
           fix: `Do not call create_app again. Write the app into ${show} with one batch_write, `
             + 'replacing the starter files with the finished ones.',
         });
+      }
+    }
+
+    // A file written this turn, about to be replaced by a sliver of itself.
+    // DeepSeek built a 13.6 KB tasker, then "verified" it by writing it again
+    // as 24 bytes, and the app was gone. Checking a file is a read.
+    if (WHOLE_WRITES.has(call.name) && this.wrote?.size) {
+      for (const f of this.writesOf(call)) {
+        const had = this.wrote.get(f.abs);
+        if (had >= 2000 && f.size < had / 4) {
+          throw new ToolFailure({
+            kind: 'would_shrink',
+            attempted: `writing ${f.path}`,
+            failed: `You wrote ${f.path} earlier this turn (${had} characters), and this would replace it with ${f.size}.`,
+            fix: 'Nothing was written. To check a file, read it with read_files; do not write it again. '
+              + 'To change part of it, use edit_file.',
+          });
+        }
       }
     }
 

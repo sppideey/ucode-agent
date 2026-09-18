@@ -3,6 +3,7 @@
  * line the user reads while each one runs.
  */
 
+import { jsonrepair } from 'jsonrepair';
 import { ToolFailure } from '../core/failure.js';
 import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFiles } from './files.js';
 import { listDir, glob, grep } from './search.js';
@@ -573,6 +574,12 @@ export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'm
  */
 const LENIENT = new Set(['create_app.files']);
 
+/** Names models use for an argument that the schema calls something else. */
+const ALIASES = {
+  path: ['file', 'filename', 'file_path', 'filepath'],
+  content: ['contents', 'text', 'code', 'body'],
+};
+
 function check(name, args) {
   const schema = tools.find((t) => t.name === name).parameters;
   const problems = [];
@@ -584,6 +591,14 @@ function check(name, args) {
   // One file named as "path" where the tool takes a list called "paths".
   // DeepSeek did it to four read_files at once, a whole round trip spent being
   // told a plural it could simply have been given.
+  // The same argument under a neighbouring name: write_file sent "file"
+  // instead of "path" cost DeepSeek two and a half minutes to be told so.
+  for (const [key, others] of Object.entries(ALIASES)) {
+    if (!schema.properties[key] || args[key] != null) continue;
+    const other = others.find((o) => args[o] != null && !schema.properties[o]);
+    if (other) { args[key] = args[other]; delete args[other]; }
+  }
+
   for (const key of schema.required ?? []) {
     const one = key.endsWith('s') ? key.slice(0, -1) : '';
     if (args[key] == null && one && !schema.properties[one] && args[one] != null
@@ -619,7 +634,15 @@ function check(name, args) {
         const parsed = JSON.parse(value);
         const kind = Array.isArray(parsed) ? 'array' : typeof parsed;
         if (kind === wanted || LENIENT.has(`${name}.${key}`)) { args[key] = parsed; actual = kind; }
-      } catch { /* not JSON either — the message below is the right answer */ }
+      } catch {
+        // Nearly JSON: DeepSeek sent a whole app's files this way and was
+        // told only that a string is not an array. Repair it before refusing.
+        try {
+          const parsed = JSON.parse(jsonrepair(value));
+          const kind = Array.isArray(parsed) ? 'array' : typeof parsed;
+          if (kind === wanted) { args[key] = parsed; actual = kind; }
+        } catch { /* not JSON either — the message below is the right answer */ }
+      }
     }
 
     // A list of files written as a { path: contents } map. The tool reads it

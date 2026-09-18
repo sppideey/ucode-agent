@@ -168,7 +168,7 @@ export const stallLimit = () => Number(process.env.UCODE_STALL_MS) || 60_000;
 export const MAX_STALLS = 3;
 
 /** How long a reply may go quiet once it has started writing a tool call. */
-const writingLimit = () => Number(process.env.UCODE_STALL_MS) || 300_000;
+const writingLimit = () => Number(process.env.UCODE_STALL_MS) || 600_000;
 let stalls = 0;
 
 let current = process.env.UCODE_MODEL || DEFAULT_MODEL;
@@ -736,10 +736,18 @@ async function streamed(request, opts, id) {
   opts.signal?.addEventListener('abort', stop, { once: true });
   let stalled = false;
   let timer;
+  const frozen = (cause) => new Failure({
+    kind: 'timeout',
+    attempted: `asking ${modelName(id)} for a reply`,
+    failed: `${modelName(id)} went silent for too long, so ucode stopped waiting.`,
+    fix: 'ucode asks again by itself. If it keeps freezing, /model to North Mini Code.',
+    detail: { stalled: true, handed: handed.size },
+    cause,
+  });
   // Once a tool call has begun, the silence may be the call being written.
   // DeepSeek's free upstream holds a create_app back until the whole app is
   // done — two or three quiet minutes — and a one-minute watchdog killed every
-  // build it started. So a call in progress gets five minutes instead.
+  // build it started. So a call in progress gets ten minutes instead.
   const alive = () => {
     clearTimeout(timer);
     const limit = partial.size ? writingLimit() : stallLimit();
@@ -819,18 +827,15 @@ async function streamed(request, opts, id) {
     }
   } catch (err) {
     if (!stalled || opts.signal?.aborted) throw err;
-    throw new Failure({
-      kind: 'timeout',
-      attempted: `asking ${modelName(id)} for a reply`,
-      failed: `${modelName(id)} went silent for ${Math.round(stallLimit() / 1000)}s, so ucode stopped waiting.`,
-      fix: 'ucode asks again by itself. If it keeps freezing, /model to North Mini Code.',
-      detail: { stalled: true, handed: handed.size },
-      cause: err,
-    });
+    throw frozen(err);
   } finally {
     clearTimeout(timer);
     opts.signal?.removeEventListener('abort', stop);
   }
+  // The watchdog's abort can also end the stream quietly instead of throwing.
+  // Carrying on from there ran a half-written create_app: JSON repair closed
+  // it with no files, and five minutes of app were saved as an empty starter.
+  if (stalled && !opts.signal?.aborted) throw frozen();
 
   const toolCalls = [];
   for (const [index, slot] of partial) {

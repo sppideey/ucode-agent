@@ -454,11 +454,15 @@ export async function createApp({ folder, name, description, template = 'plain-h
   // back — and only the ones this call did not already write over. A read is
   // another round trip to learn what ucode already knows.
   const starter = [];
+  const leftover = [];
   for (const rel of SHOW_BACK[template] ?? []) {
     const abs = path.join(target.abs, rel);
     if (written.has(abs)) continue;
     const text = await fs.readFile(abs, 'utf8').catch(() => null);
-    if (text !== null) starter.push(`=== ${target.show}/${rel} ===\n${text}`);
+    if (text !== null) {
+      starter.push(`=== ${target.show}/${rel} ===\n${text}`);
+      leftover.push(`${target.show}/${rel}`);
+    }
   }
 
   const out = result(
@@ -501,8 +505,18 @@ export async function createApp({ folder, name, description, template = 'plain-h
       (needsInstall
         ? `Run this app's commands with cwd: "${target.show}" (npm run build, npm run dev).\n\n${guide}`
         : `Nothing to install and nothing to build: open ${target.show}/index.html directly, or serve the ` +
-          `folder with "python -m http.server 8000" if it fetches anything.\n\n${guide}`) +
-      (starter.length
+          `folder with "python -m http.server 8000" if it fetches anything.\n` + (mine.length ? '' : `\n${guide}`)) +
+      // With the app passed in, the starter's placeholder files printed in full
+      // read as the app having been overwritten: DeepSeek took them for that
+      // and wrote the whole app a second time. So they are only named.
+      (mine.length
+        ? '\nYour files are on disk exactly as written above; nothing overwrote them.'
+          + (starter.length
+            ? ` Starter files you did not replace were left as they were: ${leftover.join(', ')}.`
+            : '')
+          + ' Do not write the app again: to check it, read it with read_files, and to change a '
+          + 'part of it, use edit_file. Writing it out again to verify it costs minutes and checks nothing.'
+        : starter.length
         ? `\n\nThe starter's files, in full — they are below, so do not read them back:\n\n${starter.join('\n\n')}`
         : ''),
     `${copied.length} files${wrote ? ` · ${mine.length} written` : ''}` +
