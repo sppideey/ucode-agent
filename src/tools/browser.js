@@ -188,7 +188,11 @@ export function forgetReviews() {
 const PROBE_TEXT = 'ucode check';
 
 /** Did anything at all happen on the page? */
-const moved = (a, b) => a.nodes !== b.nodes || a.text !== b.text || a.stored !== b.stored;
+// The markup itself, not its length: a timer going 25:00 -> 24:59, a counter
+// going 0 -> 1 or a task ticked off by a class change keeps every length the
+// same, and was reported as "NOTHING HAPPENS" — a false accusation the model
+// then "fixed" by rewriting script that worked.
+const moved = (a, b) => a.nodes !== b.nodes || a.html !== b.html || a.stored !== b.stored;
 
 /**
  * Use the app, rather than only looking at it.
@@ -218,6 +222,7 @@ async function useTheApp(page) {
   const snapshot = () => page.evaluate(() => ({
     nodes: document.body.querySelectorAll('*').length,
     text: document.body.innerText.replace(/\s+/g, ' ').trim().length,
+    html: document.body.innerHTML,
     stored: (() => { try { return JSON.stringify(localStorage).length; } catch { return 0; } })(),
   }));
 
@@ -326,7 +331,7 @@ export async function withStaticServer(dir, fn) {
   }
 }
 
-export async function lookAtApp({ url, paths = ['/'] }) {
+export async function lookAtApp({ url, paths = ['/'], review: withReview = true }) {
   const base = String(url ?? '').trim().replace(/\/+$/, '');
   if (!LOCAL.test(`${base}/`)) {
     throw new ToolFailure({
@@ -355,6 +360,10 @@ export async function lookAtApp({ url, paths = ['/'] }) {
     const errors = [];
     const failed = [];
     page.on('console', (m) => {
+      // The browser asks for /favicon.ico on its own. A page without one is
+      // not broken, and counting that 404 sent every plain-html build round
+      // a fix loop it did not need.
+      if (/\/favicon\.ico$/i.test(m.location()?.url ?? '')) return;
       if (m.type() === 'error' && !/devtools|download the react/i.test(m.text())) errors.push(m.text().slice(0, 200));
     });
     page.on('pageerror', (e) => errors.push(`uncaught: ${String(e.message).slice(0, 200)}`));
@@ -513,7 +522,7 @@ export async function lookAtApp({ url, paths = ['/'] }) {
   // error overlay is a minute spent on nothing.
   let critique = '';
   const state = reviews.get(base) ?? { done: false, tries: 0 };
-  if (!broken && !state.done && state.tries < 2 && toReview.length) {
+  if (withReview && !broken && !state.done && state.tries < 2 && toReview.length) {
     state.tries++;
     reviews.set(base, state);
     try {
@@ -530,7 +539,7 @@ export async function lookAtApp({ url, paths = ['/'] }) {
     critique ? `## Visual review\n${critique}` : '',
     '',
     problems
-      ? 'Fix the problems above, then look again to confirm.'
+      ? 'Fix the problems above - only those; leave everything that works as it is.'
       : state.done && critique
         ? 'The automatic checks found nothing. Weigh the visual review, fix what is worth fixing - ' +
           'the next look re-runs only the fast checks.'

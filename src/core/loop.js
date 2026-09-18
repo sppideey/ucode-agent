@@ -765,9 +765,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  there is no need to run tsc yourself.',
     '- Do not open or drive a browser. Checking the page in one is something the user',
     '  asks for with /look; your job is to leave the app in a state worth looking at.',
-    '  reports - errors, layout that overflows a phone, the review points worth fixing -',
-    '  in one pass, then look once more. A clean second look means it is done: report',
-    '  back instead of polishing in circles. Never call an interface finished unlooked at.',
+    '  When ucode hands back problems it found, fix exactly those and nothing else: a',
+    '  fix round is not a chance to restyle or rewrite what already works.',
     '- ANYTHING THAT NEEDS A SERVER IS LEFT RUNNING. If the app has a dev server -',
     '  Next.js, Vite, anything with an npm run dev - start it and leave it up when you',
     '  finish. ucode opens it in the browser for the user as soon as it is ready, so a',
@@ -1469,7 +1468,9 @@ export class Agent {
               role: 'user',
               content:
                 `ucode checked the files you changed and found errors (round ${fixRounds} of ` +
-                `${MAX_FIX_ROUNDS}). Fix all of them, then finish.\n\n${problems}`,
+                `${MAX_FIX_ROUNDS}). Fix all of them with the smallest edits that do it, then ` +
+                'finish. Change nothing else - no restyling, no rewrites of code that works.' +
+                `\n\n${problems}`,
             });
             continue;
           }
@@ -2397,7 +2398,11 @@ export class Agent {
       const { lookAtApp, withStaticServer } = await import('../tools/browser.js');
       const look = async (url) => {
         this.ui.toolCall(`Looking at ${url} on a phone and a desktop`);
-        const out = await lookAtApp({ url });
+        // No designer's review here. It cost up to a minute, and its advice
+        // went back as "errors, fix all of them" with no look afterwards to
+        // check the restyle — builds came out worse than they went in. /look
+        // still brings it, when the user asks.
+        const out = await lookAtApp({ url, review: false });
         const found = /^(\d+) problem/.exec(out.summary ?? '');
         this.ui.runStat?.(found ? `${found[1]} to fix` : 'clean');
         return found ? `I opened the app and looked at it:\n\n${out.content}` : null;
