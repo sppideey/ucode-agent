@@ -46,11 +46,11 @@ dotenv.config({ path: join(PACKAGE_ROOT, '.env'), quiet: true });
 /**
  * The whole model list. Not a starting point — the list.
  *
- * ucode runs on NVIDIA, Cohere and Nex AGI only. All three serve genuinely
- * capable models free through OpenRouter, all handle tool calling properly,
- * and keeping the set to six means every one of them has been used in anger
- * rather than listed on the strength of a benchmark. A picker offering sixty
- * models is a picker nobody reads.
+ * ucode runs on NVIDIA, Cohere, Nex AGI, DeepSeek and Qwen only. All of them
+ * serve genuinely capable models free through OpenRouter, all handle tool
+ * calling properly, and keeping the set to eight means every one of them has
+ * been used in anger rather than listed on the strength of a benchmark. A
+ * picker offering sixty models is a picker nobody reads.
  *
  * `name` is what the status bar shows. `note` is what the picker shows.
  */
@@ -88,6 +88,18 @@ export const MODELS = {
     name: 'Nex N2.5 Pro',
     context: 262_144,
     note: 'new agentic coder, on trial — can stall on big builds',
+  },
+  // Both free on OpenRouter with tool calling, added untested: on trial, not
+  // the default and not in FALLBACKS until a real ucode build has run on them.
+  'deepseek/deepseek-v4-flash-0731:free': {
+    name: 'DeepSeek V4 Flash',
+    context: 1_048_576,
+    note: 'fast DeepSeek coder, 1M context — on trial',
+  },
+  'qwen/qwen3.8-27b:free': {
+    name: 'Qwen 3.8',
+    context: 262_144,
+    note: 'compact Qwen coder, 262k context — on trial',
   },
 };
 
@@ -173,7 +185,7 @@ export function setModel(id) {
     throw new Failure({
       kind: 'bad_model',
       attempted: `switching to "${wanted}"`,
-      failed: 'ucode only runs NVIDIA, Cohere and Nex AGI models, and that is not one of them.',
+      failed: 'ucode only runs NVIDIA, Cohere, Nex AGI, DeepSeek and Qwen models, and that is not one of them.',
       fix: `Run /model to choose from: ${Object.keys(MODELS).join(', ')}`,
     });
   }

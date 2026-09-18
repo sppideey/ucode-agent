@@ -2683,7 +2683,7 @@ ${out.content}` });
     this.ui.blank();
   }
 
-  /** The six models, and this session's spend. */
+  /** The eight models, and this session's spend. */
   async cmdModel(arg) {
     if (arg) {
       try {

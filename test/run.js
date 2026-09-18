@@ -1037,11 +1037,11 @@ await test('tool traffic is trimmed for the summarizer', () => {
 
 section('models');
 
-await test('exactly the NVIDIA, Cohere and Nex AGI models are offered', () => {
+await test('exactly the NVIDIA, Cohere, Nex AGI, DeepSeek and Qwen models are offered', () => {
   const ids = Object.keys(MODELS);
-  eq(ids.length, 6);
+  eq(ids.length, 8);
   for (const id of ids) {
-    ok(/^(nvidia|cohere|nex-agi)\//.test(id), `${id} is not NVIDIA, Cohere or Nex AGI`);
+    ok(/^(nvidia|cohere|nex-agi|deepseek|qwen)\//.test(id), `${id} is not an allowed vendor`);
     ok(id.endsWith(':free'), `${id} is not free`);
     ok(MODELS[id].name && MODELS[id].note, `${id} needs a name and a note`);
   }
