@@ -374,7 +374,8 @@ export class Screen {
     // no trimming, no re-read of the request. Tidy-up exists to keep a live
     // answer short; on a resumed one it rewrites history, which is why a
     // resumed session read like only fragments had survived.
-    const body = replay ? String(text) : (closing ? trimAnswer(tidyReply(text, 4, this.lastPrompt)) : tidyReply(text, 4, this.lastPrompt));
+    const tidy = tidyReply(text, 4, this.lastPrompt);
+    const body = replay ? String(text) : (closing ? trimAnswer(tidy) : tidy);
     if (!body.trim()) return;
     this.endRun();
     this.add('');

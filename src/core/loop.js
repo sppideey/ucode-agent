@@ -877,13 +877,13 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
 }
 
 export class Agent {
-  constructor({ cwd, debug = false }) {
+  constructor({ cwd, debug = false, ui = null }) {
     this.cwd = cwd;
     this.debug = debug;
     // A full-screen layout only makes sense on a real terminal. Piped input,
     // CI and `echo ... | ucode` get the line-based interface instead.
-    this.full = Boolean(process.stdout.isTTY && process.stdin.isTTY);
-    this.ui = this.full ? new Screen({ cwd }) : new Plain({ cwd });
+    this.full = ui ? ui instanceof Screen : Boolean(process.stdout.isTTY && process.stdin.isTTY);
+    this.ui = ui ?? (this.full ? new Screen({ cwd }) : new Plain({ cwd }));
     this.stats = newStats();
     this.skills = [];
     this.session = newSession(cwd, model());
