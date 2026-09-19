@@ -170,6 +170,74 @@ function fakeScreen(cols = 100, rows = 30) {
   return { screen: s, written };
 }
 
+/** A painted frame split into its rows: each row starts at its own cursor move, the last move is the caret. */
+function frameRows(frame) {
+  return frame
+    .replace(/\x1b\[\?(?:25|7|2026)[lh]|\x1b\[K/g, '')
+    .split(/\x1b\[\d+;\d+H/)
+    .slice(1, -1);
+}
+
+await test('output cannot knock the frame out of place', () => {
+  eq(visLen('✅ ⚡ ⭐ ❌'), 11, 'symbol-block emoji are two cells');
+  eq(visLen('│─╭'), 3, 'box drawing stays one cell');
+
+  const { screen, written } = fakeScreen(60, 20);
+  screen.add('a\tb\r\n\x1b[2Jc\x1b[H');
+  ok(screen.lines.every((l) => !/[\t\r]|\x1b\[(?![0-9;]*m)/.test(l)), 'no tab, CR or cursor escape kept');
+  screen.render();
+  const frame = written.at(-1);
+  ok(frame.includes('\x1b[?7l') && frame.endsWith('\x1b[?7h\x1b[?2026l'), 'autowrap is off while painting');
+
+  // Scrolled back, streamed output must not drag the view to the bottom.
+  for (let i = 0; i < 50; i++) screen.add(`line ${i}`);
+  screen.render();
+  screen.scroll = 10;
+  screen.render();
+  const reading = screen.lines.length - screen.scroll;
+  for (let i = 0; i < 5; i++) screen.add(`more ${i}`);
+  screen.render();
+  eq(screen.lines.length - screen.scroll, reading, 'the same line stays at the bottom of the view');
+  screen.userMessage('next');
+  eq(screen.scroll, 0, 'sending a message goes back to the bottom');
+  const heldPlain = screen.lines.length - 10;
+  screen.scroll = 10;
+  screen.render();
+  screen.streamBegin();
+  screen.streamBuf = 'hello';
+  screen.repaintStream();
+  screen.render();
+  eq(screen.lines.length - screen.scroll, heldPlain, 'a short streamed line above the fold holds the view too');
+  screen.lines.length = screen.streamAt;
+  screen.streamAt = undefined;
+  screen.streamBuf = '';
+});
+
+await test('coloured lines keep their colours — only cursor-moving escapes go', () => {
+  const { screen } = fakeScreen(60, 20);
+  screen.add('\x1b[36m▌\x1b[39m \x1b[1mhello\x1b[22m\x1b[2J\x1b[H');
+  const line = screen.lines.at(-1);
+  ok(line.includes('\x1b[36m') && line.includes('\x1b[1m'), `SGR codes must survive printable(): ${JSON.stringify(line)}`);
+  ok(!/\x1b\[(?![0-9;]*m)/.test(line), 'no cursor-moving escape survives');
+  eq(visLen(line), 7, 'the kept codes take no columns');
+
+  // A streamed reply truncates and re-adds its tail on every delta; the view must hold.
+  for (let i = 0; i < 50; i++) screen.add(`line ${i}`);
+  screen.render();
+  screen.scroll = 10;
+  screen.render();
+  const held = screen.lines.length - screen.scroll;
+  screen.streamBegin();
+  screen.streamBuf = 'hello';
+  screen.repaintStream();
+  screen.streamBuf = 'hello world, a much longer line that wraps onto more rows of the small screen';
+  screen.repaintStream();
+  eq(screen.lines.length - screen.scroll, held, 'repainting the streamed tail holds the view');
+  screen.lines.length = screen.streamAt;
+  screen.streamAt = undefined;
+  screen.streamBuf = '';
+});
+
 await test('it carries the mode, the model and the percentage — and nothing else', () => {
   const { screen } = fakeScreen();
   const row = bare(screen.statusRow());
@@ -253,9 +321,7 @@ await test('the frame is still exactly as tall as the terminal', () => {
     for (let i = 0; i < 6; i++) screen.add(`line ${i}`);
     written.length = 0;
     screen.render();
-    const painted = written.join('')
-      .replace(/\x1b\[\?25[lh]|\x1b\[H|\x1b\[K|\x1b\[\d+;\d+H/g, '')
-      .split('\n');
+    const painted = frameRows(written.join(''));
     eq(painted.length, rows, `${cols}x${rows} painted the wrong number of rows`);
     for (const line of painted) eq(visLen(line), cols, `${cols}x${rows} has a row of the wrong width`);
   }
@@ -267,10 +333,7 @@ await test('there is always a clear row between the conversation and the input b
   for (let i = 0; i < 60; i++) screen.add(`output line ${i}`);
   written.length = 0;
   screen.render();
-  const rows = written.join('')
-    .replace(/\x1b\[\?25[lh]|\x1b\[H|\x1b\[K|\x1b\[\d+;\d+H/g, '')
-    .split('\n')
-    .map(bare);
+  const rows = frameRows(written.join('')).map(bare);
 
   const top = rows.findLastIndex((r) => r.startsWith('╭'));
   ok(top > 0, 'the input box should be on screen');

@@ -100,6 +100,34 @@ const at = (row, col) => `${ESC}[${row};${col}H`;
 const title = (t) => `${ESC}]0;${t}\x07`;
 
 /**
+ * Every paint is wrapped in these. Autowrap off means a row that is one cell
+ * wider than we counted loses its last cell instead of wrapping onto the next
+ * row and scrolling the whole frame up — that scroll was the glitch. The
+ * synchronized-update pair makes terminals that support it show the frame in
+ * one go; the rest ignore it.
+ */
+const PAINT_BEGIN = `${ESC}[?2026h${ESC}[?7l`;
+const PAINT_END = `${ESC}[?7h${ESC}[?2026l`;
+
+/**
+ * Text as it may be drawn: colour codes kept, everything that moves the cursor
+ * gone. A carriage return from a CRLF file sent the padding back over the
+ * line, a tab took eight cells while it was counted as one, and a clear-screen
+ * from a tool's output wiped the frame mid-paint.
+ *
+ * The SGR colour codes (\x1b[..m) are matched first and kept. An earlier
+ * version only excluded them from the CSI branch, so the bare-\x1b fallback
+ * stripped the ESC off every colour code and left "[36m" littered across
+ * coloured lines — visible only in a real terminal, never in tests, which is
+ * why the glitch survived the suite.
+ */
+function printable(text) {
+  return String(text)
+    .replace(/\t/g, '    ')
+    .replace(/\x1b\[[0-9;]*m|(\x1b(?:\[[0-?]*[ -\/]*[@-~]|\][^\x07\x1b]*(?:\x07|\x1b\\)?|[()#][0-9A-Za-z]|[\x30-\x7e])?|[\x00-\x09\x0b-\x1a\x1c-\x1f\x7f])/g, (m, bad) => (bad ? '' : m));
+}
+
+/**
  * Fixed rows below the header: the gap under it, the gap above the input box,
  * the input box's two borders, the blank row inside it, and the status row.
  */
@@ -181,6 +209,7 @@ export class Screen {
     this.onModeChange = null;
     this.spinTimer = null;
     this.paintedBusy = false;  // whose turn the frame on screen was drawn for
+    this.paintedLines = null; // transcript length at the last paint; growth since then belongs underneath a scrolled-back view
     this.activity = null; // the turn in flight: when it began, how many steps
     this.tick = 0;        // animation frames painted, for the spinner
     this.intro = 0;       // when the launch sweep began, 0 once it is over
@@ -292,11 +321,10 @@ export class Screen {
    */
   add(text = '') {
     const width = this.width();
-    for (const raw of String(text).split('\n')) {
+    for (const raw of printable(text).split('\n')) {
       if (visLen(raw) <= width) this.lines.push(raw);
       else for (const wrapped of wrapAnsi(raw, width)) this.lines.push(wrapped);
     }
-    this.scroll = 0; // new output snaps back to the bottom
   }
 
   push(text = '') {
@@ -329,6 +357,7 @@ export class Screen {
   clearScreen() {
     this.lines = [];
     this.scroll = 0;
+    this.paintedLines = null;
     this.render();
   }
 
@@ -372,6 +401,7 @@ export class Screen {
     // Kept so the reply can be checked against it: an answer that opens by
     // saying the request back is repeating the line directly above it.
     this.lastPrompt = String(text ?? '');
+    this.scroll = 0; // sending something is the one thing that jumps to the bottom
     const room = Math.max(8, this.width() - 2);   // the rail and the space after it
 
     const rows = [];
@@ -1019,10 +1049,10 @@ export class Screen {
     const width = this.width();
     const liveAt = this.activityRowAt();
     this.output.write(
-      HIDE +
+      PAINT_BEGIN + HIDE +
       (liveAt ? at(liveAt, 1) + CLEAR_LINE + padVis(this.activityLine(width), width) : '') +
       at(this.rows - 1, 1) + CLEAR_LINE + boxRow(this.statusRow(width), width, this.borderPaint()) +
-      at(row, col) + SHOW
+      at(row, col) + SHOW + PAINT_END
     );
   }
 
@@ -1149,6 +1179,7 @@ export class Screen {
     }
 
     this.pendingPrompt = 'go ahead? [y/N]';
+    this.scroll = 0; // the question has to be on screen to be answered
     this.render();
 
     return this.nextLine().then((answer) => {
@@ -1273,7 +1304,8 @@ export class Screen {
     const before = this.scroll;
     this.scroll = Math.min(Math.max(0, this.scroll + delta), max);
     if (this.scroll === before && delta > 0) this.flash('already at the top');
-    this.render();
+    // One wheel notch arrives as three arrow keys in one chunk; one frame, not three.
+    this.soon();
   }
 
   /**
@@ -1511,6 +1543,20 @@ export class Screen {
     const width = this.width();
     const height = this.viewportHeight();
 
+    // Scrolled back, the view stays on what is being read while output grows
+    // underneath: every line added since the last paint extends the scroll by
+    // the same amount, so the same rows stay on screen. Snapping to the
+    // bottom on every streamed line fought the wheel sixteen times a second.
+    // A streamed reply truncates its tail and rebuilds it on every delta, so
+    // the growth since the last paint is net — but the tail sits below a
+    // scrolled-back viewport, and net growth still moves the scroll by exactly
+    // the amount that keeps the visible rows put.
+    if (this.scroll > 0 && this.paintedLines != null) {
+      const grown = this.lines.length - this.paintedLines;
+      this.scroll = Math.min(Math.max(0, this.scroll + grown), Math.max(0, this.lines.length - height));
+    }
+    this.paintedLines = this.lines.length;
+
     // The live line is the last line of the conversation, not a fixture above
     // the input box. Pinned down there it sat at the bottom of the screen while
     // the message that started it was at the top, with the empty middle of the
@@ -1539,13 +1585,13 @@ export class Screen {
     // The cursor is hidden for the duration of the paint. Without this it is
     // dragged through every line as the frame is written, which shows up as a
     // dot flickering above the input box on every keystroke.
-    const out = [HIDE, HOME];
+    const out = [PAINT_BEGIN, HIDE];
     for (let i = 0; i < this.rows; i++) {
-      out.push(CLEAR_LINE + padVis(frame[i] ?? '', width) + (i === this.rows - 1 ? '' : '\n'));
+      out.push(at(i + 1, 1) + CLEAR_LINE + padVis(frame[i] ?? '', width));
     }
 
     const [row, col] = this.caret();
-    out.push(at(row, col) + SHOW);
+    out.push(at(row, col) + SHOW + PAINT_END);
     this.paintedBusy = this.busy();
     this.output.write(out.join(''));
   }
@@ -1637,12 +1683,12 @@ export class Screen {
       frame[this.rows - 1] = ' '.repeat(Math.max(0, g.cols - visLen(tag) - 2)) + tag;
     }
 
-    const out = [HIDE, HOME];
+    const out = [PAINT_BEGIN, HIDE];
     for (let i = 0; i < this.rows; i++) {
-      out.push(CLEAR_LINE + padVis(frame[i], g.cols) + (i === this.rows - 1 ? '' : '\n'));
+      out.push(at(i + 1, 1) + CLEAR_LINE + padVis(frame[i], g.cols));
     }
     const [row, col] = this.caret();
-    out.push(at(row, col) + SHOW);
+    out.push(at(row, col) + SHOW + PAINT_END);
     this.paintedBusy = this.busy();
     this.output.write(out.join(''));
   }
