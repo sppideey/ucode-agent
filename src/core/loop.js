@@ -363,7 +363,9 @@ const MAX_WORKERS = 3;
 const WORKER_STEPS = Number(process.env.UCODE_WORKER_STEPS) || 60;
 
 /** Workers build; they do not plan, delegate further, or load skills themselves. */
-const WORKER_EXCLUDED = new Set(['delegate', 'update_plan', 'load_skill']);
+// create_app too: a worker builds a part of the app the lead already made,
+// and a second app from a worker would also end the lead's turn (see wrapUp).
+const WORKER_EXCLUDED = new Set(['delegate', 'update_plan', 'load_skill', 'create_app']);
 
 const planTool = {
   name: 'update_plan',
@@ -459,6 +461,28 @@ function pathsOf(call) {
     return normaliseFiles(a.files).map((f) => f?.path).filter((p) => typeof p === 'string' && p);
   }
   return a.path ? [a.path] : [];
+}
+
+/**
+ * A relative path with the project's own trailing folder names in front of
+ * it, taken back off: "scratchpad/run1/taskr" inside .../scratchpad/run1 is
+ * "taskr". Left alone when something by that first name is really there.
+ * ponytail: a genuinely new folder named like the project's own (run1/ inside
+ * run1) lands one level up; tell the two apart if that ever happens for real.
+ */
+export function unrepeat(p, cwd) {
+  if (!p || path.isAbsolute(p)) return p;
+  const parts = p.split(/[\\/]+/);
+  if (parts.length < 2 || existsSync(path.join(cwd, parts[0]))) return p;
+  const own = path.resolve(cwd).split(/[\\/]+/).filter(Boolean);
+  const same = process.platform === 'win32' || process.platform === 'darwin'
+    ? (x, y) => x.toLowerCase() === y.toLowerCase()
+    : (x, y) => x === y;
+  for (let n = Math.min(own.length, parts.length - 1); n > 0; n--) {
+    const tail = own.slice(-n);
+    if (tail.every((s, i) => same(s, parts[i]))) return parts.slice(n).join('/');
+  }
+  return p;
 }
 
 /**
@@ -1193,6 +1217,7 @@ export class Agent {
     this.declines = 0;
     this.apps = [];
     this.wrote = new Map();
+    this.rewrite = null; // an Esc mid-cut must not end the next turn early
     forgetReviews(); // a new request: its apps get a fresh design review
     setRequest(input); // create_app checks this before choosing a starter
     const images = await this.attachImages(input);
@@ -1312,10 +1337,13 @@ export class Agent {
       let reply;
       let streaming = false;
       this.early = new Map();
+      // Its own signal, so one reply can be cut off without ending the turn.
+      // any() also sees an Esc that landed before this step began.
+      const cut = new AbortController();
 
       try {
         const opts = {
-          signal: this.abort.signal,
+          signal: AbortSignal.any([this.abort.signal, cut.signal]),
           onWait: (text) => this.ui.updateSpinner(text),
         };
         // Only a real terminal has somewhere to stream into.
@@ -1344,6 +1372,9 @@ export class Agent {
           // written now instead of sitting on "working" for ninety seconds.
           const writing = new Writing();
           opts.onToolArgs = ({ index, name, args }) => {
+            // create_app again over the app it already wrote. It would be
+            // refused anyway, after another ninety seconds of streaming it.
+            if (name === 'create_app' && !this.rewrite && (this.rewrite = this.builtApp())) cut.abort();
             const at = writing.seen(index, name, args);
             if (at) this.ui.updateSpinner(at);
           };
@@ -1371,6 +1402,12 @@ export class Agent {
       } catch (err) {
         this.ui.thinkingEnd();
         if (streaming) this.ui.streamEnd();
+
+        if (this.rewrite && !this.abort.signal.aborted) {
+          this.ui.stopSpinner();
+          if (await this.wrapUp(fixRounds++)) continue;
+          return;
+        }
 
         // The model invented a tool and the provider rejected the request
         // outright. Tell it what it did and let it try again.
@@ -1416,6 +1453,13 @@ export class Agent {
       // the thinking timer has to be closed out here as well.
       this.ui.thinkingEnd();
       this.ui.stopSpinner();
+      // Cut off while writing the app again, but the stream ended quietly
+      // instead of throwing. Its half-written calls must not run.
+      if (this.rewrite && !this.abort.signal.aborted) {
+        if (streaming) this.ui.streamEnd();
+        if (await this.wrapUp(fixRounds++)) continue;
+        return;
+      }
       this.record(reply.usage);
       this.ui.step?.();
       this.stats.steps++;
@@ -1544,6 +1588,10 @@ export class Agent {
 
       const badArgs = await this.runCalls(reply.toolCalls);
       if (this.abort.signal.aborted) return;
+      if (this.rewrite) {
+        if (await this.wrapUp(fixRounds++)) continue;
+        return;
+      }
 
       // Malformed arguments go back to the model, but only so many times.
       if (badArgs) {
@@ -1831,7 +1879,9 @@ export class Agent {
     // to the model, which can act on it, and not to the screen. A refusal the
     // user made, and anything that actually failed, still shows.
     if (err instanceof Declined) this.ui.toolFailed('declined');
-    else if (err.kind !== 'bad_args') this.ui.toolFailed(`${err.kind}: ${err.failed}`);
+    // A rewrite of the finished app is not a failure the user needs to see:
+    // the turn is about to end on the app already written.
+    else if (err.kind !== 'bad_args' && !this.rewrite) this.ui.toolFailed(`${err.kind}: ${err.failed}`);
 
     // Declines that keep coming are not decisions, they are a wall.
     //
@@ -1860,6 +1910,54 @@ export class Agent {
           : ''),
     });
     return err.kind === 'bad_args';
+  }
+
+  /** The app folder this turn already wrote a real file into (2 KB or more), or null. */
+  builtApp() {
+    for (const app of this.apps ?? []) {
+      for (const [abs, size] of this.wrote ?? []) {
+        const rel = path.relative(app, abs);
+        if (size >= 2000 && !rel.startsWith('..') && !path.isAbsolute(rel)) return app;
+      }
+    }
+    return null;
+  }
+
+  /**
+   * End a turn whose app is already written, without asking the model again.
+   *
+   * DeepSeek writes the whole app in its first create_app, then writes it
+   * again — six more times in one traced build, ninety seconds each, every one
+   * refused. Refusing hands the turn straight back, so on screen the build
+   * kept starting over and never said it was done. The app on disk is the
+   * answer: check it once, hand back real errors, otherwise say so and stop.
+   *
+   * Returns true when there are errors for the model to fix.
+   */
+  async wrapUp(fixRounds) {
+    const app = this.rewrite;
+    this.rewrite = null;
+    const show = path.relative(this.cwd, app).split(path.sep).join('/') || '.';
+    // Everything this turn wrote, by where it really landed: create_app moves
+    // bare names into its folder, so the names the model used can miss.
+    for (const abs of this.wrote.keys()) this.sinceCheck.add(path.relative(this.cwd, abs));
+    const problems = await this.autoCheck();
+    if (problems && fixRounds < MAX_FIX_ROUNDS) {
+      this.push({
+        role: 'user',
+        content:
+          `The app is already written in ${show}; do not call create_app again. ucode checked it ` +
+          `and found errors. Fix them with edit_file, the smallest edits that do it, then finish.\n\n${problems}`,
+      });
+      return true;
+    }
+    const page = existsSync(path.join(app, 'index.html')) ? `${show}/index.html` : show;
+    const text = problems
+      ? `The app is in \`${show}\`, but the check still finds problems:\n\n${problems}`
+      : `Done — the app is in \`${show}\`. Open \`${page}\` in your browser to try it.`;
+    this.push({ role: 'assistant', content: text });
+    this.ui.assistant(text, { closing: true });
+    return false;
   }
 
   /** The files a whole-file write names, resolved the way the tool will resolve them. */
@@ -1903,6 +2001,18 @@ export class Agent {
       });
     }
 
+    // Paths that start by repeating the project's own folder names. Told the
+    // working directory was .../scratchpad/run1, DeepSeek made its app at
+    // scratchpad/run1/taskr — the tree copied inside itself — and every later
+    // read of taskr/ missed, so it wrote the whole app again, six times.
+    const a = call.args;
+    if (a && typeof a === 'object') {
+      const fix = (p) => unrepeat(p, this.cwd);
+      for (const k of ['folder', 'path']) if (typeof a[k] === 'string') a[k] = fix(a[k]);
+      if (Array.isArray(a.paths)) a.paths = a.paths.map(fix);
+      if (Array.isArray(a.files)) for (const f of a.files) if (typeof f?.path === 'string') f.path = fix(f.path);
+    }
+
     // A read of "index.html" right after create_app put it in tasker/. The
     // model named the file that way, so it looks for it that way: DeepSeek got
     // three not-founds and wrote the whole app again. A missing path that
@@ -1944,6 +2054,19 @@ export class Agent {
         };
       }
       this.reads.set(key, seen + 1);
+    }
+
+    // A whole app already written this turn, and create_app called again. The
+    // turn ends here (see wrapUp) instead of handing the refusal back to be
+    // retried: DeepSeek wrote the finished app, then wrote it six more times.
+    if (call.name === 'create_app' && (this.rewrite = this.builtApp())) {
+      const show = path.relative(this.cwd, this.rewrite) || '.';
+      throw new ToolFailure({
+        kind: 'already_made',
+        attempted: `creating ${show} again`,
+        failed: `${show} was already written this turn; nothing was changed.`,
+        fix: 'Do not call create_app again. To fix something in it, use edit_file on that part.',
+      });
     }
 
     // create_app again for the app this turn already made. DeepSeek scaffolded

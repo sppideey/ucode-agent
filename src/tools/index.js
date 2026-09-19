@@ -578,6 +578,7 @@ const LENIENT = new Set(['create_app.files']);
 const ALIASES = {
   path: ['file', 'filename', 'file_path', 'filepath'],
   content: ['contents', 'text', 'code', 'body'],
+  paths: ['files'],
 };
 
 function check(name, args) {
@@ -597,6 +598,10 @@ function check(name, args) {
     if (!schema.properties[key] || args[key] != null) continue;
     const other = others.find((o) => args[o] != null && !schema.properties[o]);
     if (other) { args[key] = args[other]; delete args[other]; }
+  }
+  // read_files sent as files: [{ path }], the shape batch_write takes.
+  if (Array.isArray(args.paths)) {
+    args.paths = args.paths.map((p) => (typeof p?.path === 'string' ? p.path : p));
   }
 
   for (const key of schema.required ?? []) {

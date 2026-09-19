@@ -812,6 +812,11 @@ await test('a numeric string is accepted where a number is wanted', async () => 
   ok(out.content.includes('two'));
 });
 
+await test('read_files sent as files: [{ path }] still reads', async () => {
+  const out = await runTool('read_files', { files: [{ path: 'a.txt' }] });
+  ok(out.content.includes('two'));
+});
+
 await test('the wrong type is rejected', async () => {
   await throws(() => runTool('read_file', { path: 42 }), 'bad_args');
 });
