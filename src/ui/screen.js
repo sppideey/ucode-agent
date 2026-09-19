@@ -368,10 +368,13 @@ export class Screen {
    * the last thing left on screen, and what the whole session reads like
    * afterwards, so it is cut to eight lines — see trimAnswer.
    */
-  assistant(text, { closing = false } = {}) {
+  assistant(text, { closing = false, replay = false, silent = false } = {}) {
     if (!text?.trim()) return;
-    const tidy = tidyReply(text, 4, this.lastPrompt);
-    const body = closing ? trimAnswer(tidy) : tidy;
+    // A replayed answer goes back exactly as it was first shown: no tidying,
+    // no trimming, no re-read of the request. Tidy-up exists to keep a live
+    // answer short; on a resumed one it rewrites history, which is why a
+    // resumed session read like only fragments had survived.
+    const body = replay ? String(text) : (closing ? trimAnswer(tidyReply(text, 4, this.lastPrompt)) : tidyReply(text, 4, this.lastPrompt));
     if (!body.trim()) return;
     this.endRun();
     this.add('');
@@ -384,7 +387,7 @@ export class Screen {
     this.add(render(this.md, body));
 
     this.add('');
-    this.render();
+    if (!silent) this.render();
   }
 
   /**
@@ -397,7 +400,7 @@ export class Screen {
    * ladder of rules across the page: two horizontal lines per message, each as
    * loud as the input box, none of them saying anything the rail does not.
    */
-  userMessage(text) {
+  userMessage(text, { silent = false } = {}) {
     // Kept so the reply can be checked against it: an answer that opens by
     // saying the request back is repeating the line directly above it.
     this.lastPrompt = String(text ?? '');
@@ -415,7 +418,7 @@ export class Screen {
     for (const row of rows) this.add(`${blue(RAIL)} ${chalk.white(row)}`);
     this.add('');
     this.add('');
-    this.render();
+    if (!silent) this.render();
   }
 
   /**

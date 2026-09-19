@@ -186,12 +186,18 @@ export class Plain {
     for (const line of lines) this.output.write(`    ${dim(line)}\n`);
   }
 
-  assistant(text, { closing = false } = {}) {
-    const body = closing ? trimAnswer(tidyReply(text)) : tidyReply(text);
+  assistant(text, { closing = false, replay = false } = {}) {
+    const body = replay ? String(text) : (closing ? trimAnswer(tidyReply(text)) : tidyReply(text));
     const out = render(this.md, body);
     if (!out) return;
     this.stopSpinner();
     this.output.write(`\n${out}\n\n`);
+  }
+
+  userMessage(text) {
+    this.stopSpinner();
+    const first = String(text ?? '').split('\n')[0] ?? '';
+    if (first.trim()) this.output.write(`\n${blue('›')} ${first}\n`);
   }
 
   narrate(text) {

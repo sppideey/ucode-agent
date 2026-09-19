@@ -3121,18 +3121,19 @@ ${out.content}` });
     }
   }
 
-  /** The last few exchanges, so a resumed conversation has visible context. */
-  replayTail(count = 4) {
-    const tail = this.session.messages
-      .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.content)
-      .slice(-count);
-
-    for (const m of tail) {
-      if (m.role !== 'user') this.ui.assistant(m.content);
-      else if (this.ui.userMessage) this.ui.userMessage(m.content);
-      else this.ui.write(`${blue('›')} ${dim(m.content.split('\n')[0])}`);
+  /** The whole conversation back on screen, so a resumed session reads like it never closed. */
+  replayTail() {
+    for (const m of this.session.messages) {
+      if (m.role === 'user' && m.content?.trim()) {
+        if (this.ui.userMessage) this.ui.userMessage(m.content, { silent: true });
+        else this.ui.write(`${blue('›')} ${dim(String(m.content).split('\n')[0])}`);
+      } else if (m.role === 'assistant' && m.content?.trim() && !m.toolCalls?.length) {
+        this.ui.assistant(m.content, { replay: true, silent: true });
+      }
     }
-    if (tail.length) this.ui.write(dim('  ── picking up here ──\n'));
+    if (this.ui.scroll !== undefined) this.ui.scroll = 0;
+    this.ui.render?.();
+    if (this.session.messages.length) this.ui.write(dim('  ── picking up here ──\n'));
   }
 
   /** Add a line to this project's UCODE.md, read at the start of every turn. */

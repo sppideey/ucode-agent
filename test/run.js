@@ -213,6 +213,31 @@ await test('output cannot knock the frame out of place', () => {
   screen.streamBuf = '';
 });
 
+await test('a resumed session replays the whole conversation, verbatim', () => {
+  const { screen } = fakeScreen(100, 40);
+  const agent = new Agent({ cwd: 'C:/projects/app', ui: screen });
+  agent.session = newSession('C:/projects/app', '');
+  const longAnswer = ['Here is the full plan:', '', 'First do this.', 'Then do that.', 'After that, the third thing.', 'Then the fourth.', 'Then the fifth.', 'Then the sixth.', 'Open app/index.html to try it.'].join('\n');
+  agent.session.messages = [
+    { role: 'user', content: 'first question' },
+    { role: 'assistant', content: 'first answer' },
+    { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'read_file', args: {} }] },
+    { role: 'tool', toolCallId: 'c1', name: 'read_file', content: 'file text' },
+    { role: 'user', content: 'second question' },
+    { role: 'assistant', content: longAnswer },
+  ];
+  agent.replayTail();
+  const shown = bare(screen.lines.join('\n'));
+  ok(shown.includes('first question'), 'the first question comes back');
+  ok(shown.includes('first answer'), 'the first answer comes back');
+  ok(shown.includes('second question'), 'the second question comes back');
+  for (const line of longAnswer.split('\n')) {
+    if (line.trim()) ok(shown.includes(line.trim()), `replay keeps the closing line intact: "${line.trim()}"`);
+  }
+  ok(!shown.includes('file text'), 'tool traffic stays in the file, not on screen');
+  eq(screen.scroll, 0, 'the replay lands at the bottom');
+});
+
 await test('coloured lines keep their colours — only cursor-moving escapes go', () => {
   const { screen } = fakeScreen(60, 20);
   screen.add('\x1b[36m▌\x1b[39m \x1b[1mhello\x1b[22m\x1b[2J\x1b[H');
