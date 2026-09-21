@@ -43,7 +43,7 @@
     "nex-agi"
   ],
   "author": "om dixit",
-  "license": "ISC",
+  "license": "MIT",
   "dependencies": {
     "@babel/parser": "^7.29.8",
     "chalk": "^6.0.0",
