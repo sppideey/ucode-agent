@@ -200,14 +200,14 @@ await test('output cannot knock the frame out of place', () => {
   eq(screen.lines.length - screen.scroll, reading, 'the same line stays at the bottom of the view');
   screen.userMessage('next');
   eq(screen.scroll, 0, 'sending a message goes back to the bottom');
+  // A reply arriving is not painted until it is complete, so it cannot move the view.
   const heldPlain = screen.lines.length - 10;
   screen.scroll = 10;
   screen.render();
   screen.streamBegin();
-  screen.streamBuf = 'hello';
-  screen.repaintStream();
+  screen.streamDelta('hello');
   screen.render();
-  eq(screen.lines.length - screen.scroll, heldPlain, 'a short streamed line above the fold holds the view too');
+  eq(screen.lines.length - screen.scroll, heldPlain, 'a reply still arriving holds the view');
   screen.lines.length = screen.streamAt;
   screen.streamAt = undefined;
   screen.streamBuf = '';
@@ -246,21 +246,12 @@ await test('coloured lines keep their colours — only cursor-moving escapes go'
   ok(!/\x1b\[(?![0-9;]*m)/.test(line), 'no cursor-moving escape survives');
   eq(visLen(line), 7, 'the kept codes take no columns');
 
-  // A streamed reply truncates and re-adds its tail on every delta; the view must hold.
-  for (let i = 0; i < 50; i++) screen.add(`line ${i}`);
-  screen.render();
-  screen.scroll = 10;
-  screen.render();
-  const held = screen.lines.length - screen.scroll;
+  // Narration beside a tool call leaves nothing in the transcript.
+  const before = screen.lines.length;
   screen.streamBegin();
-  screen.streamBuf = 'hello';
-  screen.repaintStream();
-  screen.streamBuf = 'hello world, a much longer line that wraps onto more rows of the small screen';
-  screen.repaintStream();
-  eq(screen.lines.length - screen.scroll, held, 'repainting the streamed tail holds the view');
-  screen.lines.length = screen.streamAt;
-  screen.streamAt = undefined;
-  screen.streamBuf = '';
+  screen.streamDelta('Let me build the app now.');
+  screen.streamEnd({ asNarration: true });
+  eq(screen.lines.length, before, 'no line of narration is left behind');
 });
 
 await test('it carries the mode, the model and the percentage — and nothing else', () => {
@@ -911,6 +902,13 @@ await test('a command that would kill the agent is refused', async () => {
   }
 });
 
+await test('opening a page in the browser is not run — ucode shows the app itself', async () => {
+  for (const command of ['start stopwatch/index.html', 'open index.html', 'xdg-open app/index.html', 'start http://localhost:3000']) {
+    const out = await runCommand({ command });
+    ok(out.summary.startsWith('not needed'), `${command}: ${out.summary}`);
+  }
+});
+
 await test('a command that only searches for a server is not started as one', async () => {
   const { startsServer } = await import('../src/tools/shell.js');
   for (const c of ['npm run dev', 'cd app && npm run dev', 'python -m http.server 8000', 'npx vite']) ok(startsServer(c), c);
@@ -1528,6 +1526,34 @@ await test('a page that still had problems is looked at again after the fix roun
   agent.lookAgain = 'relook/index.html';
   await agent.lookOnceThisTurn(sandbox, ['relook/app.js']);
   ok(notes.some((n) => n.includes('LOOKED')), `a script-only fix still gets the page opened again: ${notes}`);
+});
+
+await test('a plain app is handed over the moment it works, and sent back when it does not', async () => {
+  const { Agent } = await import('../src/core/loop.js');
+  const agent = new Agent({ cwd: sandbox });
+  const said = [];
+  agent.ui = { mode: 'build', startSpinner() {}, stopSpinner() {}, runStat() {}, assistant: (t) => said.push(t) };
+  agent.session = { messages: [] };
+  agent.working = [];
+  agent.persist = async () => {};
+  const page = (script) => '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Count</title></head>' +
+    `<body><main><h1>Count</h1><button id="b" type="button">Add one</button><p id="n">0</p></main><script>${script}</script></body></html>`;
+  await fs.mkdir(path.join(sandbox, 'handme'), { recursive: true });
+  await write('handme/index.html', page("let n = 0; document.getElementById('b').onclick = () => { document.getElementById('n').textContent = ++n; };"));
+  agent.apps = [path.join(sandbox, 'handme')];
+  agent.appTemplate = 'plain-html';
+  const call = { name: 'create_app', args: { folder: 'handme', files: [{ path: 'handme/index.html', content: 'x' }] } };
+  const good = await agent.handOver([call]);
+  ok(good?.done, `a working page is handed over: ${JSON.stringify(good)?.slice(0, 200)}`);
+  ok(/^handme is done\. Open it here: file:\/\/.*handme\/index\.html/.test(said[0] ?? ''), said[0]);
+
+  await write('handme/index.html', page("document.getElementById('missing').onclick = () => {};"));
+  const bad = await agent.handOver([call]);
+  ok(bad?.problems, 'a page that throws goes back to be fixed');
+  ok(agent.handOverPending, 'and the next write checks again');
+  eq(await agent.handOver([{ name: 'read_file', args: { path: 'handme/index.html' } }]), null, 'a read is not a reason to check');
+  const { closeBrowser } = await import('../src/tools/browser.js');
+  await closeBrowser();
 });
 
 await test('a plain page is opened when only its script changed', async () => {

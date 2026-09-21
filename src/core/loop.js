@@ -13,6 +13,7 @@
 
 import path from 'node:path';
 import os from 'node:os';
+import { pathToFileURL } from 'node:url';
 import { appendFileSync, existsSync } from 'node:fs';
 import { readFile, readdir, access, mkdir } from 'node:fs/promises';
 import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
@@ -784,8 +785,9 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  Next.js, Vite, anything with an npm run dev - start it and leave it up when you',
     '  finish. ucode opens it in the browser for the user as soon as it is ready, so a',
     '  build that ends with the server stopped ends with nothing to look at. A one-page',
-    '  app with no server needs none of this: the file is the app.',
-    '  name, handles keys and returns the live link. Build locally first.',
+    '  app with no server needs none of this: the file is the app. Write all of it in',
+    '  create_app\'s files, then stop: ucode opens the page itself and hands it to the',
+    '  user the moment it works. Do not start a server, curl it or re-read it to check.',
     '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',
     '  would ask a question, or it fails instead of waiting: create-next-app --yes,',
     '  npx shadcn@latest init -d -y, npx shadcn@latest add <names> -y, npm init -y.',
@@ -1184,13 +1186,9 @@ export class Agent {
       const message = skillMessage(skill, { automatic: true, short: true });
       this.loaded.add(skill.name);
       if (message.short) this.short.add(skill.name);
+      // Nothing on screen: which rules the model was handed is bookkeeping,
+      // and the only text a build should leave is the answer at the end.
       this.push(message);
-      this.ui.note(`${skill.name} skill loaded for this${message.short ? ' (short form)' : ''}`);
-      // A clear row under it. This is bookkeeping about the turn, not part of
-      // it, and against the first line of thinking the two read as one block —
-      // the notice looks like the opening of the answer rather than a note
-      // about how the answer is being reached.
-      this.ui.blank();
     }
   }
 
@@ -1200,6 +1198,9 @@ export class Agent {
     beginTurn();
     this.lookedThisTurn = false;
     this.lookAgain = null;
+    this.handOverPending = false;
+    this.appName = null;
+    this.appTemplate = null;
     this.reads = new Map();
     this.declines = 0;
     this.apps = [];
@@ -1559,6 +1560,24 @@ export class Agent {
       const badArgs = await this.runCalls(reply.toolCalls);
       if (this.abort.signal.aborted) return;
 
+      // The app is written: see whether it works, and if it does, that is the
+      // answer. Waiting for the model to decide it is finished was most of the
+      // time a build took (see handOver).
+      const handed = badArgs ? null : await this.handOver(reply.toolCalls);
+      if (handed?.done) return;
+      if (handed?.problems && fixRounds < MAX_FIX_ROUNDS) {
+        fixRounds++;
+        this.push({
+          role: 'user',
+          content:
+            `ucode opened the app and found errors (round ${fixRounds} of ${MAX_FIX_ROUNDS}). Fix all ` +
+            'of them with the smallest edits that do it. Change nothing else. As soon as it works, ' +
+            `ucode hands it to the user.\n\n${handed.problems}`,
+        });
+        await this.persist();
+        continue;
+      }
+
       // Malformed arguments go back to the model, but only so many times.
       if (badArgs) {
         argRetries++;
@@ -1798,6 +1817,8 @@ export class Agent {
     if (call.name === 'create_app' && call.args?.folder) {
       const made = path.resolve(this.cwd, String(call.args.folder));
       if (!(this.apps ??= []).includes(made)) this.apps.push(made);
+      if (call.args.name) this.appName = String(call.args.name);
+      this.appTemplate = String(call.args.template || 'plain-html');
     }
 
     if (call.name === 'look_at_app') {
@@ -2455,6 +2476,72 @@ export class Agent {
    * Never throws. A browser that will not start is a reason to skip the look,
    * never a reason to fail the turn that built the app.
    */
+  /**
+   * Hand a plain-page app over the moment it works.
+   *
+   * Traced: a tip calculator was on disk and complete 60 seconds in, and the
+   * turn ran to 270 — re-reading the files it had just written, starting
+   * servers to look at a page that needs none, rewriting it to "verify". The
+   * user waited three and a half minutes for an app that was already there.
+   *
+   * So right after a step that writes the app — create_app with its files, a
+   * batch of files, or any write while earlier problems are being fixed —
+   * ucode opens the page itself. No console errors, no failed requests, and
+   * it responds when used: the turn ends there with where to find it. If it
+   * is broken, the problems go straight back, and the next write checks again.
+   * Plain pages only: a framework app is checked when the model says it is
+   * done, since its build and server take their own time.
+   *
+   * Returns { done: true }, { problems }, or null when there was nothing to check.
+   */
+  async handOver(calls) {
+    if (this.ui.mode === 'plan' || !this.apps?.length) return null;
+    const app = this.apps.at(-1);
+    // Plain by the starter it came from, not by what is in the folder: a model
+    // that adds a package.json to a one-page app still made a one-page app, and
+    // judging by the file sent a stopwatch on a 22-step, six-minute detour.
+    if (this.appTemplate !== 'plain-html' || !(await exists(path.join(app, 'index.html')))) return null;
+
+    const inApp = (p) => {
+      const rel = path.relative(app, path.resolve(this.cwd, String(p)));
+      return !rel.startsWith('..') && !path.isAbsolute(rel);
+    };
+    const writes = calls.filter((c) => FILE_WRITES.has(c.name) && pathsOf(c).some(inApp));
+    const whole = writes.some((c) => (c.name === 'create_app' || c.name === 'batch_write') && pathsOf(c).length > 0);
+    if (!writes.length || (!whole && !this.handOverPending)) return null;
+
+    const show = path.relative(this.cwd, app).split(path.sep).join('/') || '.';
+    let out;
+    try {
+      const { lookAtApp, withStaticServer } = await import('../tools/browser.js');
+      this.ui.startSpinner(`opening ${show} to check it works`);
+      out = await withStaticServer(app, (url) => lookAtApp({ url, review: false }));
+    } catch {
+      return null; // no browser: the check at the end of the turn still runs
+    } finally {
+      this.ui.stopSpinner();
+    }
+
+    const content = String(out?.content ?? '');
+    if (/Console errors|Failed requests|NOTHING HAPPENS|does not parse/i.test(content)) {
+      this.handOverPending = true;
+      this.ui.runStat?.('needs a fix');
+      return { problems: `I opened the app and looked at it:\n\n${content}` };
+    }
+
+    this.handOverPending = false;
+    // "Tip Calculator is done", with the page as a link the terminal can open.
+    const made = calls.find((c) => c.name === 'create_app' && c.args?.name)?.args.name ?? this.appName;
+    const name = String(made ?? path.basename(app)).trim();
+    this.appName = name;
+    const link = pathToFileURL(path.join(app, 'index.html')).href;
+    const text = `${name} is done. Open it here: ${link}\n\n(or open \`${show}/index.html\` in your browser)`;
+    this.push({ role: 'assistant', content: text });
+    this.ui.assistant(text, { closing: true });
+    await this.persist();
+    return { done: true };
+  }
+
   async lookOnceThisTurn(root, changed) {
     // A look that found problems is taken again after the fix round, even if
     // the fix only touched the page's script. Looking once a turn let a live

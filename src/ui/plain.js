@@ -200,11 +200,10 @@ export class Plain {
     if (first.trim()) this.output.write(`\n${blue('›')} ${first}\n`);
   }
 
+  /** Said beside a tool call, so not the answer: it moves the spinner and is not printed. */
   narrate(text) {
     const line = asLabel(text);
-    if (!line) return;
-    this.stopSpinner();
-    this.write(dim(`  ⋮ ${line}`));
+    if (line) this.updateSpinner(line);
   }
 
   progress(lines) {

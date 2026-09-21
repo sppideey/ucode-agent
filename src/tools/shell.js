@@ -54,6 +54,9 @@ const INSTALL_TIMEOUT = 600_000;
 const LOOKS_LIKE_INSTALL =
   /(\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|ci|create)\b|\bnpx\s+(?:create-|degit\b|shadcn)|\bpip3?\s+install\b|\bpoetry\s+(?:install|add)\b|\bcargo\s+(?:build|install|fetch)\b|\bgo\s+(?:mod\s+download|get)\b|\bbundle\s+install\b|\bcomposer\s+(?:install|require)\b|\bgit\s+clone\b)/i;
 
+/** Opening a file or URL in the desktop browser: start, open, xdg-open, explorer. */
+const OPENS_BROWSER = /^\s*(?:cd\s+[^&;|]+&&\s*)?(?:start(?:\s+"")?|open|xdg-open|explorer(?:\.exe)?|cmd(?:\.exe)?\s+\/c\s+start)\s+\S+\.html?\b|^\s*(?:start|open|xdg-open)\s+https?:\/\//i;
+
 /**
  * Any kill by program name rather than by process number.
  *
@@ -657,6 +660,16 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
         'find its owner first: `netstat -ano | findstr :3000` on Windows, ' +
         '`lsof -i :3000` elsewhere.',
     });
+  }
+
+  // Opening a page in the user's browser is ucode's job, once the app works.
+  // Run by the model, `start index.html` hands the pipe to the browser, which
+  // never closes it: a live build sat on it for the full two-minute timeout.
+  if (OPENS_BROWSER.test(command)) {
+    return result(
+      'Not run: ucode opens the app for the user itself once it works. There is no need to open it.',
+      'not needed — ucode shows the app',
+    );
   }
 
   if (KILLS_BY_NAME.test(command)) {

@@ -43,7 +43,7 @@ import {
   bannerPaint, RAIL, modeChip, asNarrationLine } from './theme.js';
 import { FRAME_MS, spinnerGlyph, formatDuration, doneLine, workingLine, bannerSweep, SWEEP_MS } from './activity.js';
 import { gitBranch } from '../core/git.js';
-import { renderer, render, polish } from './markdown.js';
+import { renderer, render } from './markdown.js';
 import { VERSION } from '../core/version.js';
 
 /**
@@ -625,45 +625,31 @@ export class Screen {
    * Not called status(): `this.status` holds the spinner state, and a method
    * of the same name would be shadowed by it on every instance.
    */
+  /**
+   * What the model says beside a tool call — "I will build the app now" — is
+   * not an answer, and printing it made a build read like a running commentary
+   * nobody asked for. It moves the spinner, and nothing stays on screen: the
+   * only prose in the transcript is the answer at the end.
+   */
   narrate(text) {
     const line = asLabel(text);
-    if (!line) return;
-    this.push(`${dim('⋮')} ${dim(clip(line, this.width() - 4))}`);
-    this.updateSpinner(line);
+    if (line) this.updateSpinner(line);
   }
 
   // -- streaming -----------------------------------------------------------
-  // Deltas appear as plain text as they arrive, then get replaced in place by
-  // properly rendered markdown once the reply is complete.
+  // A reply is collected while it arrives and shown once it is complete — and
+  // only if it turns out to be the answer. Painted as it streamed, every
+  // "Let me build this" flashed up and vanished again when a tool call
+  // followed it. The spinner keeps running meanwhile.
 
   streamBegin() {
-    this.stopSpinner();
     this.streamAt = this.lines.length;
     this.streamBuf = '';
-    this.streamPainted = 0;
   }
 
   streamDelta(delta) {
     if (this.streamAt === undefined) this.streamBegin();
     this.streamBuf += delta;
-    const now = Date.now();
-    if (now - this.streamPainted < 60) return; // about 16fps is plenty
-    this.streamPainted = now;
-    this.repaintStream();
-  }
-
-  /**
-   * Repaint the partial reply.
-   *
-   * polish() runs on the partial text so bold, inline code and bullets are
-   * already styled while it streams. Without it the text arrives raw and then
-   * visibly re-renders at the end, which reads as a glitch.
-   */
-  repaintStream() {
-    this.lines.length = this.streamAt;
-    this.add('');
-    this.add(polish(this.streamBuf));
-    this.render(); // one frame, and never one without the reply in it
   }
 
   /**
@@ -688,7 +674,7 @@ export class Screen {
       if (line) this.narrate(line);
       else this.render();
     }
-    else if (text.trim()) this.assistant(text, { closing });
+    else if (text.trim()) { this.stopSpinner(); this.assistant(text, { closing }); }
     else this.render();
     return text;
   }
