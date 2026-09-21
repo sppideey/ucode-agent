@@ -46,9 +46,9 @@ dotenv.config({ path: join(PACKAGE_ROOT, '.env'), quiet: true });
 /**
  * The whole model list. Not a starting point — the list.
  *
- * ucode runs on NVIDIA, Cohere, Nex AGI, DeepSeek and Qwen only. All of them
- * serve genuinely capable models free through OpenRouter, all handle tool
- * calling properly, and keeping the set to eight means every one of them has
+ * ucode runs on NVIDIA, Cohere and Nex AGI only. All three serve genuinely
+ * capable models free through OpenRouter, all handle tool calling properly,
+ * and keeping the set to six means every one of them has
  * been used in anger rather than listed on the strength of a benchmark. A
  * picker offering sixty models is a picker nobody reads.
  *
@@ -88,22 +88,6 @@ export const MODELS = {
     name: 'Nex N2.5 Pro',
     context: 262_144,
     note: 'new agentic coder, on trial — can stall on big builds',
-  },
-  // Both free on OpenRouter with tool calling, added untested: on trial, not
-  // the default and not in FALLBACKS until a real ucode build has run on them.
-  'deepseek/deepseek-v4-flash-0731:free': {
-    name: 'DeepSeek V4 Flash',
-    context: 1_048_576,
-    // Left to itself it thinks for minutes before every step — over two
-    // minutes of nothing on screen before its first word. Low effort answers
-    // in seconds and still plans the build.
-    reasoning: { effort: 'low' },
-    note: 'fast DeepSeek coder, 1M context — on trial',
-  },
-  'qwen/qwen3.8-27b:free': {
-    name: 'Qwen 3.8',
-    context: 262_144,
-    note: 'compact Qwen coder, 262k context — on trial',
   },
 };
 
@@ -166,9 +150,6 @@ export const stallLimit = () => Number(process.env.UCODE_STALL_MS) || 60_000;
 
 /** Freezes in a row before ucode stops asking and says to switch models. */
 export const MAX_STALLS = 3;
-
-/** How long a reply may go quiet once it has started writing a tool call. */
-const writingLimit = () => Number(process.env.UCODE_STALL_MS) || 600_000;
 let stalls = 0;
 
 let current = process.env.UCODE_MODEL || DEFAULT_MODEL;
@@ -192,7 +173,7 @@ export function setModel(id) {
     throw new Failure({
       kind: 'bad_model',
       attempted: `switching to "${wanted}"`,
-      failed: 'ucode only runs NVIDIA, Cohere, Nex AGI, DeepSeek and Qwen models, and that is not one of them.',
+      failed: 'ucode only runs NVIDIA, Cohere and Nex AGI models, and that is not one of them.',
       fix: `Run /model to choose from: ${Object.keys(MODELS).join(', ')}`,
     });
   }
@@ -398,6 +379,41 @@ function bodyOf(err) {
   }
 }
 
+/**
+ * How providers say the conversation no longer fits, from opencode's list
+ * (MIT, see THIRD_PARTY_NOTICES.md). Most arrive as a plain HTTP 400, which on
+ * its own reads as a malformed request and would end the turn; recognised,
+ * the conversation is folded and the request sent again.
+ */
+const OVERFLOW = [
+  /prompt is too long/i, /request_too_large/i, /input is too long for requested model/i,
+  /exceeds the context window/i,
+  /exceeds (?:the )?(?:model'?s )?maximum context length(?: of [\d,]+ tokens?|\s*\([\d,]+\))/i,
+  /input token count.*exceeds the maximum/i, /tokens in request more than max tokens allowed/i,
+  /maximum prompt length is \d+/i, /reduce the length of the messages/i,
+  /maximum context length is \d+ tokens/i,
+  /exceeds (?:the )?maximum allowed input length of [\d,]+ tokens?/i,
+  /input \(\d+ tokens\) is longer than the model'?s context length \(\d+ tokens\)/i,
+  /exceeds the limit of \d+/i, /exceeds the available context size/i, /greater than the context length/i,
+  /context window exceeds limit/i, /exceeded model token limit/i, /context[_ ]length[_ ]exceeded/i,
+  /request entity too large/i, /context length is only \d+ tokens/i, /input length.*exceeds.*context length/i,
+  /prompt too long; exceeded (?:max )?context length/i, /too large for model with \d+ maximum context length/i,
+  /prompt has [\d,]+ tokens?, but the configured context size is [\d,]+ tokens?/i,
+  /model_context_window_exceeded/i, /too many tokens/i, /token limit exceeded/i,
+];
+const THROTTLED = [/^(?:throttling error|service unavailable):/i, /rate limit/i, /too many requests/i];
+
+/** A limit on the conversation's size, as opposed to a limit on how fast it is sent. */
+export const overflowed = (text) =>
+  !THROTTLED.some((p) => p.test(text)) && OVERFLOW.some((p) => p.test(text));
+
+/**
+ * The provider's own words for "busy, try again", also from opencode. OpenRouter
+ * passes an upstream's hiccup through as "Provider returned error" on a 400,
+ * and treating that as a bad request stopped builds that one retry would save.
+ */
+const TRANSIENT = /overloaded|service[ _-]unavailable|internal[ _-]error|internal server error|server[ _-]error|provider[ _-]returned[ _-]error|resource[ _-]exhausted|try your request again|retry your request|\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i;
+
 export function explain(err, id) {
   if (err instanceof Failure) return err;
 
@@ -438,15 +454,31 @@ export function explain(err, id) {
     });
   }
 
+  if (status !== 429 && (status === 413 || overflowed(detail) || overflowed(raw))) {
+    return new Failure({
+      kind: 'too_large',
+      attempted,
+      failed: `The conversation no longer fits in ${modelName(id)}: ${detail}`,
+      fix: 'Run /new for a fresh session, or lower UCODE_MAX_CONTEXT_TOKENS so ucode folds older turns away sooner.',
+      cause: err,
+    });
+  }
+
   if (status === 429 || /rate[_ ]limit/i.test(raw)) {
     // `??` cannot be used to chain through Number(): Number(undefined) is NaN,
     // which is neither null nor undefined, so it would swallow every fallback
     // after it and the wait would silently never be found.
     const header = err?.headers?.get?.('retry-after');
     const asNumber = Number(header);
+    // retry-after-ms is exact and often well under a second; waiting the
+    // five-second fallback instead is time thrown away on every rate limit.
+    const exactMs = Number(err?.headers?.get?.('retry-after-ms'));
+    const asDate = header && !Number.isFinite(asNumber) ? (Date.parse(header) - Date.now()) / 1000 : NaN;
     const retryAfter =
+      (Number.isFinite(exactMs) && exactMs > 0 ? exactMs / 1000 : null) ??
       seconds(header) ??
       (Number.isFinite(asNumber) && asNumber > 0 ? asNumber : null) ??
+      (asDate > 0 ? asDate : null) ??
       seconds(/try again in ([\dhms.]+)/i.exec(detail)?.[1]) ??
       null;
     // The daily cap reads "free-models-per-day-high-balance", with hyphens, and
@@ -516,6 +548,17 @@ export function explain(err, id) {
     });
   }
 
+  if (status === 400 && TRANSIENT.test(detail)) {
+    return new Failure({
+      kind: 'server',
+      attempted,
+      failed: `${modelName(id)}'s provider had a passing fault: ${detail}`,
+      fix: 'ucode retries this by itself. If it keeps up, /model switches.',
+      detail: { status },
+      cause: err,
+    });
+  }
+
   if (status === 400) {
     const noTools = /tool calling.*not supported/i.test(detail);
     return new Failure({
@@ -578,7 +621,7 @@ export function explain(err, id) {
   // again — and on a free endpoint under load it happens often enough that
   // treating it as fatal would be the single most visible flaw in the agent.
   if (
-    /ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|EPIPE|network|fetch failed|socket hang up|terminated|premature close|other side closed|UND_ERR/i.test(raw) ||
+    /ENOTFOUND|ECONNREFUSED|ECONNRESET|EAI_AGAIN|ETIMEDOUT|EPIPE|network|fetch failed|failed to fetch|socket hang up|terminated|premature close|other side closed|UND_ERR|upstream connect|connection (?:error|refused|lost)|socket connection was closed|reset before headers|getaddrinfo/i.test(raw) ||
     err?.name === 'APIConnectionError' ||
     (err instanceof TypeError && /terminated/i.test(raw))
   ) {
@@ -639,8 +682,7 @@ export async function ask(messages, tools = [], opts = {}) {
   }
   if (opts.temperature !== undefined) request.temperature = opts.temperature;
   if (opts.maxOutputTokens) request.max_tokens = opts.maxOutputTokens;
-  const reasoning = opts.reasoning ?? MODELS[id]?.reasoning;
-  if (reasoning) request.reasoning = reasoning;
+  if (opts.reasoning) request.reasoning = opts.reasoning;
 
   // A side call (the design review) passes fewer: it is better skipped than
   // waited on through a string of rate-limit pauses.
@@ -667,7 +709,7 @@ export async function ask(messages, tools = [], opts = {}) {
         .withResponse();
       noteLimits(response?.headers);
       stalls = 0;
-      return normalize(data, id);
+      return normalize(data, id, request.tools?.map((t) => t.function.name));
     } catch (err) {
       noteLimits(err?.headers);
       problem = explain(err, id);
@@ -739,19 +781,14 @@ async function streamed(request, opts, id) {
   const frozen = (cause) => new Failure({
     kind: 'timeout',
     attempted: `asking ${modelName(id)} for a reply`,
-    failed: `${modelName(id)} went silent for too long, so ucode stopped waiting.`,
+    failed: `${modelName(id)} went silent for ${Math.round(stallLimit() / 1000)}s, so ucode stopped waiting.`,
     fix: 'ucode asks again by itself. If it keeps freezing, /model to North Mini Code.',
     detail: { stalled: true, handed: handed.size },
     cause,
   });
-  // Once a tool call has begun, the silence may be the call being written.
-  // DeepSeek's free upstream holds a create_app back until the whole app is
-  // done — two or three quiet minutes — and a one-minute watchdog killed every
-  // build it started. So a call in progress gets ten minutes instead.
   const alive = () => {
     clearTimeout(timer);
-    const limit = partial.size ? writingLimit() : stallLimit();
-    timer = setTimeout(() => { stalled = true; quiet.abort(); }, limit);
+    timer = setTimeout(() => { stalled = true; quiet.abort(); }, stallLimit());
   };
 
   let text = '';
@@ -761,6 +798,7 @@ async function streamed(request, opts, id) {
   const partial = new Map();
   const handed = new Set();
   let highest = -1;
+  const names = request.tools?.map((t) => t.function.name);
 
   try {
     alive();
@@ -806,7 +844,7 @@ async function streamed(request, opts, id) {
           for (const [index, slot] of partial) {
             if (index < call.index && !handed.has(index)) {
               handed.add(index);
-              opts.onToolCall(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args }));
+              opts.onToolCall(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, names }));
             }
           }
           highest = call.index;
@@ -833,13 +871,13 @@ async function streamed(request, opts, id) {
     opts.signal?.removeEventListener('abort', stop);
   }
   // The watchdog's abort can also end the stream quietly instead of throwing.
-  // Carrying on from there ran a half-written create_app: JSON repair closed
-  // it with no files, and five minutes of app were saved as an empty starter.
+  // Carrying on from there would run a half-written tool call: JSON repair
+  // closes a cut-off file write, and the truncated file lands on disk.
   if (stalled && !opts.signal?.aborted) throw frozen();
 
   const toolCalls = [];
   for (const [index, slot] of partial) {
-    toolCalls.push(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, cutOff: finishReason === 'length' }));
+    toolCalls.push(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, cutOff: finishReason === 'length', names }));
   }
 
   return {
@@ -1000,14 +1038,26 @@ function unescapeLoose(s) {
 }
 
 /**
+ * A tool named with the wrong case or separators — "Read_File", "readFile",
+ * "functions.read_file" — is the tool it plainly means. opencode repairs the
+ * case the same way; refusing costs a whole round trip to learn a spelling.
+ */
+export function fixName(name, names) {
+  if (!names?.length || typeof name !== 'string' || names.includes(name)) return name;
+  const squash = (s) => s.replace(/^(?:functions|tools?)[.:]/i, '').toLowerCase().replace(/[^a-z0-9]/g, '');
+  return names.find((n) => squash(n) === squash(name)) ?? name;
+}
+
+/**
  * Parse one tool call's arguments.
  *
  * A parse error is recorded on the call rather than thrown. The loop hands it
  * back to the model, which usually fixes its own JSON on the next step —
  * cheaper than failing the whole turn over a stray comma.
  */
-export function readCall({ id, name, raw, cutOff = false }) {
-  const call = { id, name, args: {} };
+export function readCall({ id, name, raw, cutOff = false, names }) {
+  const call = { id, name: fixName(name, names), args: {} };
+  name = call.name;
   const text = String(raw ?? '').trim();
   if (!text) return call;
   try {
@@ -1062,12 +1112,12 @@ export function readCall({ id, name, raw, cutOff = false }) {
   return call;
 }
 
-function normalize(data, id) {
+function normalize(data, id, names) {
   const choice = data?.choices?.[0];
   const message = choice?.message ?? {};
 
   const toolCalls = (message.tool_calls ?? []).map((c) =>
-    readCall({ id: c.id, name: c.function?.name, raw: c.function?.arguments, cutOff: choice?.finish_reason === 'length' })
+    readCall({ id: c.id, name: c.function?.name, raw: c.function?.arguments, cutOff: choice?.finish_reason === 'length', names })
   );
 
   const u = data?.usage ?? {};

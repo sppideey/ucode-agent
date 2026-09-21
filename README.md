@@ -2,7 +2,7 @@
 
 A coding agent that lives in your terminal. It reads your code, edits it, runs
 your commands, and keeps every conversation on disk. It runs on NVIDIA,
-Cohere, Nex AGI, DeepSeek and Qwen models, all of them free.
+Cohere and Nex AGI models, all of them free.
 
 It opens on a quiet screen — the name, the place to type, and the version in the
 corner:
@@ -87,9 +87,9 @@ Needs Node 22 or newer.
 
 ## The models
 
-Eight, and no picker full of names nobody recognises. NVIDIA, Cohere, Nex AGI,
-DeepSeek and Qwen all serve capable models free, and all handle tool calling
-properly, which is the thing an agent actually depends on.
+Six, and no picker full of names nobody recognises. NVIDIA, Cohere and Nex AGI
+all serve capable models free, and all handle tool calling properly, which is
+the thing an agent actually depends on.
 
 | Model | Context | For |
 | --- | --- | --- |
@@ -99,8 +99,6 @@ properly, which is the thing an agent actually depends on.
 | Nemotron 3 Nano Omni | 256k | small, fast, reasoning tuned |
 | **North Mini Code** ★ | 256k | the default — built for code and interface work, quick to answer |
 | Nex N2.5 Pro | 262k | new agentic coder, on trial — can stall on big builds |
-| DeepSeek V4 Flash | 1M | fast DeepSeek coder, on trial |
-| Qwen 3.8 | 262k | compact Qwen coder, on trial |
 
 `/model` shows them and switches. `ucode -m cohere/north-mini-code:free`
 starts on one.
@@ -173,6 +171,14 @@ where the time actually went:
 - A file-write whose JSON is malformed — a missing comma, an unescaped quote in
   the code, raw line breaks — is repaired instead of thrown away with all its
   output.
+- An edit whose `old_string` is slightly off — a middle line remembered wrong,
+  escapes written out, a blank line at either end, a different indent — still
+  lands, through the fallback matchers from opencode's edit tool. Found in two
+  places is still refused, and so is a match far bigger than what was asked
+  for. `replace_all` does a rename in one call.
+- A missing file comes back with the lookalikes beside it ("did you mean
+  App.jsx?"), and a tool named with the wrong case runs as the tool it means,
+  instead of each costing a round trip to learn a spelling.
 - Every write is parsed on the spot, so a syntax error comes back in the same
   step rather than a minute later from a failed build.
 - A failed build that is missing a component or package says exactly which
@@ -469,3 +475,8 @@ The tests need no network and no framework — `node test/run.js` runs them all.
 ## Licence
 
 ISC. Made with ❤️ by om dixit.
+
+The edit matchers, the summary template, the context-overflow and transient-error
+patterns and tool-name repair are adapted from
+[opencode](https://opencode.ai) (MIT); see
+[THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).

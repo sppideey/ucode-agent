@@ -17,7 +17,28 @@ import {
   noteFile, writeTracked, assertUnchanged,
 } from './shared.js';
 import { packageJsonWritten } from './shell.js';
+import { fuzzyReplace } from './fuzzy.js';
 import { parse as parseSource } from '@babel/parser';
+
+/**
+ * Up to three names beside a missing file that look like what was meant —
+ * "App.jsx" for "app.jsx", "index.html" for "index.htm". Named in the refusal
+ * (as opencode's read tool does), the next step is the right read instead of
+ * a list_dir to find out.
+ */
+async function lookalikes(target) {
+  const dir = path.dirname(target.abs);
+  const base = path.basename(target.abs).toLowerCase();
+  const shown = path.dirname(target.show);
+  try {
+    return (await fs.readdir(dir))
+      .filter((n) => n.toLowerCase().includes(base) || (n.length > 2 && base.includes(n.toLowerCase())))
+      .slice(0, 3)
+      .map((n) => (shown === '.' ? n : `${shown}/${n}`));
+  } catch {
+    return [];
+  }
+}
 
 export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
   const target = resolveIn(p, 'read_file');
@@ -28,7 +49,12 @@ export async function readFile({ path: p, offset = 1, limit = READ_LINES }) {
   try {
     stat = await fs.stat(target.abs);
   } catch (err) {
-    throw fsFailure(err, attempted, target.show);
+    const failure = fsFailure(err, attempted, target.show);
+    // Outside the project the user said yes to one path, not to a listing of
+    // the folder around it — so no lookalikes there.
+    const near = err?.code === 'ENOENT' && target.inside ? await lookalikes(target) : [];
+    if (near.length) failure.fix = `Did you mean ${near.join(', ')}? ${failure.fix}`;
+    throw failure;
   }
 
   if (stat.isDirectory()) {
@@ -444,7 +470,7 @@ function explainMiss(original, oldString, show) {
 }
 
 /** Apply one replacement to a string, or explain precisely why it cannot. */
-function replaceOnce(text, { old_string, new_string }, { show, attempted, label = '' }) {
+function replaceOnce(text, { old_string, new_string, replace_all }, { show, attempted, label = '' }) {
   const prefix = label ? `${label}: ` : '';
 
   if (typeof old_string !== 'string' || typeof new_string !== 'string') {
@@ -467,7 +493,7 @@ function replaceOnce(text, { old_string, new_string }, { show, attempted, label 
   // for exactly this loop. Saying "already done" ends it in one step.
   if (old_string === new_string) {
     const found = text.indexOf(old_string);
-    return { text, at: found < 0 ? 1 : toLines(text.slice(0, found)).length, loose: false };
+    return { text, at: found < 0 ? 1 : toLines(text.slice(0, found)).length, how: '', count: 0 };
   }
 
   // Models write \n. A file checked out on Windows is often \r\n, and then an
@@ -486,20 +512,44 @@ function replaceOnce(text, { old_string, new_string }, { show, attempted, label 
     detail: { hits },
   });
 
+  // replace_all is for renames: every copy changes, and many copies is the point.
+  const all = replace_all === true || replace_all === 'true';
   const hits = text.split(oldText).length - 1;
-  if (hits > 1) throw ambiguous(hits);
-  if (hits === 1) {
+  if (hits > 1 && !all) throw ambiguous(hits);
+  if (hits >= 1) {
     const at = text.slice(0, text.indexOf(oldText)).split(/\r?\n/).length;
-    return { text: text.replace(oldText, () => newText), at, loose: false };
+    const out = all ? text.split(oldText).join(newText) : text.replace(oldText, () => newText);
+    return { text: out, at, how: '', count: hits };
   }
 
   // No exact match. The commonest reason by far is whitespace — tabs against
   // spaces, a different indent depth, trailing spaces — with every word right.
   // Match line by line ignoring that, and re-indent the replacement to fit.
   // Still unique or nothing: a loose match found twice is refused like any other.
-  const loose = looseReplace(text, old_string, new_string);
-  if (loose?.count === 1) return { text: loose.text, at: loose.at, loose: true };
+  const loose = all ? null : looseReplace(text, old_string, new_string);
+  if (loose?.count === 1) {
+    return { text: loose.text, at: loose.at, how: 'ignoring whitespace and re-indented to fit', count: 1 };
+  }
   if (loose?.count > 1) throw ambiguous(loose.count, ' once whitespace is ignored');
+
+  // Still nothing. The remaining slips — a middle line remembered slightly
+  // wrong, escapes written out, a blank line at either end — each have a
+  // matcher of their own (fuzzy.js). They are given the edit in the file's
+  // own line endings, and only the matched span changes: the rest of a file
+  // with mixed endings keeps every one it had.
+  const fuzzy = fuzzyReplace(text, oldText, newText, { all });
+  if (fuzzy?.ambiguous) throw ambiguous('several', ' once matched loosely');
+  if (fuzzy?.wide) {
+    throw new ToolFailure({
+      kind: 'no_match', attempted,
+      failed: `${prefix}old_string only matches ${show} loosely, across far more text than it contains. Refusing to replace that much.`,
+      fix: `Read ${show} again and copy the exact text you mean to replace.`,
+    });
+  }
+  if (fuzzy) {
+    const at = text.slice(0, fuzzy.index).split('\n').length;
+    return { text: fuzzy.text, at, how: fuzzy.how, count: fuzzy.count };
+  }
 
   const { failed, fix } = explainMiss(text, old_string, show);
   throw new ToolFailure({ kind: 'no_match', attempted, failed: prefix + failed, fix });
@@ -548,7 +598,7 @@ function looseReplace(text, oldString, newString) {
   return { count: 1, text: out.join(eol), at: start + 1 };
 }
 
-export async function editFile({ path: p, old_string, new_string }) {
+export async function editFile({ path: p, old_string, new_string, replace_all }) {
   const target = resolveIn(p, 'edit_file');
   const attempted = `editing ${target.show}`;
   await guard(target, `edit ${target.abs}`);
@@ -560,7 +610,7 @@ export async function editFile({ path: p, old_string, new_string }) {
     throw fsFailure(err, attempted, target.show);
   }
 
-  const { text, at, loose } = replaceOnce(original, { old_string, new_string }, {
+  const { text, at, how, count } = replaceOnce(original, { old_string, new_string, replace_all }, {
     show: target.show, attempted,
   });
 
@@ -574,14 +624,18 @@ export async function editFile({ path: p, old_string, new_string }) {
 
   const delta = toLines(text).length - toLines(original).length;
   const change = delta === 0 ? 'same line count' : `${delta > 0 ? '+' : ''}${delta} lines`;
-  const how = loose ? ', matched ignoring whitespace and re-indented to fit' : '';
+  const where = count > 1
+    ? `${count} occurrences in ${target.show}, the first at line ${at}`
+    : `one occurrence in ${target.show} at line ${at}`;
+  const matched = how ? `, matched ${how}` : '';
 
   const span = toLines(new_string).length;
   const out = result(
-    `Replaced one occurrence in ${target.show} at line ${at} (${change}${how}).` +
+    `Replaced ${where} (${change}${matched}).` +
       parseNote(target.show, syntaxProblem(target.abs, text)) +
       nowReads(target.show, text, at, span),
-    `1 change at line ${at} · ${change}${loose ? ' · whitespace-tolerant' : ''}${syntaxProblem(target.abs, text) ? ' · does not parse' : ''}`,
+    `${count > 1 ? `${count} changes from line` : '1 change at line'} ${at} · ${change}` +
+      `${how ? ' · whitespace-tolerant' : ''}${syntaxProblem(target.abs, text) ? ' · does not parse' : ''}`,
     MAX_FILE_OUTPUT
   );
   // The replacement is diffed on its own and offset to where it landed, so

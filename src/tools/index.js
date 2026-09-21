@@ -3,7 +3,6 @@
  * line the user reads while each one runs.
  */
 
-import { jsonrepair } from 'jsonrepair';
 import { ToolFailure } from '../core/failure.js';
 import { readFile, readFiles, writeFile, batchWrite, editFile, multiEdit, editFiles } from './files.js';
 import { listDir, glob, grep } from './search.js';
@@ -231,15 +230,16 @@ export const tools = [
     description:
       'Replace one exact piece of text in a file. old_string must match the file ' +
       'character for character, including indentation, and must occur exactly once — ' +
-      'the edit is refused on zero matches and on two. This is the normal way to ' +
-      'change existing code. The result shows the file as it now stands, so do not ' +
-      'read it again afterwards.',
+      'the edit is refused on zero matches and on two. Set replace_all to change every ' +
+      'copy, for a rename. This is the normal way to change existing code. The result ' +
+      'shows the file as it now stands, so do not read it again afterwards.',
     parameters: {
       type: 'object',
       properties: {
         path: str('File path, relative to the project root.'),
-        old_string: str('The exact text to replace. Must be unique in the file.'),
+        old_string: str('The exact text to replace. Must be unique in the file unless replace_all is set.'),
         new_string: str('What to put there instead.'),
+        replace_all: bool('Replace every occurrence instead of exactly one. Default false.'),
       },
       required: ['path', 'old_string', 'new_string'],
     },
@@ -574,43 +574,12 @@ export const FILE_WRITES = new Set(['write_file', 'batch_write', 'edit_file', 'm
  */
 const LENIENT = new Set(['create_app.files']);
 
-/** Names models use for an argument that the schema calls something else. */
-const ALIASES = {
-  path: ['file', 'filename', 'file_path', 'filepath'],
-  content: ['contents', 'text', 'code', 'body'],
-  paths: ['files'],
-};
-
 function check(name, args) {
   const schema = tools.find((t) => t.name === name).parameters;
   const problems = [];
 
   if (args === null || typeof args !== 'object' || Array.isArray(args)) {
     return ['the arguments must be a JSON object'];
-  }
-
-  // One file named as "path" where the tool takes a list called "paths".
-  // DeepSeek did it to four read_files at once, a whole round trip spent being
-  // told a plural it could simply have been given.
-  // The same argument under a neighbouring name: write_file sent "file"
-  // instead of "path" cost DeepSeek two and a half minutes to be told so.
-  for (const [key, others] of Object.entries(ALIASES)) {
-    if (!schema.properties[key] || args[key] != null) continue;
-    const other = others.find((o) => args[o] != null && !schema.properties[o]);
-    if (other) { args[key] = args[other]; delete args[other]; }
-  }
-  // read_files sent as files: [{ path }], the shape batch_write takes.
-  if (Array.isArray(args.paths)) {
-    args.paths = args.paths.map((p) => (typeof p?.path === 'string' ? p.path : p));
-  }
-
-  for (const key of schema.required ?? []) {
-    const one = key.endsWith('s') ? key.slice(0, -1) : '';
-    if (args[key] == null && one && !schema.properties[one] && args[one] != null
-      && schema.properties[key]?.type === 'array') {
-      args[key] = Array.isArray(args[one]) ? args[one] : [args[one]];
-      delete args[one];
-    }
   }
 
   for (const key of schema.required ?? []) {
@@ -639,15 +608,7 @@ function check(name, args) {
         const parsed = JSON.parse(value);
         const kind = Array.isArray(parsed) ? 'array' : typeof parsed;
         if (kind === wanted || LENIENT.has(`${name}.${key}`)) { args[key] = parsed; actual = kind; }
-      } catch {
-        // Nearly JSON: DeepSeek sent a whole app's files this way and was
-        // told only that a string is not an array. Repair it before refusing.
-        try {
-          const parsed = JSON.parse(jsonrepair(value));
-          const kind = Array.isArray(parsed) ? 'array' : typeof parsed;
-          if (kind === wanted) { args[key] = parsed; actual = kind; }
-        } catch { /* not JSON either — the message below is the right answer */ }
-      }
+      } catch { /* not JSON either — the message below is the right answer */ }
     }
 
     // A list of files written as a { path: contents } map. The tool reads it

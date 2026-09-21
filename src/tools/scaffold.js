@@ -431,18 +431,6 @@ export async function createApp({ folder, name, description, template = 'plain-h
   // The app's own files, written in this same call. Two round trips become
   // one, and round trips are nearly all of the time a build takes.
   // Next.js only: paths that have missed src/ are corrected before they land.
-  // Paths are relative to the project root, but a model will name a file
-  // "index.html" meaning the app's own. DeepSeek did: its tasker went to the
-  // project root and the starter was left in tasker/ as the app. A path that
-  // is not already under the folder is put under it.
-  const home = resolveIn(folder, 'create_app', 'folder').abs;
-  for (const f of given) {
-    const abs = resolveIn(f.path, 'create_app', 'files').abs;
-    const rel = path.relative(home, abs);
-    if (rel.startsWith('..') || path.isAbsolute(rel)) {
-      f.path = path.join(String(folder), String(f.path).replace(/^[./\\]+/, ''));
-    }
-  }
   const placed = template === 'next-shadcn' ? placeForNext(given, path.basename(target.abs)) : { files: given, moved: [] };
   const mine = placed.files;
   const wrote = mine.length ? await batchWrite({ files: mine }) : null;
@@ -454,15 +442,11 @@ export async function createApp({ folder, name, description, template = 'plain-h
   // back — and only the ones this call did not already write over. A read is
   // another round trip to learn what ucode already knows.
   const starter = [];
-  const leftover = [];
   for (const rel of SHOW_BACK[template] ?? []) {
     const abs = path.join(target.abs, rel);
     if (written.has(abs)) continue;
     const text = await fs.readFile(abs, 'utf8').catch(() => null);
-    if (text !== null) {
-      starter.push(`=== ${target.show}/${rel} ===\n${text}`);
-      leftover.push(`${target.show}/${rel}`);
-    }
+    if (text !== null) starter.push(`=== ${target.show}/${rel} ===\n${text}`);
   }
 
   const out = result(
@@ -505,18 +489,8 @@ export async function createApp({ folder, name, description, template = 'plain-h
       (needsInstall
         ? `Run this app's commands with cwd: "${target.show}" (npm run build, npm run dev).\n\n${guide}`
         : `Nothing to install and nothing to build: open ${target.show}/index.html directly, or serve the ` +
-          `folder with "python -m http.server 8000" if it fetches anything.\n` + (mine.length ? '' : `\n${guide}`)) +
-      // With the app passed in, the starter's placeholder files printed in full
-      // read as the app having been overwritten: DeepSeek took them for that
-      // and wrote the whole app a second time. So they are only named.
-      (mine.length
-        ? '\nYour files are on disk exactly as written above; nothing overwrote them.'
-          + (starter.length
-            ? ` Starter files you did not replace were left as they were: ${leftover.join(', ')}.`
-            : '')
-          + ' Do not write the app again: to check it, read it with read_files, and to change a '
-          + 'part of it, use edit_file. Writing it out again to verify it costs minutes and checks nothing.'
-        : starter.length
+          `folder with "python -m http.server 8000" if it fetches anything.\n\n${guide}`) +
+      (starter.length
         ? `\n\nThe starter's files, in full — they are below, so do not read them back:\n\n${starter.join('\n\n')}`
         : ''),
     `${copied.length} files${wrote ? ` · ${mine.length} written` : ''}` +

@@ -1,7 +1,7 @@
 {
   "name": "ucode-agent",
-  "version": "1.55.1",
-  "description": "ucode - a terminal coding agent that reads, edits and runs your code, on NVIDIA, Cohere, Nex AGI, DeepSeek and Qwen models.",
+  "version": "1.56.0",
+  "description": "ucode - a terminal coding agent that reads, edits and runs your code, on NVIDIA, Cohere and Nex AGI models.",
   "type": "module",
   "main": "ucode.js",
   "bin": {
@@ -11,7 +11,8 @@
     "ucode.js",
     "src/",
     "skills/",
-    "templates/"
+    "templates/",
+    "THIRD_PARTY_NOTICES.md"
   ],
   "scripts": {
     "start": "node ucode.js",
@@ -39,9 +40,7 @@
     "nvidia",
     "nemotron",
     "cohere",
-    "nex-agi",
-    "deepseek",
-    "qwen"
+    "nex-agi"
   ],
   "author": "om dixit",
   "license": "ISC",

@@ -87,10 +87,12 @@ function cutPoint(messages, budget) {
  * @param {Array} messages
  * @param {object} o
  * @param {number} o.limit          token budget
- * @param {Function} o.summarize    async (older) => string
+ * @param {Function} o.summarize    async (older, previousSummary) => string
+ * @param {boolean}  [o.force]      fold even below the threshold — the provider
+ *                                  has already said the request is too big
  */
-export async function fold(messages, { limit, summarize }) {
-  if (!tooBig(messages, limit)) return { messages, folded: false };
+export async function fold(messages, { limit, summarize, force = false }) {
+  if (!force && !tooBig(messages, limit)) return { messages, folded: false };
 
   // Half the size that triggered the fold, so there is room to work before
   // the next one. Sized off the same absolute rule, or a fold on a
@@ -103,7 +105,10 @@ export async function fold(messages, { limit, summarize }) {
   // Nothing old enough to fold — the tail on its own is already oversized.
   if (older.length === 0) return { messages, folded: false };
 
-  const summary = await summarize(older);
+  // A second fold must not summarize the first summary as if it were chat:
+  // it is handed over as the prior summary, to be merged rather than retold.
+  const previous = older.find((m) => m.folded)?.summary ?? null;
+  const summary = await summarize(older.filter((m) => !m.folded), previous);
 
   return {
     folded: true,
@@ -117,19 +122,87 @@ export async function fold(messages, { limit, summarize }) {
           `were folded away to stay inside the context window.\n\n${summary}\n\n` +
           'Treat all of that as settled context. Everything after this point is verbatim.',
         folded: true,
+        summary,
       },
       ...recent,
     ],
   };
 }
 
-/** What the summarizer is asked to do. */
-export const SUMMARY_PROMPT =
-  'Summarize this conversation so another engineer could pick it up mid-task with ' +
-  'nothing else to go on. Keep, in this order: (1) what the user is trying to achieve, ' +
-  '(2) which files were read or changed and what is in them, (3) decisions taken and the ' +
-  'reasoning, (4) commands run and what they printed, (5) what is still unfinished. ' +
-  'Name exact paths, functions and error messages. No preamble, no commentary.';
+/**
+ * What the summarizer is asked to do: opencode's anchored summary (MIT, see
+ * THIRD_PARTY_NOTICES.md). Fixed sections mean nothing gets dropped because
+ * the summarizer found it dull — the next step and the files that matter
+ * always have a place — and a second fold merges into the first instead of
+ * summarizing a summary.
+ */
+export const SUMMARY_PROMPT = `You summarize a coding session so another coding agent can continue the work with nothing else to go on.
+
+Output exactly the Markdown structure shown inside <template> and keep the section order unchanged. Do not include the <template> tags in your response.
+<template>
+## Objective
+- [one or two brief sentences describing what the user is trying to accomplish]
+
+## Important Details
+- [constraints/preferences, decisions and why, important facts/assumptions, exact context needed to continue, or "(none)"]
+
+## Work State
+### Completed
+- [finished work, verified facts, or changes made; otherwise "(none)"]
+
+### Active
+- [current work, partial changes, or investigation state; otherwise "(none)"]
+
+### Blocked
+- [blockers, failing commands, or unknowns; otherwise "(none)"]
+
+## Next Move
+1. [immediate concrete action, or "(none)"]
+2. [next action if known, or "(none)"]
+
+## Relevant Files
+- [file or directory path: why it matters, or "(none)"]
+</template>
+
+Rules:
+- Keep every section, even when empty.
+- Use terse bullets, not prose paragraphs.
+- Preserve exact file paths, symbols, commands, error strings, URLs, and identifiers when known.
+- Do not mention the summary process or that context was compacted.`;
+
+const MERGE = `The <prior-summary> summarizes everything that happened before the <conversation>. Construct a new summary that combines both. The <prior-summary> is discarded after this: anything you do not carry into the new summary is lost.
+
+When combining:
+- Carry forward objectives, constraints, user directives, decisions, and parallel workstreams from the <prior-summary> even when the <conversation> does not mention them. Drop only what is finished and no longer needed.
+- The <conversation> is more recent than the <prior-summary>. Where they conflict, the conversation wins: state the corrected fact and drop the old claim.
+- Add new progress, decisions, constraints, and context from the conversation.
+- Move completed work from "Active" to "Completed".
+- If a blocker has been resolved, update the summary to reflect that while keeping any details still needed to continue the work.
+- Update "Objective" and "Next Move" to reflect the current work state.`;
+
+/** The summarizer's user message: the conversation, and the summary it extends if there is one. */
+export function summaryRequest(conversation, previous = null) {
+  // File contents are in there too. One carrying "</conversation>" must not
+  // close the section early and speak to the summarizer as if it were us.
+  const fence = (s) => String(s).replace(/<\/?(?:conversation|prior-summary)>/gi, '');
+  conversation = fence(conversation);
+  if (previous) previous = fence(previous);
+  const parts = [`Here is the conversation so far:
+
+<conversation>
+${conversation}
+</conversation>`];
+  if (previous) {
+    parts.push(`Here is the summary of the conversation before the <conversation> above:
+
+<prior-summary>
+${previous}
+</prior-summary>`, MERGE);
+  } else {
+    parts.push('Create a new anchored summary from the conversation history in the <conversation> tags above so another coding agent can continue the work.');
+  }
+  return parts.join('\n\n');
+}
 
 /**
  * Flatten the messages being folded into plain text for the summarizer.

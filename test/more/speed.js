@@ -45,11 +45,7 @@ export default async function ({ test, section, ok, eq, sandbox }) {
       files: [{ path: 'partial/app.js', content: 'const mine = 1;\n' }],
     });
     ok(!out.content.includes('=== partial/app.js ==='), 'no point returning what was just sent');
-    // Printed in full, the starter's placeholders read as the app having been
-    // overwritten, so with the app passed in they are only named.
-    ok(!out.content.includes('=== partial/styles.css ==='), 'the starter is not printed over the app');
-    ok(out.content.includes('partial/styles.css'), 'but the untouched starter files are named');
-    ok(out.content.includes('nothing overwrote them'), 'and the model is told its files stand');
+    ok(out.content.includes('=== partial/styles.css ==='), 'the other two still come back');
   });
 
   await test('those files count as changes, so the checks see them', () => {
@@ -312,52 +308,5 @@ export default async function ({ test, section, ok, eq, sandbox }) {
     ok(!short.content.includes(full.slice(200, 400)), 'the long body did not go with it');
     ok(!skillMessage(skill).short, 'load_skill still delivers the full body');
     ok(!skillMessage({ name: 'x', body: 'b', digest: '' }, { short: true }).short, 'a skill with no digest is unaffected');
-  });
-
-  await test('a path that repeats the project folder names is taken back off', async () => {
-    const { unrepeat } = await import('../../src/core/loop.js');
-    const cwd = path.join(sandbox, 'scratchpad', 'run1');
-    await fs.mkdir(path.join(cwd, 'real'), { recursive: true });
-    eq(unrepeat('scratchpad/run1/taskr', cwd), 'taskr');
-    eq(unrepeat('run1/taskr/index.html', cwd), 'taskr/index.html');
-    eq(unrepeat('taskr/index.html', cwd), 'taskr/index.html');
-    eq(unrepeat('real/x.js', cwd), 'real/x.js', 'a folder that is really there stays');
-    eq(unrepeat('run1', cwd), 'run1', 'nothing left over means leave it');
-  });
-
-  await test('writing the finished app again ends the turn with done', async () => {
-    const { Agent } = await import('../../src/core/loop.js');
-    const cwd = path.join(sandbox, 'rewrite');
-    await fs.mkdir(path.join(cwd, 'taskr'), { recursive: true });
-    const page = `<!doctype html><title>t</title><script>let n = 1;</script>${'<p>x</p>'.repeat(300)}`;
-    await fs.writeFile(path.join(cwd, 'taskr', 'index.html'), page);
-
-    const agent = new Agent({ cwd });
-    agent.ui.mode = 'build';
-    agent.offering = new Set(['create_app']);
-    agent.session = { messages: [] };
-    agent.working = [];
-    agent.sinceCheck = new Set();
-    agent.apps = [path.join(cwd, 'taskr')];
-    agent.wrote = new Map([[path.join(cwd, 'taskr', 'index.html'), page.length]]);
-    const said = [];
-    agent.ui.assistant = (text) => said.push(text);
-    // The real check opens the page in a browser and leaves its server up,
-    // which keeps the test runner from exiting.
-    const checked = [];
-    agent.autoCheck = async () => { checked.push(...agent.sinceCheck); return null; };
-
-    let failed = null;
-    try {
-      await agent.dispatch({ name: 'create_app', args: { folder: 'taskr', files: [{ path: 'taskr/index.html', content: 'x' }] } });
-    } catch (err) { failed = err; }
-    eq(failed?.kind, 'already_made');
-    ok(agent.rewrite, 'the turn is marked to end');
-
-    eq(await agent.wrapUp(0), false, 'a clean app needs no fix round');
-    ok(checked.some((f) => f.replace(/\\/g, '/') === 'taskr/index.html'), 'the app as written was checked');
-    ok(/^Done/.test(said[0] ?? ''), said[0]);
-    ok(said[0].includes('taskr/index.html'), 'it says where to open it');
-    eq(agent.rewrite, null);
   });
 }
