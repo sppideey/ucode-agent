@@ -7,14 +7,14 @@
  * coding agent can do, because everything after it is built on a lie.
  */
 
-import { promises as fs } from 'node:fs';
+import { promises as fs, existsSync } from 'node:fs';
 import { remember } from '../core/undo.js';
 import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
 import {
   resolveIn, guard, result, fsFailure, looksBinary, toLines, bytes,
   changedRegion, renderDiff, renderNewFile, READ_LINES, MAX_FILE_OUTPUT,
-  noteFile, writeTracked, assertUnchanged,
+  noteFile, writeTracked, assertUnchanged, getRoot,
 } from './shared.js';
 import { packageJsonWritten } from './shell.js';
 import { fuzzyReplace } from './fuzzy.js';
@@ -196,6 +196,44 @@ const brokenNote = (show, problem) => {
     `a structure you have lost track of.`;
 };
 
+/**
+ * A module in a page with no build step that imports a stylesheet or an image.
+ *
+ * A bundler would take it; a browser refuses the whole module ("Failed to
+ * load module script ... MIME type text/css"), so none of the app's script
+ * runs and every button is dead. The syntax is fine, so nothing else notices
+ * until the page is opened — a live build shipped exactly this as done.
+ */
+const ASSET_IMPORT = /^[ \t]*import\s+(?:[\w$*{}\s,]+?\s+from\s+)?['"]([^'"]+\.(?:css|scss|sass|less|svg|png|jpe?g|gif|webp))['"](?!\s*(?:with|assert)\s*\{)/m;
+
+export function assetImport(abs, text) {
+  if (!/\.m?js$/i.test(abs)) return null;
+  // An import quoted inside a block comment is not an import.
+  const hit = ASSET_IMPORT.exec(String(text).replace(/\/\*[\s\S]*?\*\//g, ''));
+  if (!hit) return null;
+  // Anything with a package.json above it, up to the project root, may well be
+  // bundled. path.relative, not a string prefix: "ucode2" starts with "ucode",
+  // and Windows paths differ in case from one shell to the next.
+  const top = getRoot();
+  const within = (dir) => {
+    const rel = path.relative(top, dir);
+    return rel === '' || (!rel.startsWith('..') && !path.isAbsolute(rel));
+  };
+  for (let dir = path.dirname(abs); ; dir = path.dirname(dir)) {
+    if (existsSync(path.join(dir, 'package.json'))) return null;
+    if (!within(dir) || path.relative(top, dir) === '' || path.dirname(dir) === dir) break;
+  }
+  return `imports ${hit[1]}, which a page with no build step cannot do: the browser refuses the ` +
+    'whole module, so none of its script runs. Remove that import and load it from the page ' +
+    'instead — <link rel="stylesheet" href="…"> for a stylesheet, an <img> or a plain URL for an image.';
+}
+
+/** The note for that, appended to a write's result like a parse problem is. */
+const pageNote = (target, text) => {
+  const problem = assetImport(target.abs, text);
+  return problem ? `\n\n⚠ ${target.show} ${problem}` : '';
+};
+
 /** A file this short comes back whole after an edit; longer ones show the part around the change. */
 const SHOW_WHOLE = 250;
 const AROUND = 15;
@@ -349,6 +387,7 @@ async function put(target, content, { diffMax = 16 } = {}) {
     lineCount,
     diff,
     problem: syntaxProblem(target.abs, content),
+    note: pageNote(target, content),
     line: `${existed ? 'Overwrote' : 'Created'} ${target.show} ` +
       `(${lineCount} lines, ${bytes(Buffer.byteLength(content))})`,
   };
@@ -368,7 +407,7 @@ export async function writeFile({ path: p, content }) {
 
   const written = await put(target, content);
   const out = result(
-    `${written.line}.${parseNote(target.show, written.problem)}`,
+    `${written.line}.${parseNote(target.show, written.problem)}${written.note}`,
     `${written.existed ? 'overwrote' : 'created'} · ${written.lineCount} lines${written.problem ? ' · does not parse' : ''}`
   );
   out.diff = written.diff;
@@ -414,7 +453,7 @@ export async function batchWrite({ files }) {
     // would bury the reply under three hundred lines of gutter.
     const written = await put(target, content, { diffMax: 6 });
     if (!written.existed) created++;
-    lines.push(written.line + parseNote(target.show, written.problem));
+    lines.push(written.line + parseNote(target.show, written.problem) + written.note);
     if (written.problem) broken++;
     diff.push(`~${target.show}`, ...written.diff);
   }
@@ -632,7 +671,7 @@ export async function editFile({ path: p, old_string, new_string, replace_all })
   const span = toLines(new_string).length;
   const out = result(
     `Replaced ${where} (${change}${matched}).` +
-      parseNote(target.show, syntaxProblem(target.abs, text)) +
+      parseNote(target.show, syntaxProblem(target.abs, text)) + pageNote(target, text) +
       nowReads(target.show, text, at, span),
     `${count > 1 ? `${count} changes from line` : '1 change at line'} ${at} · ${change}` +
       `${how ? ' · whitespace-tolerant' : ''}${syntaxProblem(target.abs, text) ? ' · does not parse' : ''}`,
@@ -705,7 +744,7 @@ export async function multiEdit({ path: p, edits }) {
 
   const out = result(
     `Applied ${edits.length} edits to ${target.show} (${change}).` +
-      parseNote(target.show, syntaxProblem(target.abs, text)) +
+      parseNote(target.show, syntaxProblem(target.abs, text)) + pageNote(target, text) +
       nowReads(target.show, text, 1, toLines(text).length),
     `${edits.length} edits · ${change}`,
     MAX_FILE_OUTPUT
@@ -795,7 +834,7 @@ export async function editFiles({ files }) {
     planned.map((p) => {
       const problem = syntaxProblem(p.target.abs, p.text);
       return `Edited ${p.target.show} (${p.count} change${p.count === 1 ? '' : 's'})` +
-        parseNote(p.target.show, problem);
+        parseNote(p.target.show, problem) + pageNote(p.target, p.text);
     }).join('\n'),
     `${planned.length} files · ${edits} edits`
   );

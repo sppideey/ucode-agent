@@ -408,12 +408,19 @@ export const WALK_WIDTH = 32;
  */
 const known = new Map();
 
+/**
+ * One key per file. Windows and macOS do not care about case, so "App.js" and
+ * "app.js" are the same file there — and keyed apart, ucode's own write under
+ * one spelling read as somebody else's edit under the other.
+ */
+const stampKey = (abs) => (process.platform === 'win32' || process.platform === 'darwin' ? abs.toLowerCase() : abs);
+
 /** Record a file as ucode now knows it. Never throws: a missing stamp only costs the check. */
 export async function noteFile(abs) {
   try {
-    known.set(abs, (await fs.stat(abs)).mtimeMs);
+    known.set(stampKey(abs), (await fs.stat(abs)).mtimeMs);
   } catch {
-    known.delete(abs);
+    known.delete(stampKey(abs));
   }
 }
 
@@ -431,7 +438,7 @@ export async function writeTracked(abs, data, encoding = 'utf8') {
 
 /** Forget a file, so the next write to it goes through unchallenged. */
 export function forgetFile(abs) {
-  known.delete(abs);
+  known.delete(stampKey(abs));
 }
 
 /**
@@ -444,7 +451,7 @@ export function forgetFile(abs) {
  * clobber.
  */
 export async function assertUnchanged(abs, show) {
-  const seen = known.get(abs);
+  const seen = known.get(stampKey(abs));
   if (seen === undefined) return;
 
   let now;
@@ -457,7 +464,7 @@ export async function assertUnchanged(abs, show) {
   // costs nothing and stops a same-second write reading as someone else's.
   if (Math.abs(now - seen) < 1) return;
 
-  known.delete(abs);
+  known.delete(stampKey(abs));
   throw new ToolFailure({
     kind: 'changed_on_disk',
     attempted: `overwriting ${show}`,

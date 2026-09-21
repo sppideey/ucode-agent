@@ -306,6 +306,9 @@ export function lean(messages, keep = 3) {
   });
 }
 
+/** One spelling per file for the read counts: "./a/b.js", "a\b.js" and "a/b.js" are one file. */
+const fileKey = (p) => { const k = path.normalize(String(p)).split(path.sep).join('/'); return process.platform === 'win32' || process.platform === 'darwin' ? k.toLowerCase() : k; };
+
 /** Tools that write whole files, whose sizes are remembered for the turn. */
 const WHOLE_WRITES = new Set(['write_file', 'batch_write', 'create_app']);
 
@@ -1196,6 +1199,7 @@ export class Agent {
     // /undo can put the whole turn back.
     beginTurn();
     this.lookedThisTurn = false;
+    this.lookAgain = null;
     this.reads = new Map();
     this.declines = 0;
     this.apps = [];
@@ -1203,6 +1207,11 @@ export class Agent {
     forgetReviews(); // a new request: its apps get a fresh design review
     setRequest(input); // create_app checks this before choosing a starter
     const images = await this.attachImages(input);
+    // The skill goes in ahead of the request, so the request is the last
+    // thing the model reads. After it, a page of house rules was what the
+    // model answered: asked for a dark mode toggle on its second turn, a live
+    // run re-read two files and repeated its first turn's summary instead.
+    this.autoLoad(input);
     this.push(images.length
       ? { role: 'user', content: input, images }
       : { role: 'user', content: input });
@@ -1210,8 +1219,6 @@ export class Agent {
     if (!this.session.title || this.session.title === 'Untitled') {
       this.session.title = titleFrom(input);
     }
-
-    this.autoLoad(input);
     // What the model is told about the project, fresh for this turn.
     [this.map, this.memory] = await Promise.all([
       projectMap(this.cwd).catch(() => ''),
@@ -1613,7 +1620,7 @@ export class Agent {
 
       const noted = (call) => {
         if (FILE_WRITES.has(call.name)) {
-          for (const p of pathsOf(call)) { this.touched.add(p); this.sinceCheck.add(p); }
+          for (const p of pathsOf(call)) { this.touched.add(p); this.sinceCheck.add(p); this.forgetReads(p); }
         }
         if (call.name === 'run_command' || call.name === 'run_commands') this.ranSomething = true;
       };
@@ -1882,7 +1889,7 @@ export class Agent {
       .map((f) => ({ abs: path.resolve(this.cwd, f.path), size: f.content.length, path: f.path }));
   }
 
-  async dispatch(call) {
+  async dispatch(call, offered = this.offering) {
     // The model emitted arguments that were not valid JSON. Hand the parser's
     // own complaint straight back so it can correct itself next step.
     if (call.parseError) {
@@ -1899,12 +1906,13 @@ export class Agent {
     // tool that writes, and a new project is not sent the ones that look code
     // up — and a model naming one from memory was, until this check, executing
     // it. A withheld tool has to be refused, not just left out of the menu.
-    if (!this.offering?.has(call.name)) {
+    // A worker is checked against its own, narrower list, not the lead's.
+    if (!offered?.has(call.name)) {
       throw new ToolFailure({
         kind: 'no_such_tool',
         attempted: `calling ${call.name}`,
         failed: `${call.name} is not available${this.ui.mode === 'plan' ? ' in plan mode' : ' in this project'}.`,
-        fix: `Use one of the tools you were given: ${[...this.offering ?? []].join(', ')}.`,
+        fix: `Use one of the tools you were given: ${[...offered ?? []].join(', ')}.`,
       });
     }
 
@@ -1921,14 +1929,24 @@ export class Agent {
     // usually a fair re-check after an edit. Only the third is a loop. And it
     // is keyed on the file being untouched since — the moment anything writes
     // to it, the count starts again and a real re-read goes through.
+    //
+    // Counted per page, not per file: paging through a long file with offset
+    // is new text every time, and a live run was refused four pages in a row
+    // of a 900-line file it had only ever seen the start of.
+    //
+    // A write starts the count again (forgetReads). It used to be skipped only
+    // while the file sat in sinceCheck, which the checks empty every fix round:
+    // after round one, every read of a file the model had just edited was
+    // refused as "unchanged", and a live build spent sixty steps being told so.
     if (call.name === 'read_file' && call.args?.path) {
-      const key = String(call.args.path);
+      const file = String(call.args.path);
+      const key = `${fileKey(file)}#${Number(call.args.offset) || 1}:${Number(call.args.limit) || 0}`;
       const seen = (this.reads ??= new Map()).get(key) ?? 0;
-      if (seen >= 2 && !this.sinceCheck?.has(key)) {
+      if (seen >= 2) {
         this.reads.set(key, seen + 1);
         return {
-          content: `You have already read ${key} ${seen} times this turn and nothing has written to it since, ` +
-          'so its contents are unchanged and already above. Use what is there. If you need a part ' +
+          content: `You have already read that part of ${file} ${seen} times this turn and nothing has written ` +
+          'to it since, so it is unchanged and already above. Use what is there. If you need a part ' +
           'you have lost, say which and read the files you still need together in one read_files.',
           summary: 'unchanged since you last read it',
         };
@@ -2031,9 +2049,9 @@ export class Agent {
   }
 
   /** Run a call and settle to { out } or { err } — never throws. */
-  execute(call) {
+  execute(call, offered = this.offering) {
     const started = Date.now();
-    return this.dispatch(call).then(
+    return this.dispatch(call, offered).then(
       (out) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started }); countTool(this.stats, call, out); return { out }; },
       (err) => { trace({ kind: 'tool', name: call.name, ms: Date.now() - started, err: err?.kind }); countTool(this.stats, call, null, err); return { err }; }
     );
@@ -2046,6 +2064,12 @@ export class Agent {
     this.ui.plan(list);
     const done = list.filter((i) => i.done).length;
     return { content: `Plan updated: ${done} of ${list.length} done.`, summary: `${done}/${list.length}` };
+  }
+
+  /** A file was written: every page of it read so far is news again. */
+  forgetReads(file) {
+    const prefix = `${fileKey(file)}#`;
+    for (const key of this.reads?.keys() ?? []) if (key.startsWith(prefix)) this.reads.delete(key);
   }
 
   /** File writes from parallel workers take turns, so two never interleave. */
@@ -2079,7 +2103,7 @@ export class Agent {
       touched: [],
     }))));
 
-    for (const r of results) for (const f of r.touched) { this.touched.add(f); this.sinceCheck.add(f); }
+    for (const r of results) for (const f of r.touched) { this.touched.add(f); this.sinceCheck.add(f); this.forgetReads(f); }
 
     // A worker that wrote nothing has not done its part, whatever it said.
     // The lead builds those itself rather than leaving holes in the app.
@@ -2111,6 +2135,7 @@ export class Agent {
       { role: 'user', content: String(task.instructions) },
     ];
     const available = this.toolsNow().filter((t) => !WORKER_EXCLUDED.has(t.name));
+    const offered = new Set(available.map((t) => t.name));
     const wanted = process.env.UCODE_WORKER_MODEL;
     let workerModel = wanted && MODELS[wanted] ? wanted : model();
     const tried = new Set([workerModel]);
@@ -2172,8 +2197,8 @@ export class Agent {
         const exclusive =
           FILE_WRITES.has(call.name) || call.name === 'run_command' || call.name === 'run_commands';
         const { out, err } = exclusive
-          ? await this.fileLock(() => this.execute(call))
-          : await this.execute(call);
+          ? await this.fileLock(() => this.execute(call, offered))
+          : await this.execute(call, offered);
         if (err) {
           if (!(err instanceof ToolFailure)) throw err;
           this.ui.toolFailed(`${name}: ${err.kind}: ${err.failed}`);
@@ -2431,11 +2456,30 @@ export class Agent {
    * never a reason to fail the turn that built the app.
    */
   async lookOnceThisTurn(root, changed) {
-    if (this.lookedThisTurn) return null;
+    // A look that found problems is taken again after the fix round, even if
+    // the fix only touched the page's script. Looking once a turn let a live
+    // build report "Failed to load module script" on its first look, fail to
+    // fix it, and finish as done with a page whose script never ran — nothing
+    // opened the page again. The fix rounds bound how often this repeats.
+    const again = this.lookAgain;
+    if (this.lookedThisTurn && !again) return null;
 
-    const pages = [...changed].filter((f) => PAGE.test(f));
+    let pages = [...changed].filter((f) => PAGE.test(f));
+    // A plain page's script changed and its index.html did not — the usual
+    // shape of a build on the HTML starter, whose page comes from the starter
+    // while the model writes app.js. The page is still the thing to open: a
+    // live build whose "Add" button threw on every click finished as done
+    // because nothing with .html in its name had changed, so nobody looked.
+    if (!pages.length) {
+      for (const f of changed) {
+        const page = path.join(path.dirname(f), 'index.html');
+        if (/\.m?js$/i.test(f) && (await exists(path.resolve(root, page)))) { pages = [page]; break; }
+      }
+    }
+    if (!pages.length && again) pages = [again];
     if (!pages.length) return null;
     this.lookedThisTurn = true;
+    this.lookAgain = null;
 
     try {
       const { lookAtApp, withStaticServer } = await import('../tools/browser.js');
@@ -2448,6 +2492,7 @@ export class Agent {
         const out = await lookAtApp({ url, review: false });
         const found = /^(\d+) problem/.exec(out.summary ?? '');
         this.ui.runStat?.(found ? `${found[1]} to fix` : 'clean');
+        if (found) this.lookAgain = pages.find((f) => /\.html?$/i.test(f)) ?? pages[0];
         return found ? `I opened the app and looked at it:\n\n${out.content}` : null;
       };
 

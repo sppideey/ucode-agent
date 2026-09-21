@@ -172,7 +172,7 @@ export function autoLoadFor(skills, text) {
 export function skillMessage(skill, { automatic = false, short = false } = {}) {
   const digest = short && skill.digest ? skill.digest : null;
   const why = automatic
-    ? `The "${skill.name}" skill was loaded automatically because this request is the kind it covers.`
+    ? `The "${skill.name}" skill was loaded automatically because the request that follows is the kind it covers.`
     : `The "${skill.name}" skill was loaded for this task.`;
   return {
     role: 'system',

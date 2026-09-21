@@ -616,6 +616,17 @@ await test('an edit written with \\n still matches a file saved with \\r\\n', as
   eq(await read('crlf.js'), 'const a = 1;\r\nconst b = 3;\r\n', 'line endings are preserved');
 });
 
+await test('a file written under two spellings of its name is still one file', async () => {
+  if (process.platform !== 'win32' && process.platform !== 'darwin') return;
+  await writeFile({ path: 'Cased.js', content: 'const a = 1;\n' });
+  await new Promise((r) => setTimeout(r, 20));
+  await writeFile({ path: 'cased.js', content: 'const a = 2;\n' });
+  await new Promise((r) => setTimeout(r, 20));
+  // ucode's own write under the other spelling is not somebody else's edit.
+  await writeFile({ path: 'Cased.js', content: 'const a = 3;\n' });
+  eq(await read('cased.js'), 'const a = 3;\n');
+});
+
 await test('replace_all changes every copy, and only when asked', async () => {
   await write('ra.js', 'let count = 0;\ncount++;\nlog(count);\n');
   const out = await editFile({ path: 'ra.js', old_string: 'count', new_string: 'total', replace_all: true });
@@ -898,6 +909,37 @@ await test('a command that would kill the agent is refused', async () => {
     const err = await throws(() => runCommand({ command }), 'suicidal_command');
     ok(err.fix.includes('PID'), 'should point at the narrow alternative');
   }
+});
+
+await test('a command that only searches for a server is not started as one', async () => {
+  const { startsServer } = await import('../src/tools/shell.js');
+  for (const c of ['npm run dev', 'cd app && npm run dev', 'python -m http.server 8000', 'npx vite']) ok(startsServer(c), c);
+  for (const c of ['ps aux | grep http-server', 'netstat -ano | findstr :3000', 'echo npm run dev', 'npm run build']) {
+    ok(!startsServer(c), c);
+  }
+});
+
+await test('a kill by program name is asked about, not run', async () => {
+  const { setConfirm: setAsker } = await import('../src/tools/shared.js');
+  const asked = [];
+  setAsker(async (q) => { asked.push(q); return false; });
+  try {
+    const broad = [
+      'taskkill /F /IM python.exe', 'pkill python', 'Stop-Process -Name chrome',
+      `wmic process where "name='x.exe'" delete`, 'kill $(pgrep python)',
+    ];
+    for (const command of broad) await throws(() => runCommand({ command }), 'declined');
+    eq(asked.length, broad.length, 'each one needed a yes');
+    ok(asked[0].detail.includes('not only the ones ucode started'), asked[0].detail);
+  } finally {
+    setAsker(null);
+  }
+  // With nobody to ask, the model is told to use the PID instead.
+  const err = await throws(() => runCommand({ command: 'taskkill /F /IM python.exe' }), 'broad_kill');
+  ok(err.fix.includes('PID'), err.fix);
+  // A kill by number is left alone: that is the narrow thing to do.
+  const { childEnv } = await import('../src/tools/shell.js');
+  eq(childEnv({}).PYTHONUNBUFFERED, '1', 'python output reaches the log as it happens');
 });
 
 await test('a command that waits for input gets end-of-input instead of hanging', async () => {
@@ -1469,6 +1511,77 @@ await test('running it prints the version, importing it does nothing', async () 
     `import(${JSON.stringify(pathToFileURL(entry).href)}).then(() => process.stdout.write('inert'))`,
   ]);
   eq(imported.stdout, 'inert', 'importing must not start a session');
+});
+
+await test('a page that still had problems is looked at again after the fix round', async () => {
+  const { Agent } = await import('../src/core/loop.js');
+  const agent = new Agent({ cwd: sandbox });
+  const notes = [];
+  // Stand in for the browser: the look is attempted, and says so.
+  agent.ui = { toolCall: () => { throw new Error('LOOKED'); }, note: (t) => notes.push(t), runStat() {} };
+  await fs.mkdir(path.join(sandbox, 'relook'), { recursive: true });
+  await write('relook/index.html', '<!doctype html><title>x</title>');
+  agent.lookedThisTurn = true;
+  agent.lookAgain = null;
+  eq(await agent.lookOnceThisTurn(sandbox, ['relook/app.js']), null);
+  eq(notes.length, 0, 'a clean first look is not repeated');
+  agent.lookAgain = 'relook/index.html';
+  await agent.lookOnceThisTurn(sandbox, ['relook/app.js']);
+  ok(notes.some((n) => n.includes('LOOKED')), `a script-only fix still gets the page opened again: ${notes}`);
+});
+
+await test('a plain page is opened when only its script changed', async () => {
+  const { Agent } = await import('../src/core/loop.js');
+  const agent = new Agent({ cwd: sandbox });
+  const notes = [];
+  agent.ui = { toolCall: () => { throw new Error('LOOKED'); }, note: (t) => notes.push(t), runStat() {} };
+  await fs.mkdir(path.join(sandbox, 'scriptonly'), { recursive: true });
+  await write('scriptonly/index.html', '<!doctype html><title>x</title><script type="module" src="app.js"></script>');
+  agent.lookedThisTurn = false;
+  agent.lookAgain = null;
+  await agent.lookOnceThisTurn(sandbox, ['scriptonly/app.js']);
+  ok(notes.some((n) => n.includes('LOOKED')), `the HTML starter's page is looked at after app.js is written: ${notes}`);
+  notes.length = 0;
+  agent.lookedThisTurn = false;
+  eq(await agent.lookOnceThisTurn(sandbox, ['lib/util.js']), null, 'a module with no page beside it is not');
+  eq(notes.length, 0);
+});
+
+await test('re-reads are counted per page, and a write starts the count again', async () => {
+  const { Agent } = await import('../src/core/loop.js');
+  const agent = new Agent({ cwd: sandbox });
+  agent.ui = { mode: 'build' };
+  agent.offering = new Set(['read_file']);
+  agent.reads = new Map();
+  await write('pages.js', Array.from({ length: 50 }, (_, i) => `const v${i} = ${i};`).join('\n'));
+  const read = (args) => agent.dispatch({ id: 'r', name: 'read_file', args: { path: 'pages.js', ...args } });
+  await read({});
+  await read({});
+  ok((await read({})).summary.includes('unchanged'), 'the third read of the same page is refused');
+  ok(!(await read({ offset: 20, limit: 10 })).summary?.includes('unchanged'), 'another page is new text');
+  agent.forgetReads('./pages.js');
+  ok(!(await read({})).summary?.includes('unchanged'), 'after a write it is read again, however it was spelled');
+});
+
+await test('a worker is held to its own tools, not the lead\'s', async () => {
+  const { Agent } = await import('../src/core/loop.js');
+  const agent = new Agent({ cwd: sandbox });
+  agent.ui = { mode: 'build' };
+  agent.offering = new Set(['create_app', 'read_file']);
+  await throws(() => agent.dispatch({ id: '1', name: 'create_app', args: {} }, new Set(['read_file'])), 'no_such_tool');
+});
+
+await test('a plain page module that imports a stylesheet is flagged the moment it is written', async () => {
+  const { assetImport } = await import('../src/tools/files.js');
+  const plain = await fs.mkdtemp(path.join(os.tmpdir(), 'ucode-plain-'));
+  const js = path.join(plain, 'app.js');
+  ok(/link rel="stylesheet"/.test(assetImport(js, "import './app.css';\nconst a = 1;\n") ?? ''), 'a bare css import');
+  ok(assetImport(js, "import logo from './logo.svg';\n"), 'an image import');
+  eq(assetImport(js, "import styles from './a.css' with { type: 'css' };\n"), null, 'import attributes are real');
+  eq(assetImport(js, "import { go } from './go.js';\n"), null, 'a js import is fine');
+  eq(assetImport(js, "/* never do this:\nimport './app.css';\n*/\nconst a = 1;\n"), null, 'a commented-out import is not one');
+  await fs.writeFile(path.join(plain, 'package.json'), '{}');
+  eq(assetImport(js, "import './app.css';\n"), null, 'a project with a bundler may import css');
 });
 
 await test('the closing check names missing files, not code like item.price', async () => {

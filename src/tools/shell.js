@@ -14,7 +14,7 @@ import { openSync, closeSync, readFileSync, mkdirSync, statSync } from 'node:fs'
 import os from 'node:os';
 import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
-import { resolveIn, guard, result, getRoot, MAX_OUTPUT } from './shared.js';
+import { resolveIn, guard, confirm, result, getRoot, MAX_OUTPUT } from './shared.js';
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_TIMEOUT = 600_000;
@@ -28,6 +28,19 @@ const LIVE_LINES = 200;
 const LOOKS_LIKE_SERVER =
   /(\b(?:npm|pnpm|yarn|bun)\s+(?:run\s+)?(?:dev|start|serve|preview|watch)\b|\b(?:vite|next dev|next start|nuxt dev|astro dev|webpack serve|svelte-kit dev|serve)\b|\buvicorn\b|\bgunicorn\b|\bflask run\b|\bdjango[\w-]* runserver\b|\bmanage\.py runserver\b|\brails server\b|\bhttp\.server\b|\bhttp-server\b|\blive-server\b)/i;
 
+/**
+ * Does some part of this command actually run a server? A segment that only
+ * searches for or lists one does not: `ps aux | grep http-server` was
+ * backgrounded as a server and reported as having died before it was ready.
+ */
+const INSPECTS = /^(?:grep|egrep|findstr|find|ps|echo|cat|type|tasklist|netstat|curl|wget|ls|dir|which|where|head|tail|less|more)\b/i;
+export function startsServer(command) {
+  return String(command).replace(/"[^"]*"|'[^']*'/g, '""').split(/&&|\|\||[;|&]/).some((part) => {
+    const segment = part.trim();
+    return !INSPECTS.test(segment) && LOOKS_LIKE_SERVER.test(segment);
+  });
+}
+
 /** A foreground server that was explicitly asked for still gets a short leash. */
 const SERVER_TIMEOUT = 30_000;
 
@@ -40,6 +53,17 @@ const SERVER_TIMEOUT = 30_000;
 const INSTALL_TIMEOUT = 600_000;
 const LOOKS_LIKE_INSTALL =
   /(\b(?:npm|pnpm|yarn|bun)\s+(?:i|install|add|ci|create)\b|\bnpx\s+(?:create-|degit\b|shadcn)|\bpip3?\s+install\b|\bpoetry\s+(?:install|add)\b|\bcargo\s+(?:build|install|fetch)\b|\bgo\s+(?:mod\s+download|get)\b|\bbundle\s+install\b|\bcomposer\s+(?:install|require)\b|\bgit\s+clone\b)/i;
+
+/**
+ * Any kill by program name rather than by process number.
+ *
+ * `taskkill /F /IM python.exe` in a live build ended six Python processes on
+ * the machine, most of them nothing to do with the app. Every process ucode
+ * starts comes back with its PID, so the narrow kill is always available;
+ * the broad one is the user's call, and is asked about.
+ */
+const KILLS_BY_NAME =
+  /(\btaskkill\b[^|;&]*\/IM\b|\b(?:killall|pkill)\b|\b(?:Stop-Process|spps)\b[^|;&]*-(?:N(?:a(?:me?)?)?|ProcessName)\b|\bGet-Process\b[^;&]*\|\s*(?:Stop-Process|spps|kill)\b|\bwmic\b[^|;&]*\bprocess\b[^|;&]*\b(?:delete|call\s+terminate)\b|\bkill\b[^;&]*\$\(\s*pgrep\b|\bpgrep\b[^;&]*\|\s*xargs\s+(?:-\S+\s+)*kill\b)/i;
 
 /**
  * Commands that kill a whole class of process rather than one process.
@@ -73,6 +97,10 @@ const KILLS_EVERYTHING =
  *   NEXT_TELEMETRY      Next skips its telemetry notice and ping
  *   NO_COLOR            output comes back as text rather than escape codes,
  *                       which the model would otherwise have to read past
+ *   PYTHONUNBUFFERED    Python writes as it goes instead of holding output
+ *                       until a buffer fills: `python -m http.server` said
+ *                       "Serving HTTP" to a log that stayed empty, and each
+ *                       start waited out the full 45 seconds as "still starting"
  */
 export function childEnv(base = process.env) {
   return {
@@ -89,6 +117,7 @@ export function childEnv(base = process.env) {
     NEXT_TELEMETRY_DISABLED: '1',
     NO_COLOR: '1',
     FORCE_COLOR: '0',
+    PYTHONUNBUFFERED: '1',
   };
 }
 
@@ -630,13 +659,34 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
     });
   }
 
+  if (KILLS_BY_NAME.test(command)) {
+    const attempted = `running \`${command.trim().slice(0, 80)}\``;
+    try {
+      await confirm(
+        `stop every matching process: ${command.trim().slice(0, 120)}`,
+        'That kills every process with that name on this computer, not only the ones ucode started.',
+        'command',
+      );
+    } catch (err) {
+      if (err?.kind !== 'cannot_ask') throw err;
+      throw new ToolFailure({
+        kind: 'broad_kill',
+        attempted,
+        failed: 'That kills every process with that name on this computer, not only the ones ucode ' +
+          'started, and there is nobody here to approve it.',
+        fix: 'Stop the one process by its PID: every server ucode starts reports its PID and the exact ' +
+          'command to stop it.',
+      });
+    }
+  }
+
   const workdir = cwd
     ? resolveIn(cwd, 'run_command', 'cwd')
     : { abs: getRoot(), inside: true, show: '.' };
   await guard(workdir, `run a command in ${workdir.abs}`);
 
   const env = childEnv();
-  const server = LOOKS_LIKE_SERVER.test(command);
+  const server = startsServer(command);
 
   // Anything run where a background install is still going waits for it —
   // two installs in one folder corrupt node_modules, and a build before the
