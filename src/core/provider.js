@@ -32,8 +32,8 @@ const PACKAGE_ROOT = join(HERE, '..', '..');
 export const UCODE_HOME = join(homedir(), '.ucode');
 export const ENV_FILE = join(UCODE_HOME, '.env');
 
-export const BASE_URL = 'https://integrate.api.nvidia.com/v1';
-export const PROVIDER = 'NVIDIA';
+export const BASE_URL = 'https://generativelanguage.googleapis.com/v1beta/openai';
+export const PROVIDER = 'Google';
 
 // First definition wins — dotenv never overwrites a variable that already
 // exists — so the order here is the precedence order:
@@ -44,36 +44,31 @@ dotenv.config({ path: ENV_FILE, quiet: true });
 dotenv.config({ path: join(PACKAGE_ROOT, '.env'), quiet: true });
 
 /**
- * The whole model list, served by NVIDIA (build.nvidia.com).
+ * The whole model list, served by Google (aistudio.google.com).
  *
  * `name` is what the status bar shows. `note` is what the picker shows.
  */
 export const MODELS = {
-  'deepseek-ai/deepseek-v4.1-flash': {
-    name: 'DeepSeek V4.1 Flash',
-    context: 128_000,
-    note: 'strong coder — slower when NVIDIA is busy',
-  },
-  'moonshotai/kimi-k3': {
-    name: 'Kimi K3',
-    context: 128_000,
-    note: 'strong agentic coder — can be slow when NVIDIA is busy',
-  },
-  'z-ai/glm-5.3': {
-    name: 'GLM 5.3',
-    context: 128_000,
-    note: 'strong coder — can be slow when NVIDIA is busy',
-  },
-  'nvidia/nemotron-3-super-120b-a12b': {
-    name: 'Nemotron 3 Super',
-    context: 128_000,
+  'gemini-3.5-flash-lite': {
+    name: 'Gemini 3.5 Flash-Lite',
+    context: 1_000_000,
     star: true,
-    note: 'the default — answers fastest on NVIDIA',
+    note: 'the default — fast, reliable with tools, 500 free requests a day',
+  },
+  'gemini-3.5-flash': {
+    name: 'Gemini 3.5 Flash',
+    context: 1_000_000,
+    note: 'smarter, but only about 20 free requests a day',
+  },
+  'gemini-3.1-flash-lite': {
+    name: 'Gemini 3.1 Flash-Lite',
+    context: 1_000_000,
+    note: 'older and lighter, 500 free requests a day',
   },
 };
 
 /** The model a session starts on. */
-export const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
+export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
 
 /**
  * Where to go when a model is busy, in order of preference. Each is served by
@@ -82,10 +77,9 @@ export const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
  * the first "too many requests".
  */
 export const FALLBACKS = [
-  'nvidia/nemotron-3-super-120b-a12b',
-  'deepseek-ai/deepseek-v4.1-flash',
-  'moonshotai/kimi-k3',
-  'z-ai/glm-5.3',
+  'gemini-3.5-flash-lite',
+  'gemini-3.1-flash-lite',
+  'gemini-3.5-flash',
 ];
 
 /** The next model to try after `id`, skipping any already tried this round. */
@@ -214,27 +208,24 @@ export function estimateConversation(messages) {
  * package is readable by anyone who runs `npm pack ucode-agent`, and no amount
  * of first-run convenience is worth handing out a live credential.
  */
-/** The NVIDIA key: NVIDIA_API_KEY, or a UCODE_API_KEY that is one (nvapi-...). */
-export function nvidiaKey() {
-  const direct = (process.env.NVIDIA_API_KEY || '').trim();
-  if (direct) return direct;
-  const shared = (process.env.UCODE_API_KEY || '').trim();
-  return shared.startsWith('nvapi-') ? shared : '';
+/** The Google key: GEMINI_API_KEY, or GOOGLE_API_KEY. */
+export function providerKey() {
+  return (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
 }
 
 function apiKey() {
   // UCODE_API_KEY is the documented name. The provider's own variable name is
   // still read, so a key set up for another tool keeps working here.
-  const key = nvidiaKey();
+  const key = providerKey();
   if (!key) {
     throw new Failure({
       kind: 'no_api_key',
       attempted: 'connecting to the model',
-      failed: 'No NVIDIA API key is set - NVIDIA_API_KEY is missing from the environment and from every .env file.',
+      failed: 'No Google API key is set - GEMINI_API_KEY is missing from the environment and from every .env file.',
       fix:
-        `Put NVIDIA_API_KEY=nvapi-... in ${ENV_FILE} — that applies to every ` +
+        `Put GEMINI_API_KEY=your-key in ${ENV_FILE} — that applies to every ` +
         'project on this machine — or in a .env file beside your code. ' +
-        'Free keys: https://build.nvidia.com',
+        'Free keys: https://aistudio.google.com/apikey',
     });
   }
   return key;
@@ -337,6 +328,9 @@ function wireMessages(messages) {
           id: c.id,
           type: 'function',
           function: { name: c.name, arguments: JSON.stringify(c.args ?? {}) },
+          // Gemini signs each tool call with its reasoning, and refuses the
+          // next step if the signature does not come back with the call.
+          ...(c.extra ? { extra_content: c.extra } : {}),
         }));
       }
       out.push(wire);
@@ -827,7 +821,7 @@ async function streamed(request, opts, id) {
           for (const [index, slot] of partial) {
             if (index < call.index && !handed.has(index)) {
               handed.add(index);
-              opts.onToolCall(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, names }));
+              opts.onToolCall(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, names, extra: slot.extra }));
             }
           }
           highest = call.index;
@@ -835,6 +829,7 @@ async function streamed(request, opts, id) {
 
         const slot = partial.get(call.index) ?? { id: '', name: '', args: '' };
         if (call.id) slot.id = call.id;
+        if (call.extra_content) slot.extra = call.extra_content;
         if (call.function?.name) slot.name += call.function.name;
         if (call.function?.arguments) slot.args += call.function.arguments;
         partial.set(call.index, slot);
@@ -860,7 +855,7 @@ async function streamed(request, opts, id) {
 
   const toolCalls = [];
   for (const [index, slot] of partial) {
-    toolCalls.push(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, cutOff: finishReason === 'length', names }));
+    toolCalls.push(readCall({ id: slot.id || `call_${index}`, name: slot.name, raw: slot.args, cutOff: finishReason === 'length', names, extra: slot.extra }));
   }
 
   return {
@@ -1038,8 +1033,9 @@ export function fixName(name, names) {
  * back to the model, which usually fixes its own JSON on the next step —
  * cheaper than failing the whole turn over a stray comma.
  */
-export function readCall({ id, name, raw, cutOff = false, names }) {
+export function readCall({ id, name, raw, cutOff = false, names, extra }) {
   const call = { id, name: fixName(name, names), args: {} };
+  if (extra) call.extra = extra;
   name = call.name;
   const text = String(raw ?? '').trim();
   if (!text) return call;
@@ -1100,7 +1096,7 @@ function normalize(data, id, names) {
   const message = choice?.message ?? {};
 
   const toolCalls = (message.tool_calls ?? []).map((c) =>
-    readCall({ id: c.id, name: c.function?.name, raw: c.function?.arguments, cutOff: choice?.finish_reason === 'length', names })
+    readCall({ id: c.id, name: c.function?.name, raw: c.function?.arguments, cutOff: choice?.finish_reason === 'length', names, extra: c.extra_content })
   );
 
   const u = data?.usage ?? {};

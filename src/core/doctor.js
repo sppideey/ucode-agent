@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { theme, dim, blue } from '../ui/theme.js';
 import { VERSION } from './version.js';
-import { DEFAULT_MODEL, ENV_FILE, BASE_URL, nvidiaKey } from './provider.js';
+import { DEFAULT_MODEL, ENV_FILE, BASE_URL, providerKey } from './provider.js';
 import { newer } from './updater.js';
 
 const DEADLINE = 6000;
@@ -24,8 +24,8 @@ function version(cmd) {
 }
 
 async function checkKey() {
-  const key = nvidiaKey();
-  if (!key) return { ok: false, name: 'API key', detail: 'not set', fix: `Add NVIDIA_API_KEY=nvapi-... to ${ENV_FILE} (free at build.nvidia.com)` };
+  const key = providerKey();
+  if (!key) return { ok: false, name: 'API key', detail: 'not set', fix: `Add GEMINI_API_KEY=... to ${ENV_FILE} (free at aistudio.google.com/apikey)` };
   try {
     const r = await fetch(`${BASE_URL}/chat/completions`, {
       method: 'POST',

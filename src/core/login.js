@@ -14,11 +14,11 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { ENV_FILE } from './provider.js';
 
-const NAME = 'NVIDIA_API_KEY';
+const NAME = 'GEMINI_API_KEY';
 
-/** A plausible NVIDIA key, so a typo is caught here and not mid-answer. */
+/** A plausible Google key (AIza... or the newer AQ.... form), so a typo is caught here. */
 export function looksLikeKey(key) {
-  return typeof key === 'string' && /^nvapi-[A-Za-z0-9_-]{20,}$/.test(key.trim());
+  return typeof key === 'string' && /^(?:AIza[\w-]{30,}|AQ\.[\w.-]{30,})$/.test(key.trim());
 }
 
 /** Put `key` in the machine-wide env file, keeping whatever else is in it. */
@@ -44,10 +44,10 @@ export async function saveKey(key) {
   const trimmed = String(key ?? '').trim();
 
   if (!trimmed) {
-    return `  Usage: ucode login <key>\n\n  Get one free at https://build.nvidia.com\n  It is saved to ${ENV_FILE} and used by every project on this machine.`;
+    return `  Usage: ucode login <key>\n\n  Get one free at https://aistudio.google.com/apikey\n  It is saved to ${ENV_FILE} and used by every project on this machine.`;
   }
   if (!looksLikeKey(trimmed)) {
-    return `  That does not look like an NVIDIA key — they start with "nvapi-".\n  Get one at https://build.nvidia.com`;
+    return `  That does not look like a Google key — they start with "AIza" or "AQ.".\n  Get one at https://aistudio.google.com/apikey`;
   }
 
   const existing = await fs.readFile(ENV_FILE, 'utf8').catch(() => '');

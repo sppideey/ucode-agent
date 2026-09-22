@@ -1288,26 +1288,27 @@ await test('tool traffic is trimmed for the summarizer', () => {
 
 section('models');
 
-await test('the NVIDIA models are offered, each named and noted', () => {
+await test('the Google models are offered, each named and noted', () => {
   const ids = Object.keys(MODELS);
-  eq(ids.length, 4);
-  for (const id of ids) {
-    ok(!id.endsWith(':free'), `${id} is an OpenRouter id`);
-    ok(MODELS[id].name && MODELS[id].note, `${id} needs a name and a note`);
-  }
-  ok(MODELS['moonshotai/kimi-k3'] && MODELS['z-ai/glm-5.3'], 'Kimi K3 and GLM 5.3 are in the list');
+  eq(ids, ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']);
+  for (const id of ids) ok(MODELS[id].name && MODELS[id].note, `${id} needs a name and a note`);
 });
 
-await test('the default is Nemotron 3 Super', () => {
-  eq(DEFAULT_MODEL, 'nvidia/nemotron-3-super-120b-a12b');
-  eq(modelName(DEFAULT_MODEL), 'Nemotron 3 Super');
+await test('the default is Gemini 3.5 Flash-Lite', () => {
+  eq(DEFAULT_MODEL, 'gemini-3.5-flash-lite');
+  eq(modelName(DEFAULT_MODEL), 'Gemini 3.5 Flash-Lite');
+});
+
+await test('a tool call keeps its thought signature for the next step', () => {
+  const call = readCall({ id: '1', name: 'say', raw: '{"text":"hi"}', extra: { google: { thought_signature: 'sig' } } });
+  eq(call.extra.google.thought_signature, 'sig');
 });
 
 await test('the model you chose is the model you keep', () => {
   // Switching models mid-build is off unless asked for: every caller reads a
   // null here as "wait, then try the same one again".
   eq(fallbackFor(DEFAULT_MODEL), null, 'no hand-over without UCODE_FALLBACK=1');
-  eq(fallbackFor('z-ai/glm-5.3', new Set()), null);
+  eq(fallbackFor('gemini-3.1-flash-lite', new Set()), null);
 });
 
 await test('a busy model has somewhere to go once switching is asked for', () => {
@@ -1319,7 +1320,7 @@ await test('a busy model has somewhere to go once switching is asked for', () =>
     ok(MODELS[next], 'the fallback is one of the five');
     const tried = new Set(FALLBACKS);
     eq(fallbackFor(DEFAULT_MODEL, tried), null, 'nothing left once every model was tried');
-    eq(fallbackFor('z-ai/glm-5.3', new Set()), FALLBACKS[0], 'the chain wraps around');
+    eq(fallbackFor(FALLBACKS.at(-1), new Set()), FALLBACKS[0], 'the chain wraps around');
   } finally {
     if (was === undefined) delete process.env.UCODE_FALLBACK;
     else process.env.UCODE_FALLBACK = was;
@@ -1336,8 +1337,8 @@ await test('update versions compare as numbers, not strings', () => {
 await test('the list is locked to those five', () => {
   const before = model();
   try {
-    setModel('deepseek-ai/deepseek-v4.1-flash');
-    eq(modelName(), 'DeepSeek V4.1 Flash');
+    setModel('gemini-3.5-flash-lite');
+    eq(modelName(), 'Gemini 3.5 Flash-Lite');
     const err = new Error('should have thrown');
     try {
       setModel('openai/gpt-4o');
@@ -1346,7 +1347,7 @@ await test('the list is locked to those five', () => {
       if (e === err) throw e;
       eq(e.kind, 'bad_model');
     }
-    eq(model(), 'deepseek-ai/deepseek-v4.1-flash', 'a rejected switch must not change anything');
+    eq(model(), 'gemini-3.5-flash-lite', 'a rejected switch must not change anything');
   } finally {
     setModel(before);
   }
@@ -1361,10 +1362,10 @@ await test('exactly one model is marked active', () => {
 await test('the context limit follows the model', () => {
   const before = model();
   try {
-    setModel('z-ai/glm-5.3');
-    eq(contextLimit(), MODELS['z-ai/glm-5.3'].context);
-    setModel('deepseek-ai/deepseek-v4.1-flash');
-    eq(contextLimit(), MODELS['deepseek-ai/deepseek-v4.1-flash'].context);
+    setModel('gemini-3.1-flash-lite');
+    eq(contextLimit(), MODELS['gemini-3.1-flash-lite'].context);
+    setModel('gemini-3.5-flash-lite');
+    eq(contextLimit(), MODELS['gemini-3.5-flash-lite'].context);
   } finally {
     setModel(before);
   }
@@ -1375,7 +1376,7 @@ await test('a retry on the same model does not claim to have switched', async ()
   const fallback = process.env.UCODE_FALLBACK;
   delete process.env.UCODE_FALLBACK;
   try {
-    setModel('moonshotai/kimi-k3');
+    setModel('gemini-3.5-flash');
     const agent = new Agent({ cwd: process.cwd() });
     const notes = [];
     agent.full = false;
@@ -1384,8 +1385,8 @@ await test('a retry on the same model does not claim to have switched', async ()
     agent.tried = new Set([model()]);
     const started = Date.now();
     ok(await agent.failover({ kind: 'timeout' }));
-    eq(model(), 'moonshotai/kimi-k3');
-    eq(notes, ['Kimi K3 was too slow to answer — asking it again']);
+    eq(model(), 'gemini-3.5-flash');
+    eq(notes, ['Gemini 3.5 Flash was too slow to answer — asking it again']);
     ok(Date.now() - started < 15_000, 'a timeout should not sit out the rate-limit minute');
   } finally {
     if (fallback !== undefined) process.env.UCODE_FALLBACK = fallback;

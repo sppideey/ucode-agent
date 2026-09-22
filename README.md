@@ -1,8 +1,8 @@
 # ucode
 
 A coding agent that lives in your terminal. It reads your code, edits it, runs
-your commands, and keeps every conversation on disk. It runs on models served
-by NVIDIA — DeepSeek, Kimi, GLM and Nemotron — with a free key.
+your commands, and keeps every conversation on disk. It runs on Google's
+Gemini models, free with a key.
 
 It opens on a quiet screen — the name, the place to type, and the version in the
 corner:
@@ -66,13 +66,13 @@ space straight back when it finishes.
 npm i -g ucode-agent
 ```
 
-Then save your NVIDIA key (free at [build.nvidia.com](https://build.nvidia.com)):
+Then save your Google key (free at [aistudio.google.com/apikey](https://aistudio.google.com/apikey)):
 
 ```bash
-ucode login nvapi-...
+ucode login YOUR_KEY
 ```
 
-It is written to `~/.ucode/.env` as `NVIDIA_API_KEY`. A `.env` in
+It is written to `~/.ucode/.env` as `GEMINI_API_KEY`. A `.env` in
 the project you are working on wins over that one, and a real environment
 variable wins over both.
 
@@ -86,16 +86,15 @@ Needs Node 22 or newer.
 
 ## The models
 
-Served by NVIDIA (build.nvidia.com), with a free key.
+Served by Google (aistudio.google.com), free with a key.
 
 | Model | For |
 | --- | --- |
-| DeepSeek V4.1 Flash | strong coder — slower when NVIDIA is busy |
-| Kimi K3 | strong agentic coder — can be slow when NVIDIA is busy |
-| GLM 5.3 | strong coder — can be slow when NVIDIA is busy |
-| **Nemotron 3 Super** ★ | the default — answers fastest on NVIDIA |
+| **Gemini 3.5 Flash-Lite** ★ | the default — fast, reliable with tools, 500 free requests a day |
+| Gemini 3.5 Flash | smarter, but only about 20 free requests a day |
+| Gemini 3.1 Flash-Lite | older and lighter, 500 free requests a day |
 
-`/model` shows them and switches. `ucode -m moonshotai/kimi-k3` starts on one.
+`/model` shows them and switches. `ucode -m gemini-3.5-flash` starts on one.
 
 ## What it does
 
