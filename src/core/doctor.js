@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { theme, dim, blue } from '../ui/theme.js';
 import { VERSION } from './version.js';
-import { DEFAULT_MODEL, ENV_FILE, BASE_URL, providerKey } from './provider.js';
+import { ENV_FILE, BASE_URL, providerKey } from './provider.js';
 import { newer } from './updater.js';
 
 const DEADLINE = 6000;
@@ -27,22 +27,11 @@ async function checkKey() {
   const key = providerKey();
   if (!key) return { ok: false, name: 'API key', detail: 'not set', fix: `Add GEMINI_API_KEY=... to ${ENV_FILE} (free at aistudio.google.com/apikey)` };
   try {
-    const r = await fetch(`${BASE_URL}/chat/completions`, {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: DEFAULT_MODEL, messages: [{ role: 'user', content: 'ok' }], max_tokens: 1 }),
-      signal: timed(),
-    });
-    if (r.status === 401 || r.status === 403) return { ok: false, name: 'API key', detail: 'rejected', fix: 'Check the key for typos, or make a new one' };
-    const body = await r.json().catch(() => ({}));
-    const meta = body?.error?.metadata?.headers ?? {};
-    const left = r.headers.get('x-ratelimit-remaining') ?? meta['X-RateLimit-Remaining'];
-    const reset = Number(r.headers.get('x-ratelimit-reset') ?? meta['X-RateLimit-Reset']);
-    if (r.status === 429 && /per[- ]day|daily/i.test(`${body?.error?.message} ${body?.error?.metadata?.limit_source}`)) {
-      const at = Number.isFinite(reset) ? new Date(reset).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'tomorrow';
-      return { ok: false, name: 'Requests today', detail: 'daily free limit used up', fix: `It resets at ${at}; adding credit raises the limit` };
-    }
-    return { ok: true, name: 'API key', detail: left != null ? `works · ${left} free requests left today` : 'works' };
+    // Listing models checks the key in under a second; a chat request can queue for half a minute.
+    const r = await fetch(`${BASE_URL}/models`, { headers: { Authorization: `Bearer ${key}` }, signal: timed() });
+    if ([400, 401, 403].includes(r.status)) return { ok: false, name: 'API key', detail: 'rejected', fix: 'Check the key for typos, or make a new one' };
+    if (!r.ok) return { ok: false, name: 'API key', detail: `could not check (HTTP ${r.status})`, fix: 'Try again in a minute' };
+    return { ok: true, name: 'API key', detail: 'works' };
   } catch (err) {
     return { ok: false, name: 'API key', detail: `could not check (${err.name === 'TimeoutError' ? 'no answer' : err.message})`, fix: 'Check your internet connection' };
   }

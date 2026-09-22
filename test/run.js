@@ -1567,6 +1567,21 @@ await test('a page that still had problems is looked at again after the fix roun
   ok(notes.some((n) => n.includes('LOOKED')), `a script-only fix still gets the page opened again: ${notes}`);
 });
 
+await test('a file written beside the app it belongs to goes into the app', async () => {
+  const { Agent } = await import('../src/core/loop.js');
+  const agent = new Agent({ cwd: sandbox });
+  await fs.mkdir(path.join(sandbox, 'strays'), { recursive: true });
+  await write('strays/app.js', '');
+  await write('mine.js', '');
+  agent.apps = [path.join(sandbox, 'strays')];
+  const one = { name: 'write_file', args: { path: 'app.js', content: 'x' } };
+  agent.intoApp(one);
+  eq(one.args.path, 'strays/app.js');
+  const many = { name: 'batch_write', args: { files: [{ path: 'app.js', content: 'x' }, { path: 'mine.js', content: 'y' }, { path: 'new.js', content: 'z' }, { path: 'strays/app.js', content: 'w' }] } };
+  agent.intoApp(many);
+  eq(many.args.files.map((f) => f.path).join(','), 'strays/app.js,mine.js,new.js,strays/app.js', 'files of its own, new files and paths already inside stay put');
+});
+
 await test('a plain app is handed over the moment it works, and sent back when it does not', async () => {
   const { Agent } = await import('../src/core/loop.js');
   const agent = new Agent({ cwd: sandbox });

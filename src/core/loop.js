@@ -1946,6 +1946,26 @@ export class Agent {
       .map((f) => ({ abs: path.resolve(this.cwd, f.path), size: f.content.length, path: f.path }));
   }
 
+  /**
+   * A model that has just made todo-app/ sometimes writes app.js beside it
+   * instead of in it: the page never gets its script, and the hand-over, which
+   * watches the app folder, never fires. A bare name the app already has, and
+   * this folder does not, goes into the app.
+   */
+  intoApp(call) {
+    const app = this.apps?.at(-1);
+    if (!app) return;
+    const fix = (p) => {
+      if (typeof p !== 'string' || path.isAbsolute(p) || existsSync(path.resolve(this.cwd, p))) return p;
+      const inside = path.join(app, p);
+      if (path.relative(app, inside).startsWith('..') || !existsSync(inside)) return p;
+      return path.relative(this.cwd, inside).split(path.sep).join('/');
+    };
+    const a = call.args ?? {};
+    if (call.name === 'write_file') a.path = fix(a.path);
+    else if (call.name === 'batch_write') a.files = normaliseFiles(a.files).map((f) => (f && typeof f === 'object' ? { ...f, path: fix(f.path) } : f));
+  }
+
   async dispatch(call, offered = this.offering) {
     // The model emitted arguments that were not valid JSON. Hand the parser's
     // own complaint straight back so it can correct itself next step.
@@ -2052,6 +2072,8 @@ export class Agent {
         });
       }
     }
+
+    if (call.name === 'write_file' || call.name === 'batch_write') this.intoApp(call);
 
     if (call.name === 'load_skill') return this.loadSkill(call.args?.name);
     if (call.name === 'update_plan') return this.updatePlan(call.args?.items);
