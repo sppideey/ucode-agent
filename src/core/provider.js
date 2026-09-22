@@ -118,6 +118,18 @@ const RATE_LIMIT_BACKOFF = [5, 10, 20];
  */
 export const stallLimit = () => Number(process.env.UCODE_STALL_MS) || 60_000;
 
+/**
+ * How long to wait for the first piece of a reply.
+ *
+ * Gemini sends a tool call whole, at the end, not piece by piece. A whole app
+ * in one create_app is 50-70 silent seconds before anything arrives, and the
+ * one-minute watchdog was cancelling those replies as frozen and starting them
+ * again — "provider stalled" on requests that were working fine. Silence before
+ * the reply starts gets this long; once it is arriving, stallLimit applies.
+ */
+export const firstReplyLimit = () =>
+  Number(process.env.UCODE_FIRST_REPLY_MS) || Number(process.env.UCODE_STALL_MS) || 180_000;
+
 /** Freezes in a row before ucode stops asking and says to switch models. */
 export const MAX_STALLS = 3;
 let stalls = 0;
@@ -755,17 +767,21 @@ async function streamed(request, opts, id) {
   opts.signal?.addEventListener('abort', stop, { once: true });
   let stalled = false;
   let timer;
+  // Nothing of the reply itself yet: text, reasoning or a tool call. Chunks
+  // that carry none of those (a role, usage) do not count as it having started.
+  let started = false;
+  const limit = () => (started ? stallLimit() : firstReplyLimit());
   const frozen = (cause) => new Failure({
     kind: 'timeout',
     attempted: `asking ${modelName(id)} for a reply`,
-    failed: `${modelName(id)} went silent for ${Math.round(stallLimit() / 1000)}s, so ucode stopped waiting.`,
+    failed: `${modelName(id)} went silent for ${Math.round(limit() / 1000)}s, so ucode stopped waiting.`,
     fix: 'ucode asks again by itself. If it keeps freezing, /model to North Mini Code.',
     detail: { stalled: true, handed: handed.size },
     cause,
   });
   const alive = () => {
     clearTimeout(timer);
-    timer = setTimeout(() => { stalled = true; quiet.abort(); }, stallLimit());
+    timer = setTimeout(() => { stalled = true; quiet.abort(); }, limit());
   };
 
   let text = '';
@@ -788,14 +804,15 @@ async function streamed(request, opts, id) {
     noteLimits(response?.headers);
 
     for await (const chunk of stream) {
-      alive();
       if (opts.signal?.aborted) break;
       if (chunk.usage) usage = chunk.usage;
 
       const choice = chunk.choices?.[0];
+      const delta = choice?.delta ?? {};
+      if (delta.content || delta.reasoning || delta.reasoning_content || delta.tool_calls?.length) started = true;
+      alive();
       if (!choice) continue;
       if (choice.finish_reason) finishReason = choice.finish_reason;
-      const delta = choice.delta ?? {};
 
       // Reasoning arrives on a separate channel: `reasoning` on OpenRouter,
       // `reasoning_content` on some upstreams.

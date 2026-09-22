@@ -1426,6 +1426,44 @@ async function fakeProvider(reply, fn) {
 const chunk = (delta, finish = null) =>
   `data: ${JSON.stringify({ id: 'x', object: 'chat.completion.chunk', choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`;
 
+await test('a long silence before the reply starts is waited out, one mid-reply is not', async () => {
+  // Gemini sends a tool call whole, at the end: the wait before the first
+  // piece can be long and is not a freeze. Once it is arriving, a gap is.
+  process.env.UCODE_FIRST_REPLY_MS = '3000';
+  try {
+    await fakeProvider(
+      (res) => {
+        res.write(chunk({ role: 'assistant' })); // not the reply itself
+        setTimeout(() => {
+          res.write(chunk({ content: 'hello' }));
+          res.end(chunk({}, 'stop') + 'data: [DONE]\n\n');
+        }, 1200); // past the 400ms mid-reply limit, inside the first-reply one
+      },
+      async (count) => {
+        const reply = await ask([{ role: 'user', content: 'hi' }], [], { onText() {} });
+        eq(reply.text, 'hello');
+        eq(count(), 1, 'a slow start is not cancelled and sent again');
+      }
+    );
+    await fakeProvider(
+      (res, n) => {
+        res.write(chunk({ content: 'hel' }));
+        if (n === 1) return; // started, then went quiet
+        res.end(chunk({ content: 'lo' }, 'stop') + 'data: [DONE]\n\n');
+      },
+      async (count) => {
+        const started = Date.now();
+        const err = await ask([{ role: 'user', content: 'hi' }], [], { onText() {} }).then(() => null, (e) => e);
+        eq(err?.kind, 'timeout', 'a reply that stops half way is called frozen');
+        eq(count(), 1, 'and not re-sent, since half of it is already on screen');
+        ok(Date.now() - started < 2500, `it is caught by the short limit (${Date.now() - started}ms)`);
+      }
+    );
+  } finally {
+    delete process.env.UCODE_FIRST_REPLY_MS;
+  }
+});
+
 await test('a stream that goes silent is dropped and asked again, not waited on for minutes', async () => {
   await fakeProvider(
     (res, n) => {
