@@ -14,7 +14,7 @@
 import path from 'node:path';
 import os from 'node:os';
 import { pathToFileURL } from 'node:url';
-import { appendFileSync, existsSync } from 'node:fs';
+import { appendFileSync, existsSync, statSync } from 'node:fs';
 import { readFile, readdir, access, mkdir } from 'node:fs/promises';
 import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { LogWatch } from './livelog.js';
@@ -1773,21 +1773,55 @@ export class Agent {
     }
   }
 
-  /** /deploy [folder] — the same tool the model calls, run directly. */
+  /**
+   * /deploy puts an app online — only when the user types it.
+   *
+   *   /deploy          the app made most recently (this session, else the newest folder here)
+   *   /deploy <folder> that one
+   *   /deploy all      every app in this folder, one link each
+   */
   async cmdDeploy(arg) {
-    const folder = (arg ?? '').trim() || '.';
-    this.ui.toolCall(`Deploying ${folder}`);
-    this.ui.startSpinner('getting ready to deploy');
-    try {
-      const out = await deploy({ folder }, { onOutput: (lines) => this.ui.updateSpinner(lines.at(-1)) });
-      this.ui.stopSpinner();
-      this.ui.toolResult(out.summary);
-      this.ui.write(out.content.split('\n').map((l) => `  ${l}`).join('\n'));
-    } catch (err) {
-      this.ui.stopSpinner();
-      if (err instanceof ToolFailure) this.ui.error(err);
-      else throw err;
+    const wanted = (arg ?? '').trim();
+    const apps = await this.appFolders();
+    let folders;
+    if (wanted === 'all') folders = apps;
+    else if (wanted) folders = [wanted];
+    else {
+      const made = this.apps?.at(-1);
+      folders = [made ? path.relative(this.cwd, made).split(path.sep).join('/') || '.' : (apps[0] ?? '.')];
     }
+    if (!folders.length) {
+      this.ui.note('no apps here to deploy — build one first, or /deploy <folder>');
+      return;
+    }
+    for (const folder of folders) {
+      this.ui.toolCall(`Deploying ${folder}`);
+      this.ui.startSpinner('getting ready to deploy');
+      try {
+        const out = await deploy({ folder }, { onOutput: (lines) => this.ui.updateSpinner(lines.at(-1)) });
+        this.ui.stopSpinner();
+        this.ui.toolResult(out.summary);
+        this.ui.write(out.content.split('\n').map((l) => `  ${l}`).join('\n'));
+      } catch (err) {
+        this.ui.stopSpinner();
+        if (err instanceof ToolFailure) this.ui.error(err);
+        else throw err;
+      }
+    }
+  }
+
+  /** App folders here, newest first: the folder itself if it is one, else its subfolders with a page or package.json. */
+  async appFolders() {
+    if (await exists(path.join(this.cwd, 'index.html'))) return ['.'];
+    const found = [];
+    for (const entry of await readdir(this.cwd, { withFileTypes: true }).catch(() => [])) {
+      if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name === 'node_modules') continue;
+      const dir = path.join(this.cwd, entry.name);
+      if ((await exists(path.join(dir, 'index.html'))) || (await exists(path.join(dir, 'package.json')))) {
+        found.push({ name: entry.name, at: statSync(dir).mtimeMs });
+      }
+    }
+    return found.sort((a, b) => b.at - a.at).map((f) => f.name);
   }
 
   reportResult(call, out) {
@@ -2525,7 +2559,7 @@ export class Agent {
     }
 
     const content = String(out?.content ?? '');
-    if (/Console errors|Failed requests|NOTHING HAPPENS|does not parse/i.test(content)) {
+    if (/Console errors|Failed requests|NOTHING HAPPENS|ADDING DOES NOT WORK|works until you refresh|does not parse/i.test(content)) {
       this.handOverPending = true;
       this.ui.runStat?.('needs a fix');
       return { problems: `I opened the app and looked at it:\n\n${content}` };

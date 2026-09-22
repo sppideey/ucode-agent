@@ -249,6 +249,12 @@ export async function deploy({ folder = '.', name } = {}, { onOutput } = {}) {
     });
   }
 
+  // Vercel turns on "Vercel Authentication" for new projects, which puts every
+  // .vercel.app address behind a Vercel login: the link worked for the account
+  // owner and asked everyone else to sign in. /deploy is asking for a public
+  // site, so the project is made public.
+  await api(`/v9/projects/${link.projectId}`, { method: 'PATCH', body: { ssoProtection: null } }).catch(() => {});
+
   say('Uploading and building on Vercel');
   const started = Date.now();
   const { code, output } = await new Promise((resolve) => {
@@ -284,9 +290,18 @@ export async function deploy({ folder = '.', name } = {}, { onOutput } = {}) {
     });
   }
 
-  const live = `https://${link.projectName}.vercel.app`;
-  const ok = await fetchImpl(live, { signal: AbortSignal.timeout(15_000) }).then((r) => r.status < 400).catch(() => false);
-  const url = ok ? live : (output.match(/https:\/\/[a-z0-9.-]+\.vercel\.app/g) ?? [live]).at(-1);
+  // The address people can open is the project's production alias, which is
+  // not always <name>.vercel.app: a taken name gets a suffix ("-eta"). Guessing
+  // it handed out a 404, and falling back to the deployment's own URL handed
+  // out one that sits behind a Vercel login. Ask Vercel for the real one.
+  const project = await api(`/v9/projects/${link.projectId}`).catch(() => ({ json: {} }));
+  const aliases = (project.json?.targets?.production?.alias ?? []).slice().sort((a, b) => a.length - b.length);
+  const opens = (u) => fetchImpl(u, { redirect: 'manual', signal: AbortSignal.timeout(15_000) })
+    .then((r) => r.status < 300).catch(() => false);
+  let url = `https://${link.projectName}.vercel.app`;
+  for (const alias of aliases) {
+    if (await opens(`https://${alias}`)) { url = `https://${alias}`; break; }
+  }
   return result(
     [
       `Live at ${url}`,

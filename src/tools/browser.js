@@ -218,7 +218,90 @@ const moved = (a, b) => a.nodes !== b.nodes || a.html !== b.html || a.stored !==
  * not exercised and not judged. Returning null there is the difference between
  * a check and a false accusation.
  */
+/**
+ * Add something, the way a person would, and see it land on the page.
+ *
+ * Typing into "the first field" found a todo app's search box: the search
+ * filtered the empty list, the page changed, and an app whose Add did nothing
+ * at all was reported as working. So for anything shaped like a list — an
+ * input that is not a search, or a New / Add button — the probe text is added
+ * and must then appear in the page's visible text. Returns null for pages with
+ * nothing to add to, so a calculator or a weather lookup is judged as before.
+ */
+const NOT_ADD = /search|filter|find|sort|query/i;
+const LIST_HINT = /task|todo|to-do|item|note|add|new|entry|expense|habit|title|what needs|remind/i;
+const ADD_BUTTON = /^\s*(?:\+|add|new|create|save|submit|post|done)\b|\b(?:add|create|save)\s/i;
+
+async function tryAdd(page) {
+  const shows = () => page.evaluate((t) => document.body.innerText.includes(t), PROBE_TEXT).catch(() => false);
+  const settle = () => page.waitForTimeout(400);
+  const hintOf = (el) => el.evaluate((e) => [e.placeholder, e.getAttribute('aria-label'), e.name, e.id]
+    .filter(Boolean).join(' ')).catch(() => '');
+  const addField = async () => {
+    const inputs = page.locator('input[type="text"], input:not([type]), textarea');
+    const n = Math.min(await inputs.count().catch(() => 0), 10);
+    for (let i = 0; i < n; i++) {
+      const el = inputs.nth(i);
+      if (!(await el.isVisible().catch(() => false))) continue;
+      const hint = await hintOf(el);
+      if (!NOT_ADD.test(hint)) return { el, hint };
+    }
+    return null;
+  };
+  const addButton = async (words = ADD_BUTTON) => {
+    const buttons = page.locator('button:not([disabled]), input[type="submit"], [role="button"]');
+    const n = Math.min(await buttons.count().catch(() => 0), 30);
+    for (let i = 0; i < n; i++) {
+      const b = buttons.nth(i);
+      const label = ((await b.innerText().catch(() => '')) || (await b.getAttribute('value').catch(() => '')) ||
+        (await b.getAttribute('aria-label').catch(() => '')) || '').trim().replace(/\s+/g, ' ');
+      if (words.test(label) && (await b.isVisible().catch(() => false))) return { b, label: label.slice(0, 24) };
+    }
+    return null;
+  };
+
+  const tried = [];
+  let field = await addField();
+  let listApp = Boolean(field && LIST_HINT.test(field.hint));
+  if (!field) {
+    // No field yet: the form may be behind a "New task" / "+" button.
+    // Words only: a calculator's "+" opens nothing.
+    const opener = await addButton(/\b(?:add|new|create)\b/i);
+    if (!opener) return null;
+    listApp = true;
+    await opener.b.click({ timeout: 2_000 }).catch(() => {});
+    await settle();
+    tried.push(`clicked "${opener.label}"`);
+    field = await addField();
+    // No field appeared: that button was not a form opener ("Add one" on a
+    // counter), so this is not a list app, and the normal check judges it.
+    if (!field) return { tried, added: false, listApp: false };
+  }
+  const ok = await field.el.fill(PROBE_TEXT, { timeout: 2_000 }).then(() => true).catch(() => false);
+  if (!ok) return tried.length ? { tried, added: false, listApp } : null;
+  await field.el.press('Enter', { timeout: 2_000 }).catch(() => {});
+  await settle();
+  tried.push(`typed "${PROBE_TEXT}" into ${field.hint ? `"${field.hint.slice(0, 30)}"` : 'the field'} and pressed Enter`);
+  if (await shows()) return { tried, added: true, listApp };
+
+  const button = await addButton();
+  if (button) {
+    listApp = true;
+    await button.b.click({ timeout: 2_000 }).catch(() => {});
+    await settle();
+    tried.push(`clicked "${button.label}"`);
+    if (await shows()) return { tried, added: true, listApp };
+  }
+  return { tried, added: false, listApp };
+}
+
 async function useTheApp(page) {
+  // A list app is judged by whether adding works, not by whether anything moved.
+  const add = await tryAdd(page).catch(() => null);
+  if (add?.added) return { tried: add.tried, worked: true };
+  if (add?.listApp) return { tried: add.tried, worked: false, addFailed: true };
+  if (add?.tried.length) await page.reload({ waitUntil: 'load', timeout: 20_000 }).catch(() => {});
+
   const snapshot = () => page.evaluate(() => ({
     nodes: document.body.querySelectorAll('*').length,
     text: document.body.innerText.replace(/\s+/g, ' ').trim().length,
@@ -487,7 +570,15 @@ export async function lookAtApp({ url, paths = ['/'], review: withReview = true 
       if (f.smallText) lines.push(`- ${at}: ${f.smallText} text element(s) under 12px.`);
     }
 
-    if (used && !used.worked) {
+    if (used?.addFailed) {
+      lines.push(
+        `- ADDING DOES NOT WORK. I ${used.tried.join(', then ')} — and "${PROBE_TEXT}" never`,
+        '  appeared on the page. Adding an item is the whole app. Wire the add input and its',
+        '  button to code that pushes the item, saves it and re-renders the list, and make',
+        '  sure no error stops that code before it runs.',
+      );
+      problems++;
+    } else if (used && !used.worked) {
       lines.push(
         `- NOTHING HAPPENS WHEN YOU USE IT. I ${used.tried.join(', then ')} — and the page`,
         '  gained no elements, changed no text and stored nothing. The markup and the styling',
