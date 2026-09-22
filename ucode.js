@@ -64,8 +64,8 @@ async function usage() {
     '    doctor             check that everything ucode needs is working\n' +
     '    login <key>        save your key for every folder on this machine\n\n' +
     `  ${sky('Models')}\n${models}\n\n` +
-    `  Needs UCODE_API_KEY in the environment or in ${ENV_FILE}\n` +
-    '  Free keys: https://openrouter.ai/keys\n\n'
+    `  Needs NVIDIA_API_KEY in the environment or in ${ENV_FILE}\n` +
+    '  Free keys: https://build.nvidia.com\n\n'
   );
 }
 

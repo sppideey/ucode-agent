@@ -1288,26 +1288,26 @@ await test('tool traffic is trimmed for the summarizer', () => {
 
 section('models');
 
-await test('exactly the NVIDIA, Cohere and Nex AGI models are offered', () => {
+await test('the NVIDIA models are offered, each named and noted', () => {
   const ids = Object.keys(MODELS);
-  eq(ids.length, 6);
+  eq(ids.length, 4);
   for (const id of ids) {
-    ok(/^(nvidia|cohere|nex-agi)\//.test(id), `${id} is not NVIDIA, Cohere or Nex AGI`);
-    ok(id.endsWith(':free'), `${id} is not free`);
+    ok(!id.endsWith(':free'), `${id} is an OpenRouter id`);
     ok(MODELS[id].name && MODELS[id].note, `${id} needs a name and a note`);
   }
+  ok(MODELS['moonshotai/kimi-k3'] && MODELS['z-ai/glm-5.3'], 'Kimi K3 and GLM 5.3 are in the list');
 });
 
-await test('the default is North Mini Code', () => {
-  eq(DEFAULT_MODEL, 'cohere/north-mini-code:free');
-  eq(modelName(DEFAULT_MODEL), 'North Mini Code');
+await test('the default is DeepSeek V4.1 Flash', () => {
+  eq(DEFAULT_MODEL, 'deepseek-ai/deepseek-v4.1-flash');
+  eq(modelName(DEFAULT_MODEL), 'DeepSeek V4.1 Flash');
 });
 
 await test('the model you chose is the model you keep', () => {
   // Switching models mid-build is off unless asked for: every caller reads a
   // null here as "wait, then try the same one again".
   eq(fallbackFor(DEFAULT_MODEL), null, 'no hand-over without UCODE_FALLBACK=1');
-  eq(fallbackFor('nvidia/nemotron-3-ultra-550b-a55b:free', new Set()), null);
+  eq(fallbackFor('z-ai/glm-5.3', new Set()), null);
 });
 
 await test('a busy model has somewhere to go once switching is asked for', () => {
@@ -1319,7 +1319,7 @@ await test('a busy model has somewhere to go once switching is asked for', () =>
     ok(MODELS[next], 'the fallback is one of the five');
     const tried = new Set(FALLBACKS);
     eq(fallbackFor(DEFAULT_MODEL, tried), null, 'nothing left once every model was tried');
-    eq(fallbackFor('nvidia/nemotron-3-ultra-550b-a55b:free', new Set()), FALLBACKS[0], 'the chain wraps around');
+    eq(fallbackFor('z-ai/glm-5.3', new Set()), FALLBACKS[0], 'the chain wraps around');
   } finally {
     if (was === undefined) delete process.env.UCODE_FALLBACK;
     else process.env.UCODE_FALLBACK = was;
@@ -1336,8 +1336,8 @@ await test('update versions compare as numbers, not strings', () => {
 await test('the list is locked to those five', () => {
   const before = model();
   try {
-    setModel('cohere/north-mini-code:free');
-    eq(modelName(), 'North Mini Code');
+    setModel('deepseek-ai/deepseek-v4.1-flash');
+    eq(modelName(), 'DeepSeek V4.1 Flash');
     const err = new Error('should have thrown');
     try {
       setModel('openai/gpt-4o');
@@ -1346,7 +1346,7 @@ await test('the list is locked to those five', () => {
       if (e === err) throw e;
       eq(e.kind, 'bad_model');
     }
-    eq(model(), 'cohere/north-mini-code:free', 'a rejected switch must not change anything');
+    eq(model(), 'deepseek-ai/deepseek-v4.1-flash', 'a rejected switch must not change anything');
   } finally {
     setModel(before);
   }
@@ -1361,10 +1361,10 @@ await test('exactly one model is marked active', () => {
 await test('the context limit follows the model', () => {
   const before = model();
   try {
-    setModel('nvidia/nemotron-3-ultra-550b-a55b:free');
-    eq(contextLimit(), 1_000_000);
-    setModel('cohere/north-mini-code:free');
-    eq(contextLimit(), 256_000);
+    setModel('z-ai/glm-5.3');
+    eq(contextLimit(), MODELS['z-ai/glm-5.3'].context);
+    setModel('deepseek-ai/deepseek-v4.1-flash');
+    eq(contextLimit(), MODELS['deepseek-ai/deepseek-v4.1-flash'].context);
   } finally {
     setModel(before);
   }
@@ -1375,7 +1375,7 @@ await test('a retry on the same model does not claim to have switched', async ()
   const fallback = process.env.UCODE_FALLBACK;
   delete process.env.UCODE_FALLBACK;
   try {
-    setModel('nex-agi/nex-n2.5-pro:free');
+    setModel('moonshotai/kimi-k3');
     const agent = new Agent({ cwd: process.cwd() });
     const notes = [];
     agent.full = false;
@@ -1384,8 +1384,8 @@ await test('a retry on the same model does not claim to have switched', async ()
     agent.tried = new Set([model()]);
     const started = Date.now();
     ok(await agent.failover({ kind: 'timeout' }));
-    eq(model(), 'nex-agi/nex-n2.5-pro:free');
-    eq(notes, ['Nex N2.5 Pro was too slow to answer — asking it again']);
+    eq(model(), 'moonshotai/kimi-k3');
+    eq(notes, ['Kimi K3 was too slow to answer — asking it again']);
     ok(Date.now() - started < 15_000, 'a timeout should not sit out the rate-limit minute');
   } finally {
     if (fallback !== undefined) process.env.UCODE_FALLBACK = fallback;

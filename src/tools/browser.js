@@ -20,7 +20,7 @@ import { ToolFailure } from '../core/failure.js';
 import { ask } from '../core/provider.js';
 import { getRoot, result } from './shared.js';
 
-const VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free';
+const VISION_MODEL = 'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning';
 const WIDTHS = [
   { name: 'phone', width: 375, height: 812 },
   { name: 'desktop', width: 1440, height: 900 },

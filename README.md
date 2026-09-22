@@ -1,8 +1,8 @@
 # ucode
 
 A coding agent that lives in your terminal. It reads your code, edits it, runs
-your commands, and keeps every conversation on disk. It runs on NVIDIA,
-Cohere and Nex AGI models, all of them free.
+your commands, and keeps every conversation on disk. It runs on models served
+by NVIDIA — DeepSeek, Kimi, GLM and Nemotron — with a free key.
 
 It opens on a quiet screen — the name, the place to type, and the version in the
 corner:
@@ -66,14 +66,13 @@ space straight back when it finishes.
 npm i -g ucode-agent
 ```
 
-Then put a key where it will survive upgrades:
+Then save your NVIDIA key (free at [build.nvidia.com](https://build.nvidia.com)):
 
 ```bash
-mkdir -p ~/.ucode
-echo "UCODE_API_KEY=sk-or-..." > ~/.ucode/.env
+ucode login nvapi-...
 ```
 
-Keys are free at [openrouter.ai/keys](https://openrouter.ai/keys). A `.env` in
+It is written to `~/.ucode/.env` as `NVIDIA_API_KEY`. A `.env` in
 the project you are working on wins over that one, and a real environment
 variable wins over both.
 
@@ -87,35 +86,16 @@ Needs Node 22 or newer.
 
 ## The models
 
-Six, and no picker full of names nobody recognises. NVIDIA, Cohere and Nex AGI
-all serve capable models free, and all handle tool calling properly, which is
-the thing an agent actually depends on.
+Served by NVIDIA (build.nvidia.com), with a free key.
 
-| Model | Context | For |
-| --- | --- | --- |
-| Nemotron 3 Ultra | 1M | deepest reasoning, slowest to first token |
-| Nemotron 3.5 Lightning | 1M | the same enormous window, answers much sooner |
-| Nemotron 3 Super | 262k | strong all-rounder, quick to start |
-| Nemotron 3 Nano Omni | 256k | small, fast, reasoning tuned |
-| **North Mini Code** ★ | 256k | the default — built for code and interface work, quick to answer |
-| Nex N2.5 Pro | 262k | new agentic coder, on trial — can stall on big builds |
+| Model | For |
+| --- | --- |
+| **DeepSeek V4.1 Flash** ★ | the default — fast, and reliable with tools |
+| Kimi K3 | strong agentic coder — can be slow when NVIDIA is busy |
+| GLM 5.3 | strong coder — can be slow when NVIDIA is busy |
+| Nemotron 3 Super | NVIDIA all-rounder |
 
-`/model` shows them and switches. `ucode -m cohere/north-mini-code:free`
-starts on one.
-
-North Mini Code is the default: it is built for code and interfaces, which is most
-of what ucode is asked to do, and it answers far sooner than the big reasoning
-models. Switch to Ultra when a problem needs the million-token window more than
-the speed.
-
-**The model you chose is the model you keep.** Free endpoints are shared and
-"too many requests" is routine, so ucode waits it out with growing pauses and
-comes back to the same model. It does not quietly hand your build to a
-different one: a build that starts on one model and finishes on another
-finishes to a different standard, and the swap lands exactly when you are least
-placed to work out why the output changed. Set `UCODE_FALLBACK=1` if you would
-rather it moved down the list — North Mini Code, Nemotron 3.5 Lightning, Super,
-Ultra — when a model stays busy.
+`/model` shows them and switches. `ucode -m moonshotai/kimi-k3` starts on one.
 
 ## What it does
 

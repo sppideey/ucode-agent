@@ -32,8 +32,8 @@ const PACKAGE_ROOT = join(HERE, '..', '..');
 export const UCODE_HOME = join(homedir(), '.ucode');
 export const ENV_FILE = join(UCODE_HOME, '.env');
 
-export const BASE_URL = 'https://openrouter.ai/api/v1';
-export const PROVIDER = 'OpenRouter';
+export const BASE_URL = 'https://integrate.api.nvidia.com/v1';
+export const PROVIDER = 'NVIDIA';
 
 // First definition wins — dotenv never overwrites a variable that already
 // exists — so the order here is the precedence order:
@@ -44,60 +44,36 @@ dotenv.config({ path: ENV_FILE, quiet: true });
 dotenv.config({ path: join(PACKAGE_ROOT, '.env'), quiet: true });
 
 /**
- * The whole model list. Not a starting point — the list.
- *
- * ucode runs on NVIDIA, Cohere and Nex AGI only. All three serve genuinely
- * capable models free through OpenRouter, all handle tool calling properly,
- * and keeping the set to six means every one of them has
- * been used in anger rather than listed on the strength of a benchmark. A
- * picker offering sixty models is a picker nobody reads.
+ * The whole model list, served by NVIDIA (build.nvidia.com).
  *
  * `name` is what the status bar shows. `note` is what the picker shows.
  */
 export const MODELS = {
-  'nvidia/nemotron-3-ultra-550b-a55b:free': {
-    name: 'Nemotron 3 Ultra',
-    context: 1_000_000,
+  'deepseek-ai/deepseek-v4.1-flash': {
+    name: 'DeepSeek V4.1 Flash',
+    context: 128_000,
     star: true,
-    note: 'deepest reasoning, 1M context — slowest to answer',
+    note: 'the default — fast, and reliable with tools',
   },
-  'nvidia/nemotron-3.5-lightning:free': {
-    name: 'Nemotron 3.5 Lightning',
-    context: 1_000_000,
-    note: 'same huge window, answers much sooner',
+  'moonshotai/kimi-k3': {
+    name: 'Kimi K3',
+    context: 128_000,
+    note: 'strong agentic coder — can be slow when NVIDIA is busy',
   },
-  'nvidia/nemotron-3-super-120b-a12b:free': {
+  'z-ai/glm-5.3': {
+    name: 'GLM 5.3',
+    context: 128_000,
+    note: 'strong coder — can be slow when NVIDIA is busy',
+  },
+  'nvidia/nemotron-3-super-120b-a12b': {
     name: 'Nemotron 3 Super',
-    context: 262_144,
-    note: 'strong all-rounder, quick to first token',
-  },
-  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free': {
-    name: 'Nemotron 3 Nano Omni',
-    context: 256_000,
-    note: 'small and fast, reasoning tuned',
-  },
-  'cohere/north-mini-code:free': {
-    name: 'North Mini Code',
-    context: 256_000,
-    star: true,
-    note: 'the default — built for code and interface work, quick to answer',
-  },
-  // On trial, so not the default and not in FALLBACKS yet. Nex AGI is its only
-  // upstream, so a stall there has nowhere else to go.
-  'nex-agi/nex-n2.5-pro:free': {
-    name: 'Nex N2.5 Pro',
-    context: 262_144,
-    note: 'new agentic coder, on trial — can stall on big builds',
+    context: 128_000,
+    note: 'NVIDIA all-rounder',
   },
 };
 
-/**
- * North Mini Code is the default: it is built for code and interface work,
- * which is what ucode is mostly asked to do, and it answers far sooner than
- * the big reasoning models. /model moves to Ultra when a problem needs the
- * million-token window and the long think more than it needs the speed.
- */
-export const DEFAULT_MODEL = 'cohere/north-mini-code:free';
+/** The model a session starts on. */
+export const DEFAULT_MODEL = 'deepseek-ai/deepseek-v4.1-flash';
 
 /**
  * Where to go when a model is busy, in order of preference. Each is served by
@@ -106,10 +82,10 @@ export const DEFAULT_MODEL = 'cohere/north-mini-code:free';
  * the first "too many requests".
  */
 export const FALLBACKS = [
-  'cohere/north-mini-code:free',
-  'nvidia/nemotron-3.5-lightning:free',
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'nvidia/nemotron-3-ultra-550b-a55b:free',
+  'deepseek-ai/deepseek-v4.1-flash',
+  'nvidia/nemotron-3-super-120b-a12b',
+  'moonshotai/kimi-k3',
+  'z-ai/glm-5.3',
 ];
 
 /** The next model to try after `id`, skipping any already tried this round. */
@@ -173,7 +149,7 @@ export function setModel(id) {
     throw new Failure({
       kind: 'bad_model',
       attempted: `switching to "${wanted}"`,
-      failed: 'ucode only runs NVIDIA, Cohere and Nex AGI models, and that is not one of them.',
+      failed: 'That model is not in ucode\'s list.',
       fix: `Run /model to choose from: ${Object.keys(MODELS).join(', ')}`,
     });
   }
@@ -238,19 +214,27 @@ export function estimateConversation(messages) {
  * package is readable by anyone who runs `npm pack ucode-agent`, and no amount
  * of first-run convenience is worth handing out a live credential.
  */
+/** The NVIDIA key: NVIDIA_API_KEY, or a UCODE_API_KEY that is one (nvapi-...). */
+export function nvidiaKey() {
+  const direct = (process.env.NVIDIA_API_KEY || '').trim();
+  if (direct) return direct;
+  const shared = (process.env.UCODE_API_KEY || '').trim();
+  return shared.startsWith('nvapi-') ? shared : '';
+}
+
 function apiKey() {
   // UCODE_API_KEY is the documented name. The provider's own variable name is
   // still read, so a key set up for another tool keeps working here.
-  const key = (process.env.UCODE_API_KEY || process.env.OPENROUTER_API_KEY || '').trim();
+  const key = nvidiaKey();
   if (!key) {
     throw new Failure({
       kind: 'no_api_key',
       attempted: 'connecting to the model',
-      failed: 'No API key is set - UCODE_API_KEY is missing from the environment and from every .env file.',
+      failed: 'No NVIDIA API key is set - NVIDIA_API_KEY is missing from the environment and from every .env file.',
       fix:
-        `Put UCODE_API_KEY=your-key in ${ENV_FILE} — that applies to every ` +
+        `Put NVIDIA_API_KEY=nvapi-... in ${ENV_FILE} — that applies to every ` +
         'project on this machine — or in a .env file beside your code. ' +
-        'Free keys: https://openrouter.ai/keys',
+        'Free keys: https://build.nvidia.com',
     });
   }
   return key;
@@ -672,7 +656,6 @@ export async function ask(messages, tools = [], opts = {}) {
     // nothing, and the provider eventually drops the request as idle. Asking
     // for it fixes the blank screen and the dropped request together. Models
     // that do not reason ignore the flag.
-    include_reasoning: true,
   };
 
   const wired = wireTools(tools);

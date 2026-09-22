@@ -12,7 +12,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { theme, dim, blue } from '../ui/theme.js';
 import { VERSION } from './version.js';
-import { DEFAULT_MODEL, ENV_FILE } from './provider.js';
+import { DEFAULT_MODEL, ENV_FILE, BASE_URL, nvidiaKey } from './provider.js';
 import { newer } from './updater.js';
 
 const DEADLINE = 6000;
@@ -24,10 +24,10 @@ function version(cmd) {
 }
 
 async function checkKey() {
-  const key = process.env.UCODE_API_KEY || process.env.OPENROUTER_API_KEY;
-  if (!key) return { ok: false, name: 'API key', detail: 'not set', fix: `Add UCODE_API_KEY=... to ${ENV_FILE}` };
+  const key = nvidiaKey();
+  if (!key) return { ok: false, name: 'API key', detail: 'not set', fix: `Add NVIDIA_API_KEY=nvapi-... to ${ENV_FILE} (free at build.nvidia.com)` };
   try {
-    const r = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+    const r = await fetch(`${BASE_URL}/chat/completions`, {
       method: 'POST',
       headers: { Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({ model: DEFAULT_MODEL, messages: [{ role: 'user', content: 'ok' }], max_tokens: 1 }),
