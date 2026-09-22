@@ -1,6 +1,6 @@
 {
   "name": "ucode-agent",
-  "version": "1.59.0",
+  "version": "1.59.1",
   "description": "ucode - a terminal coding agent that reads, edits and runs your code, on models served by NVIDIA: DeepSeek, Kimi, GLM and Nemotron.",
   "type": "module",
   "main": "ucode.js",

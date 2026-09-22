@@ -786,6 +786,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  finish. ucode opens it in the browser for the user as soon as it is ready, so a',
     '  build that ends with the server stopped ends with nothing to look at. A one-page',
     '  app with no server needs none of this: the file is the app. Write all of it in',
+    '  (HTML, CSS AND the JavaScript that makes every button work: add, complete, delete,',
+    '  filter, save to localStorage. A page whose buttons do nothing is not an app)',
     '  create_app\'s files, then stop: ucode opens the page itself and hands it to the',
     '  user the moment it works. Do not start a server, curl it or re-read it to check.',
     '- Nothing you run has a keyboard. Pass the non-interactive flag to anything that',

@@ -90,10 +90,10 @@ Served by NVIDIA (build.nvidia.com), with a free key.
 
 | Model | For |
 | --- | --- |
-| **DeepSeek V4.1 Flash** ★ | the default — fast, and reliable with tools |
+| DeepSeek V4.1 Flash | strong coder — slower when NVIDIA is busy |
 | Kimi K3 | strong agentic coder — can be slow when NVIDIA is busy |
 | GLM 5.3 | strong coder — can be slow when NVIDIA is busy |
-| Nemotron 3 Super | NVIDIA all-rounder |
+| **Nemotron 3 Super** ★ | the default — answers fastest on NVIDIA |
 
 `/model` shows them and switches. `ucode -m moonshotai/kimi-k3` starts on one.
 

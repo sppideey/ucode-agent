@@ -52,8 +52,7 @@ export const MODELS = {
   'deepseek-ai/deepseek-v4.1-flash': {
     name: 'DeepSeek V4.1 Flash',
     context: 128_000,
-    star: true,
-    note: 'the default — fast, and reliable with tools',
+    note: 'strong coder — slower when NVIDIA is busy',
   },
   'moonshotai/kimi-k3': {
     name: 'Kimi K3',
@@ -68,12 +67,13 @@ export const MODELS = {
   'nvidia/nemotron-3-super-120b-a12b': {
     name: 'Nemotron 3 Super',
     context: 128_000,
-    note: 'NVIDIA all-rounder',
+    star: true,
+    note: 'the default — answers fastest on NVIDIA',
   },
 };
 
 /** The model a session starts on. */
-export const DEFAULT_MODEL = 'deepseek-ai/deepseek-v4.1-flash';
+export const DEFAULT_MODEL = 'nvidia/nemotron-3-super-120b-a12b';
 
 /**
  * Where to go when a model is busy, in order of preference. Each is served by
@@ -82,8 +82,8 @@ export const DEFAULT_MODEL = 'deepseek-ai/deepseek-v4.1-flash';
  * the first "too many requests".
  */
 export const FALLBACKS = [
-  'deepseek-ai/deepseek-v4.1-flash',
   'nvidia/nemotron-3-super-120b-a12b',
+  'deepseek-ai/deepseek-v4.1-flash',
   'moonshotai/kimi-k3',
   'z-ai/glm-5.3',
 ];

@@ -1298,9 +1298,9 @@ await test('the NVIDIA models are offered, each named and noted', () => {
   ok(MODELS['moonshotai/kimi-k3'] && MODELS['z-ai/glm-5.3'], 'Kimi K3 and GLM 5.3 are in the list');
 });
 
-await test('the default is DeepSeek V4.1 Flash', () => {
-  eq(DEFAULT_MODEL, 'deepseek-ai/deepseek-v4.1-flash');
-  eq(modelName(DEFAULT_MODEL), 'DeepSeek V4.1 Flash');
+await test('the default is Nemotron 3 Super', () => {
+  eq(DEFAULT_MODEL, 'nvidia/nemotron-3-super-120b-a12b');
+  eq(modelName(DEFAULT_MODEL), 'Nemotron 3 Super');
 });
 
 await test('the model you chose is the model you keep', () => {
