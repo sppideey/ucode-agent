@@ -1409,12 +1409,13 @@ async function fakeProvider(reply, fn) {
   const saved = { url: process.env.UCODE_BASE_URL, stall: process.env.UCODE_STALL_MS, key: process.env.UCODE_API_KEY };
   process.env.UCODE_BASE_URL = `http://127.0.0.1:${server.address().port}`;
   process.env.UCODE_STALL_MS = '400';
+  process.env.UCODE_BACKUP = '0'; // these tests are about retrying one model; the backup is the loop's job
   process.env.UCODE_API_KEY ||= 'sk-or-test';
   resetConnection();
   try {
     return await fn(() => n);
   } finally {
-    for (const [k, v] of [['UCODE_BASE_URL', saved.url], ['UCODE_STALL_MS', saved.stall], ['UCODE_API_KEY', saved.key]]) {
+    for (const [k, v] of [['UCODE_BACKUP', undefined], ['UCODE_BASE_URL', saved.url], ['UCODE_STALL_MS', saved.stall], ['UCODE_API_KEY', saved.key]]) {
       if (v === undefined) delete process.env[k]; else process.env[k] = v;
     }
     resetConnection();
@@ -1565,6 +1566,24 @@ await test('a page that still had problems is looked at again after the fix roun
   agent.lookAgain = 'relook/index.html';
   await agent.lookOnceThisTurn(sandbox, ['relook/app.js']);
   ok(notes.some((n) => n.includes('LOOKED')), `a script-only fix still gets the page opened again: ${notes}`);
+});
+
+await test('an overloaded Flash-Lite hands the build to Flash, and only for overload', async () => {
+  const { backupFor, setModel, model } = await import('../src/core/provider.js');
+  const { Agent } = await import('../src/core/loop.js');
+  eq(backupFor('gemini-3.5-flash-lite'), 'gemini-3.5-flash');
+  eq(backupFor('gemini-3.1-flash-lite'), 'gemini-3.5-flash');
+  eq(backupFor('gemini-3.5-flash'), null, 'Flash has nowhere to go');
+  const was = model();
+  const agent = new Agent({ cwd: sandbox });
+  const notes = [];
+  agent.ui = { note: (t) => notes.push(t), startSpinner() {}, updateSpinner() {}, stopSpinner() {} };
+  agent.failovers = 0; agent.tried = new Set();
+  setModel('gemini-3.5-flash-lite');
+  ok(await agent.failover({ kind: 'server' }));
+  eq(model(), 'gemini-3.5-flash');
+  ok(/carrying on with Gemini 3.5 Flash/.test(notes[0] ?? ''), notes[0]);
+  setModel(was);
 });
 
 await test('a file written beside the app it belongs to goes into the app', async () => {

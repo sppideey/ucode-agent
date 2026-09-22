@@ -27,7 +27,7 @@ import { spawn } from 'node:child_process';
 
 import {
   ask, model, setModel, modelName, modelList, contextLimit, rateLimits,
-  estimateConversation, MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor,
+  estimateConversation, MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor, backupFor,
 } from './provider.js';
 import {
   tools, runTool, describe, setRoot, setConfirm, setRequest,
@@ -2095,6 +2095,8 @@ export class Agent {
     if (++this.failovers > MAX_FAILOVERS) return false;
     const from = model();
     let next = fallbackFor(from, this.tried);
+    const backup = err.kind !== 'rate_limit' && backupFor(from);
+    if (!next && backup && !this.tried?.has(backup)) next = backup;
 
     const why = err.kind === 'rate_limit' ? 'busy' : err.kind === 'timeout' ? 'too slow to answer' : 'not answering';
 

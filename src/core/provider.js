@@ -104,6 +104,15 @@ export function fallbackFor(id, tried = new Set()) {
   return null;
 }
 
+/**
+ * Where a Flash-Lite model goes when Google is overloaded (503) or it freezes.
+ * Unlike fallbackFor this is on by default: both Lite models go down together
+ * at peak hours while Flash keeps answering, and a build that waits on them
+ * can wait for hours. UCODE_BACKUP=0 turns it off.
+ */
+export const backupFor = (id) =>
+  /flash-lite/.test(id) && process.env.UCODE_BACKUP !== '0' ? 'gemini-3.5-flash' : null;
+
 /** Seconds to wait on successive rate limits that come with no retry-after. */
 const RATE_LIMIT_BACKOFF = [5, 10, 20];
 
@@ -711,7 +720,7 @@ export async function ask(messages, tools = [], opts = {}) {
           kind: 'stalled',
           attempted: `asking ${modelName(id)} for a reply`,
           failed: `${modelName(id)} froze ${MAX_STALLS} times in a row — it took the request and then sent nothing.`,
-          fix: 'Its free endpoint is struggling right now. Run /model and pick another one; North Mini Code answers soonest.',
+          fix: 'Google is struggling with it right now. Run /model and pick another one.',
           cause: problem,
         });
       }
@@ -741,6 +750,7 @@ export async function ask(messages, tools = [], opts = {}) {
       if (!worthRetrying || attempt === attempts || opts.signal?.aborted) break;
       if (printed > 0) break; // half an answer is on screen; do not print it twice
       if (problem.detail?.handed) break; // its first tool calls are already running
+      if (problem.kind === 'timeout' && backupFor(id)) break; // one freeze is enough: the loop moves to the backup
 
       // A stalled provider needs longer to come back than a dropped socket
       // does, and the wait is narrated so a slow turn never looks like a hang.

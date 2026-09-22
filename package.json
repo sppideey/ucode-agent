@@ -1,6 +1,6 @@
 {
   "name": "ucode-agent",
-  "version": "1.61.1",
+  "version": "1.62.0",
   "description": "ucode - a terminal coding agent that reads, edits and runs your code, on Google Gemini models.",
   "type": "module",
   "main": "ucode.js",

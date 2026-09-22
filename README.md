@@ -96,6 +96,9 @@ Served by Google (aistudio.google.com), free with a key.
 
 `/model` shows them and switches. `ucode -m gemini-3.5-flash` starts on one.
 
+When Google is overloaded and Flash-Lite stops answering, ucode carries on with
+3.5 Flash by itself and goes back to Flash-Lite a few minutes later.
+
 ## What it does
 
 **Twenty-one tools.** `create_app`, `read_file`, `read_files`, `write_file`,
