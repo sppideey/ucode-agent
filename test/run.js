@@ -1598,6 +1598,15 @@ await test('a worker is held to its own tools, not the lead\'s', async () => {
   await throws(() => agent.dispatch({ id: '1', name: 'create_app', args: {} }, new Set(['read_file'])), 'no_such_tool');
 });
 
+await test('a page styled with Tailwind classes gets Tailwind loaded', async () => {
+  const { withTailwind } = await import('../src/tools/files.js');
+  const tw = `<html><head><title>t</title></head><body class="min-h-full flex flex-col bg-white text-gray-900">${'<div class="px-4 py-2 rounded-xl shadow-md flex items-center gap-3"></div>'.repeat(3)}</body></html>`;
+  ok(withTailwind(tw).includes('@tailwindcss/browser@4'), 'the script is added');
+  const plain = '<html><head></head><body><div class="card"><button class="btn">Add</button></div></body></html>';
+  eq(withTailwind(plain), plain, 'a page with its own CSS is left alone');
+  eq(withTailwind(withTailwind(tw)), withTailwind(tw), 'and it is added once');
+});
+
 await test('a plain page module that imports a stylesheet is flagged the moment it is written', async () => {
   const { assetImport } = await import('../src/tools/files.js');
   const plain = await fs.mkdtemp(path.join(os.tmpdir(), 'ucode-plain-'));

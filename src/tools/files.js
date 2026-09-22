@@ -228,6 +228,27 @@ export function assetImport(abs, text) {
     'instead — <link rel="stylesheet" href="…"> for a stylesheet, an <img> or a plain URL for an image.';
 }
 
+/**
+ * A page styled with Tailwind classes that never loads Tailwind.
+ *
+ * A live build wrote a 27 KB page of "flex px-4 bg-[var(--bg)]" and a
+ * stylesheet of colour tokens only: every class was ignored and the app came
+ * out as bare browser defaults, with nothing failing to tell anyone. When a
+ * page leans on those classes and has no Tailwind of its own, the browser
+ * build is added to its head, so the page looks the way it was written.
+ */
+const TAILWIND_CLASS = /^(?:-?(?:m|p)[trblxy]?-\S+|flex|grid|hidden|block|inline-flex|items-\S+|justify-\S+|gap-\S+|space-[xy]-\S+|(?:min-|max-)?[wh]-\S+|text-\S+|bg-\S+|rounded(?:-\S+)?|border(?:-\S+)?|shadow(?:-\S+)?|font-\S+|leading-\S+|tracking-\S+|(?:sm|md|lg|xl|hover|focus|dark):\S+)$/;
+export function withTailwind(html) {
+  if (/tailwindcss|cdn\.tailwind/i.test(html) || !/<\/head>/i.test(html)) return html;
+  let count = 0;
+  for (const [, list] of html.matchAll(/class="([^"]*)"/g)) {
+    for (const token of list.split(/\s+/)) if (TAILWIND_CLASS.test(token)) count++;
+    if (count >= 12) break;
+  }
+  if (count < 12) return html;
+  return html.replace(/<\/head>/i, '  <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>\n</head>');
+}
+
 /** The note for that, appended to a write's result like a parse problem is. */
 const pageNote = (target, text) => {
   const problem = assetImport(target.abs, text);
@@ -355,6 +376,7 @@ export async function readFiles({ paths, limit = READ_LINES }) {
 /** Write one file, returning the rows that show what changed. */
 async function put(target, content, { diffMax = 16 } = {}) {
   const attempted = `writing ${target.show}`;
+  if (/\.html?$/i.test(target.abs)) content = withTailwind(content);
 
   // Read what is there before clobbering it, so an overwrite can be shown as
   // an actual diff rather than as a claim that something changed.
