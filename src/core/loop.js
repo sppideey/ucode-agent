@@ -20,6 +20,7 @@ import { testRunnerFor, relatedCommand, summariseFailures } from './tests.js';
 import { LogWatch } from './livelog.js';
 import { checkHtml } from './htmlcheck.js';
 import { checkCss } from './csscheck.js';
+import { makeOpenable } from './openable.js';
 import { runningServers } from '../tools/shell.js';
 import { unprefixOwnFolder } from './relink.js';
 import { beginTurn, undoTurn, changedCount } from './undo.js';
@@ -2570,6 +2571,8 @@ export class Agent {
     const whole = writes.some((c) => (c.name === 'create_app' || c.name === 'batch_write') && pathsOf(c).length > 0);
     if (!writes.length || (!whole && !this.handOverPending)) return null;
 
+    // The link handed over is file://, where module scripts never run.
+    await makeOpenable(app).catch(() => {});
     const show = path.relative(this.cwd, app).split(path.sep).join('/') || '.';
     let out;
     try {
@@ -2648,6 +2651,7 @@ export class Agent {
 
       const html = pages.find((f) => /\.html?$/i.test(f));
       if (!html) return null;
+      await makeOpenable(path.dirname(path.resolve(root, html)), path.basename(html)).catch(() => {});
       return await withStaticServer(path.dirname(path.resolve(root, html)), look);
     } catch (err) {
       // Say so, quietly, rather than skipping in silence. A browser that will
