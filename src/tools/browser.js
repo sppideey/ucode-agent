@@ -232,6 +232,63 @@ const NOT_ADD = /search|filter|find|sort|query/i;
 const LIST_HINT = /task|todo|to-do|item|note|add|new|entry|expense|habit|title|what needs|remind/i;
 const ADD_BUTTON = /^\s*(?:\+|add|new|create|save|submit|post|done)\b|\b(?:add|create|save)\s/i;
 
+/** A value a form will take for a field of this type, or null to leave the field alone. */
+function sampleFor(type, today) {
+  switch (type) {
+    case 'number': return '42';
+    case 'date': return today;
+    case 'time': return '12:00';
+    case 'datetime-local': return `${today}T12:00`;
+    case 'month': return today.slice(0, 7);
+    case 'email': return 'check@example.com';
+    case 'url': return 'https://example.com';
+    case 'tel': return '5550100';
+    case 'text': case 'textarea': case 'search': case '': return PROBE_TEXT;
+    default: return null; // checkboxes, radios, files, colours: nothing to guess
+  }
+}
+
+/**
+ * Fill in the rest of the form the probe text went into, the way a person
+ * would before pressing Add.
+ *
+ * Traced: a budget tracker's form also needs an amount. Only the description
+ * was typed, the browser refused the submit, and a working app was reported as
+ * "ADDING DOES NOT WORK" — the model then spent its fix rounds on code that
+ * worked. Filled: required fields, empty number fields (amounts are often
+ * checked in script, not marked required) and dropdowns left on a blank choice.
+ */
+async function fillTheRest(page, field) {
+  const marked = await field.evaluate((e) => {
+    if (!e.form) return false;
+    e.form.setAttribute('data-ucode-probe', '');
+    return true;
+  }).catch(() => false);
+  if (!marked) return;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const all = page.locator('form[data-ucode-probe] :is(input, select, textarea)');
+  const n = Math.min(await all.count().catch(() => 0), 20);
+  for (let i = 0; i < n; i++) {
+    const el = all.nth(i);
+    const info = await el.evaluate((e) => ({
+      tag: e.tagName.toLowerCase(),
+      type: (e.getAttribute('type') || (e.tagName === 'TEXTAREA' ? 'textarea' : '')).toLowerCase(),
+      empty: !e.value,
+      required: e.required,
+    })).catch(() => null);
+    if (!info?.empty || !(await el.isVisible().catch(() => false))) continue;
+    if (info.tag === 'select') {
+      await el.selectOption({ index: 1 }, { timeout: 2_000 }).catch(() => {});
+      continue;
+    }
+    if (!info.required && info.type !== 'number') continue;
+    const value = sampleFor(info.type, today);
+    if (value !== null) await el.fill(value, { timeout: 2_000 }).catch(() => {});
+  }
+  await page.locator('form[data-ucode-probe]').evaluate((f) => f.removeAttribute('data-ucode-probe')).catch(() => {});
+}
+
 async function tryAdd(page) {
   const shows = () => page.evaluate((t) => document.body.innerText.includes(t), PROBE_TEXT).catch(() => false);
   const settle = () => page.waitForTimeout(400);
@@ -279,6 +336,7 @@ async function tryAdd(page) {
   }
   const ok = await field.el.fill(PROBE_TEXT, { timeout: 2_000 }).then(() => true).catch(() => false);
   if (!ok) return tried.length ? { tried, added: false, listApp } : null;
+  await fillTheRest(page, field.el);
   await field.el.press('Enter', { timeout: 2_000 }).catch(() => {});
   await settle();
   tried.push(`typed "${PROBE_TEXT}" into ${field.hint ? `"${field.hint.slice(0, 30)}"` : 'the field'} and pressed Enter`);

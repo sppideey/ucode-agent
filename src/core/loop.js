@@ -51,6 +51,8 @@ import { StuckWatch, eventFor, describeHit } from './stuck.js';
 import { serversReadySince } from '../tools/shell.js';
 import { formatDuration } from '../ui/activity.js';
 import { MAX_FILE_OUTPUT } from '../tools/shared.js';
+import { openInBrowser } from './opener.js';
+import { withScope } from './scope.js';
 import { runDoctor } from './doctor.js';
 import { JS_LOGIC } from './jslogic.js';
 import { deploy } from '../tools/deploy.js';
@@ -109,19 +111,6 @@ const SILENT = new Set(['update_plan']);
 
 /** How many rounds of "the type check found errors, fix them" one turn may take. */
 const MAX_FIX_ROUNDS = 3;
-
-/**
- * Rides on a new app's request, the last thing the model reads. In the system
- * prompt and the skill alone, Flash-Lite still built "make me a tasks app" as a
- * tasks app plus pomodoro timer, kanban board and analytics — twice running.
- */
-const SCOPE_NOTE =
-  '(From ucode: if this asks for a new app, build it complete and well made, but as the one app asked ' +
-  'for - no extra views or tools such as timers, calendars, kanban boards, analytics, stats or an ' +
-  'editor for making your own, unless the request names them.)';
-
-/** A request that may be for a new app. Loose on purpose: the note it adds says "if". */
-const BUILD_ASK = /\b(?:make|build|create|design|code|write|generate|develop)\b|\bi\s+(?:want|need)\b|\b(?:app|game|website|site|page|tracker|calculator|quiz)\b/i;
 
 /** A file up to this many lines is sent whole on its first read, whatever slice was asked for. */
 const WHOLE_READ_LINES = 1500;
@@ -1262,7 +1251,7 @@ export class Agent {
     // Nothing to look up in an empty folder, so those tools do not go out with
     // the request. Decided per turn: the moment there is code, they are back.
     this.fresh = !hasCode(this.map);
-    if (this.fresh || BUILD_ASK.test(input)) request.content = `${input}\n\n${SCOPE_NOTE}`;
+    request.content = withScope(input, { fresh: this.fresh });
     this.wantsWeb = WANTS_WEB.test(input);
     await this.persist();
 
@@ -1795,26 +1784,10 @@ export class Agent {
     if (this.openInBrowser(server.url)) this.ui.note(`Opened ${server.url} in your browser`);
   }
 
-  /**
-   * Show a URL or a local page in the desktop browser. False when it did not.
-   *
-   * A file goes to explorer on Windows, not `cmd /c start`: the folder name
-   * comes from the model, and an & in it would be a second command to cmd.
-   */
+  /** Show a URL or a page in the project in the desktop browser (see opener.js). UCODE_OPEN=0 turns it off. */
   openInBrowser(target) {
     if (!this.full || process.env.UCODE_OPEN === '0') return false;
-    const web = /^https?:\/\//.test(target);
-    // Only pages inside the project: a UNC path would have explorer reach out to another machine.
-    const rel = web ? '' : path.relative(this.cwd, target);
-    if (!web && (!rel || rel.startsWith('..') || path.isAbsolute(rel))) return false;
-    const [cmd, args] = process.platform === 'win32'
-      ? (web ? ['cmd', ['/c', 'start', '', target]] : ['explorer.exe', [target]])
-      : [process.platform === 'darwin' ? 'open' : 'xdg-open', [target]];
-    try {
-      // A missing opener (no xdg-open) fails later, as an event; unheard, it would crash ucode.
-      spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true }).on('error', () => {}).unref();
-      return true;
-    } catch { return false; /* no browser to open — the link is in the answer */ }
+    return openInBrowser(target, { root: this.cwd });
   }
 
   cmdStats() {

@@ -1672,6 +1672,31 @@ await test('re-reads are counted per page, and a write starts the count again', 
   ok(!(await read({})).summary?.includes('unchanged'), 'after a write it is read again, however it was spelled');
 });
 
+await test('a new app request carries the scope note; pages outside the project are never opened', async () => {
+  const { withScope, SCOPE_NOTE } = await import('../src/core/scope.js');
+  ok(withScope('make a quiz app').endsWith(SCOPE_NOTE), 'a build request gets the note');
+  eq(withScope('why is this slow?'), 'why is this slow?', 'a question does not');
+  ok(withScope('hello', { fresh: true }).endsWith(SCOPE_NOTE), 'anything in an empty folder does');
+  const { insideRoot, openInBrowser } = await import('../src/core/opener.js');
+  ok(insideRoot(path.join(sandbox, 'app', 'index.html'), sandbox));
+  ok(!insideRoot('\\\\host\\share\\index.html', sandbox), 'a UNC path is outside');
+  eq(openInBrowser(path.join(path.dirname(sandbox), 'x.html'), { root: sandbox }), false, 'and is refused');
+});
+
+await test('adding fills in the rest of the form, so a required amount is not a false alarm', async () => {
+  const { lookAtApp, withStaticServer, closeBrowser } = await import('../src/tools/browser.js');
+  await fs.mkdir(path.join(sandbox, 'budget'), { recursive: true });
+  await write('budget/index.html', '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Budget</title></head><body><main>' +
+    '<h1>Budget</h1><form id="f"><label>What <input id="d" required placeholder="e.g. Groceries"></label>' +
+    '<label>Amount <input id="a" type="number" required></label><label>Kind <select id="k" required><option value="">Pick</option><option>Food</option></select></label>' +
+    '<label>Day <input id="t" type="date" required></label><button>Add expense</button></form><ul id="l"></ul></main>' +
+    "<script>document.getElementById('f').onsubmit = (e) => { e.preventDefault(); const li = document.createElement('li');" +
+    " li.textContent = document.getElementById('d').value + ' ' + document.getElementById('a').value; document.getElementById('l').append(li); };</script></body></html>");
+  const out = await withStaticServer(path.join(sandbox, 'budget'), (url) => lookAtApp({ url, review: false }));
+  ok(!/ADDING DOES NOT WORK/.test(out.content), out.content);
+  await closeBrowser();
+});
+
 await test('a file that fits is read whole once, and not again until it changes', async () => {
   const { Agent } = await import('../src/core/loop.js');
   const agent = new Agent({ cwd: sandbox, ui: { mode: 'build' } });
