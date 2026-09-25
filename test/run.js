@@ -1743,7 +1743,13 @@ await test('a new app request carries the scope note; pages outside the project 
   const { withScope, SCOPE_NOTE } = await import('../src/core/scope.js');
   ok(withScope('make a quiz app').endsWith(SCOPE_NOTE), 'a build request gets the note');
   eq(withScope('why is this slow?'), 'why is this slow?', 'a question does not');
-  ok(withScope('hello', { fresh: true }).endsWith(SCOPE_NOTE), 'anything in an empty folder does');
+  eq(withScope('hello'), 'hello', 'a greeting does not, even in an empty folder');
+  eq(withScope('what apps can you make?'), 'what apps can you make?', 'nor a question about apps');
+  for (const ask of ['make me a tasks app', 'build a snake game', 'create a calculator', 'i want a stopwatch', 'make tic tac toe game']) {
+    ok(withScope(ask).endsWith(SCOPE_NOTE), `"${ask}" is a build`);
+  }
+  const { isNoise } = await import('../src/core/scope.js');
+  ok(isNoise('+') && isNoise(' ?! ') && !isNoise('hi') && !isNoise('2+2'), 'symbols alone are noise, words are not');
   const { insideRoot, openInBrowser } = await import('../src/core/opener.js');
   ok(insideRoot(path.join(sandbox, 'app', 'index.html'), sandbox));
   ok(!insideRoot('\\\\host\\share\\index.html', sandbox), 'a UNC path is outside');

@@ -52,7 +52,7 @@ import { serversReadySince } from '../tools/shell.js';
 import { formatDuration } from '../ui/activity.js';
 import { MAX_FILE_OUTPUT } from '../tools/shared.js';
 import { openInBrowser } from './opener.js';
-import { withScope } from './scope.js';
+import { withScope, isNoise } from './scope.js';
 import { chooseFile, projectFiles, loadAttachments } from './attach.js';
 import { runDoctor } from './doctor.js';
 import { JS_LOGIC } from './jslogic.js';
@@ -594,6 +594,11 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '',
     '## How to work',
     '',
+    'BUILD ONLY WHEN ASKED. Make or change an app only when the message asks for one.',
+    'A greeting, a question, a single word, or anything unclear gets a short plain',
+    'answer - or one question back about what they would like - never an app. "What',
+    'can you do?" is answered in words; "make a quiz app" is built.',
+    '',
     'AN APP THAT IS AWKWARD TO USE IS NOT FINISHED. Before you call it done, look at',
     'what you built as someone using it for the first time: is the button inside its',
     'field or sitting on top of it, is there room to breathe between things, does the',
@@ -1126,6 +1131,15 @@ export class Agent {
         continue;
       }
 
+      // "+" on its own is the "+ file" button typed — the way to it on Windows,
+      // where the terminal sends no clicks. Other symbols alone are not a request:
+      // a live "+" was built into a calculator nobody asked for.
+      if (input === '+' && this.ui.addAttachment) { await this.attachFile(); continue; }
+      if (isNoise(input)) {
+        this.ui.note('Say what you would like to build or ask. To add a picture or file, type + or press ctrl+o.');
+        continue;
+      }
+
       try {
         await this.turn(input);
       } catch (err) {
@@ -1259,7 +1273,7 @@ export class Agent {
     // Nothing to look up in an empty folder, so those tools do not go out with
     // the request. Decided per turn: the moment there is code, they are back.
     this.fresh = !hasCode(this.map);
-    request.content = withScope(input, { fresh: this.fresh }) + added.text;
+    request.content = withScope(input) + added.text;
     this.wantsWeb = WANTS_WEB.test(input);
     await this.persist();
 
