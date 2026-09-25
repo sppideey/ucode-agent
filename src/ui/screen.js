@@ -139,6 +139,10 @@ const THOUGHT_HOLD_MS = 1100;
 /** Reasoning that is about the request rather than about the work. */
 const RESTATEMENT = /^(?:the user|they|so the user|user)|^(?:i (?:need|should|will need) to (?:understand|figure|work out|check what))|^(?:let me (?:understand|re-?read|look at the (?:request|prompt)))|^(?:the (?:request|prompt|task) (?:is|asks|says))/i;
 
+/** The window size asked of macOS Terminal when it opens smaller than this. */
+const MAC_COLS = 120;
+const MAC_ROWS = 34;
+
 /** The wordmark only earns its place with room for the facts column beside it. */
 const WORDMARK_NEEDS = BANNER_WIDTH + 30;
 
@@ -241,6 +245,15 @@ export class Screen {
     };
     this.output.on('resize', this.onResize);
 
+    // macOS Terminal opens at 80×24, and with the header and the input box
+    // that leaves a letterbox for the conversation. Ask for more room — never
+    // less — and give the window back its own size on the way out.
+    if (process.env.TERM_PROGRAM === 'Apple_Terminal' && !this.grownFrom
+      && (this.cols < MAC_COLS || this.rows < MAC_ROWS)) {
+      this.grownFrom = [this.rows, this.cols];
+      this.output.write(`${ESC}[8;${Math.max(this.rows, MAC_ROWS)};${Math.max(this.cols, MAC_COLS)}t`);
+    }
+
     this.render();
     this.startIntro();
   }
@@ -281,6 +294,10 @@ export class Screen {
     this.input.setRawMode?.(false);
     this.input.pause();
     this.output.write(PASTE_OFF + MOUSE_OFF + ALT_OFF + SHOW);
+    if (this.grownFrom) {
+      this.output.write(`${ESC}[8;${this.grownFrom[0]};${this.grownFrom[1]}t`);
+      this.grownFrom = null;
+    }
   }
 
   close() {
@@ -789,7 +806,7 @@ export class Screen {
     ].filter(Boolean).slice(0, BANNER.length - 1);
 
     while (facts.length < BANNER.length - 1) facts.push(['', '']);
-    facts.push(['', 'made with ❤️ by om dixit']);
+    facts.push(['', 'made with ❤ by om dixit']);
 
     const rows = BANNER.map((art, i) => {
       const [label, text] = facts[i] ?? ['', ''];

@@ -98,7 +98,7 @@ export class Plain {
       ['keys', '/help'],
       ['', ''],
       ['', ''],
-      ['', 'made with ❤️ by om dixit'],
+      ['', 'made with ❤ by om dixit'],
     ];
 
     // There is no input box to hang the status off here, so it goes on the

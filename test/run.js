@@ -181,6 +181,11 @@ function frameRows(frame) {
 await test('output cannot knock the frame out of place', () => {
   eq(visLen('✅ ⚡ ⭐ ❌'), 11, 'symbol-block emoji are two cells');
   eq(visLen('│─╭'), 3, 'box drawing stays one cell');
+  // macOS Terminal draws ❤️ one cell, Windows Terminal two: the selector is
+  // dropped so the border lands in the same column on both.
+  const heart = boxRow('made with ❤️ by om', 30);
+  ok(!heart.includes('️'), 'the emoji selector never reaches the terminal');
+  eq(visLen(heart), 30, 'a row with ❤️ in it is still exactly the box width');
 
   const { screen, written } = fakeScreen(60, 20);
   screen.add('a\tb\r\n\x1b[2Jc\x1b[H');

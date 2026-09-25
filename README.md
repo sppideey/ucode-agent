@@ -27,7 +27,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                                                           v1.46.0
+                                                                           v1.62.2
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box

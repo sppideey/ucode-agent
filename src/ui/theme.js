@@ -230,9 +230,6 @@ export function visLen(s) {
     const cp = text.codePointAt(i);
     const ch = String.fromCodePoint(cp);
     i += ch.length;
-    // A variation selector turns the character before it into an emoji, and
-    // an emoji is two cells wide however narrow its text form was.
-    if (text.codePointAt(i) === 0xfe0f) { cells += 2; i += 1; continue; }
     cells += charWidth(cp);
   }
   return cells;
@@ -252,18 +249,27 @@ export function sliceVis(s, width) {
     // in the rest.
     const cp = s.codePointAt(i);
     const ch = String.fromCodePoint(cp);
-    const selector = s.codePointAt(i + ch.length) === 0xfe0f;
-    const w = selector ? 2 : charWidth(cp);
+    const w = charWidth(cp);
     if (seen + w > width) break;
-    out += selector ? ch + String.fromCodePoint(0xfe0f) : ch;
-    i += (selector ? ch.length + 1 : ch.length) - 1;
+    out += ch;
+    i += ch.length - 1;
     seen += w;
   }
   return out;
 }
 
-/** Pad or hard-cut a possibly-coloured string to an exact visible width. */
-export function padVis(s, width) {
+/**
+ * Pad or hard-cut a possibly-coloured string to an exact visible width.
+ *
+ * The emoji variation selector (U+FE0F) is dropped on the way out. Terminals
+ * disagree on what it does to a character like ❤ — Windows Terminal draws two
+ * cells, macOS Terminal draws one — so no count of it is right on both, and a
+ * row holding one had its right border a column off on the Mac. Without it the
+ * character is drawn in its plain form, one cell, everywhere. Every painted row
+ * passes through here, so this is the one place it needs doing.
+ */
+export function padVis(raw, width) {
+  const s = String(raw).replace(/️/g, '');
   const len = visLen(s);
   if (len === width) return s;
   if (len < width) return s + ' '.repeat(width - len);
