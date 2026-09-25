@@ -108,6 +108,18 @@ first time; then the server route with the real integration; then the core
 loop UI wired to it; then every state — empty, loading, success, error,
 invalid input; then polish: motion, responsive, copy, title and metadata.
 
+## 5a. It has to look finished
+
+People judge the app in the first second it is on screen, before they click
+anything. Before handing it over, check:
+
+- A real title and one line saying what it is for — never "Welcome to…".
+- The main action is visible without scrolling and is the most prominent button.
+- Every button and input has hover and focus states; nothing is left browser-default.
+- An empty list says what to do next ("No tasks yet — add one above"), never blank.
+- It fits a 375px phone with no sideways scroll; tap targets are at least 44px.
+- The number that matters (a score, a total, a timer) is big — several times body text.
+
 ## 5b. Tests, where there is a runner
 
 `next-shadcn` ships vitest and one passing test, so `npm test` works from

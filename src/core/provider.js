@@ -500,9 +500,8 @@ export function explain(err, id) {
         : `Too many requests for ${modelName(id)} just now${wait ? ` — clear in ${wait}` : ''}.`,
       fix: daily
         ? `It resets ${resetAt ? `at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'once a day'}. ` +
-          'Adding credit to your account raises the limit.'
-        : 'ucode waits these out on its own. Free endpoints are shared, so it usually ' +
-          'clears in seconds; /model moves to a quieter one.',
+          'Nothing to do until then — the key is fine.'
+        : 'ucode waits these out on its own, usually for a few seconds. /model moves to another one.',
       detail: { retryAfter, daily, resetAt: resetAt?.getTime() ?? null },
       cause: err,
     });
@@ -596,10 +595,7 @@ export function explain(err, id) {
       kind: 'timeout',
       attempted,
       failed: `${modelName(id)} sent nothing back in time — the provider dropped the request.`,
-      fix:
-        'Free endpoints stall under load, and the largest reasoning models are the ' +
-        'first to. ucode already retried. If it keeps happening, /model to Nemotron ' +
-        '3.5 Lightning or North Mini Code, which answer sooner.',
+      fix: 'ucode already retried. Google is busy right now — send again, or /model to another one.',
       detail: { status },
       cause: err,
     });
@@ -609,7 +605,7 @@ export function explain(err, id) {
     return new Failure({
       kind: 'server',
       attempted,
-      failed: `The provider returned HTTP ${status}. That is their side, not yours.`,
+      failed: `Google's servers are busy right now (HTTP ${status}). That is their side, not yours.`,
       fix: 'Wait a few seconds and send again. If it persists, /model to another one.',
       cause: err,
     });
@@ -627,11 +623,14 @@ export function explain(err, id) {
     return new Failure({
       kind: 'network',
       attempted,
-      failed: `The connection to the model dropped: ${raw}`,
+      // No DNS answer: the machine is offline, and saying so
+      // beats a raw "getaddrinfo ENOTFOUND" on a demo screen.
+      failed: /ENOTFOUND|EAI_AGAIN|getaddrinfo/i.test(raw)
+        ? 'ucode could not reach Google — this computer looks offline.'
+        : `The connection to Google dropped: ${raw}`,
       fix:
-        'ucode retries this by itself. If it keeps happening, check your connection, ' +
-        'VPN and any corporate proxy (HTTPS_PROXY) — or /model to a lighter one, since ' +
-        'a long think on a busy free endpoint is the usual cause.',
+        'ucode retries this by itself. If it keeps happening, check the Wi-Fi, ' +
+        'VPN and any proxy (HTTPS_PROXY), then send again.',
       cause: err,
     });
   }
@@ -785,7 +784,7 @@ async function streamed(request, opts, id) {
     kind: 'timeout',
     attempted: `asking ${modelName(id)} for a reply`,
     failed: `${modelName(id)} went silent for ${Math.round(limit() / 1000)}s, so ucode stopped waiting.`,
-    fix: 'ucode asks again by itself. If it keeps freezing, /model to North Mini Code.',
+    fix: 'ucode asks again by itself. If it keeps freezing, /model to another one.',
     detail: { stalled: true, handed: handed.size },
     cause,
   });

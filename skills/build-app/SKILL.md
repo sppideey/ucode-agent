@@ -195,6 +195,18 @@ const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
 
 Use `batch_write` for the skeleton — one call, every file.
 
+## 5a. It has to look finished
+
+People judge the app in the first second it is on screen, before they click
+anything. Before handing it over, check:
+
+- A real title and one line saying what it is for — never "Welcome to…".
+- The main action is visible without scrolling and is the most prominent button.
+- Every button and input has hover and focus states; nothing is left browser-default.
+- An empty list says what to do next ("No tasks yet — add one above"), never blank.
+- It fits a 375px phone with no sideways scroll; tap targets are at least 44px.
+- The number that matters (a score, a total, a timer) is big — several times body text.
+
 ## 6. Prove it works
 
 - `npm run build` — it type-checks and lints; a build that fails is not done.

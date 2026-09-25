@@ -1614,6 +1614,9 @@ await test('a plain app is handed over the moment it works, and sent back when i
   agent.session = { messages: [] };
   agent.working = [];
   agent.persist = async () => {};
+  const opened = [];
+  agent.openInBrowser = (t) => opened.push(t);
+  agent.turnStarted = Date.now() - 42_000;
   const page = (script) => '<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Count</title></head>' +
     `<body><main><h1>Count</h1><button id="b" type="button">Add one</button><p id="n">0</p></main><script>${script}</script></body></html>`;
   await fs.mkdir(path.join(sandbox, 'handme'), { recursive: true });
@@ -1623,7 +1626,8 @@ await test('a plain app is handed over the moment it works, and sent back when i
   const call = { name: 'create_app', args: { folder: 'handme', files: [{ path: 'handme/index.html', content: 'x' }] } };
   const good = await agent.handOver([call]);
   ok(good?.done, `a working page is handed over: ${JSON.stringify(good)?.slice(0, 200)}`);
-  ok(/^handme is done\. Open it here: file:\/\/.*handme\/index\.html/.test(said[0] ?? ''), said[0]);
+  ok(/^handme is done in \d+s\. Open it here: file:\/\/.*handme\/index\.html/.test(said[0] ?? ''), said[0]);
+  ok(/handme[\\/]index\.html$/.test(opened[0] ?? ''), `the page is opened in the browser: ${opened[0]}`);
 
   await write('handme/index.html', page("document.getElementById('missing').onclick = () => {};"));
   const bad = await agent.handOver([call]);

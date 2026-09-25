@@ -1246,7 +1246,8 @@ export class Agent {
     this.abort = new AbortController();
     this.endedSilently = false;
 
-    const turnStarted = Date.now();
+    // Kept on the agent too: the hand-over says how long the build took.
+    const turnStarted = (this.turnStarted = Date.now());
     let finished = false;
     this.ui.turnStart?.();
     try {
@@ -1592,8 +1593,7 @@ export class Agent {
               `${modelName()} produced invalid tool arguments ${argRetries} times running ` +
               'and could not correct itself.',
             fix:
-              'Say what you want more concretely, or /model to another one — North Mini ' +
-              'Code and Nemotron 3.5 Lightning are both steadier with tool arguments.',
+              'Say what you want more concretely, or /model to another one.',
           });
         }
       } else {
@@ -1750,13 +1750,29 @@ export class Agent {
     const server = serversReadySince(since).at(-1);
     if (!server || (this.opened ??= new Set()).has(server.url)) return;
     this.opened.add(server.url);
+    if (this.openInBrowser(server.url)) this.ui.note(`Opened ${server.url} in your browser`);
+  }
+
+  /**
+   * Show a URL or a local page in the desktop browser. False when it did not.
+   *
+   * A file goes to explorer on Windows, not `cmd /c start`: the folder name
+   * comes from the model, and an & in it would be a second command to cmd.
+   */
+  openInBrowser(target) {
+    if (!this.full || process.env.UCODE_OPEN === '0') return false;
+    const web = /^https?:\/\//.test(target);
+    // Only pages inside the project: a UNC path would have explorer reach out to another machine.
+    const rel = web ? '' : path.relative(this.cwd, target);
+    if (!web && (!rel || rel.startsWith('..') || path.isAbsolute(rel))) return false;
     const [cmd, args] = process.platform === 'win32'
-      ? ['cmd', ['/c', 'start', '', server.url]]
-      : [process.platform === 'darwin' ? 'open' : 'xdg-open', [server.url]];
+      ? (web ? ['cmd', ['/c', 'start', '', target]] : ['explorer.exe', [target]])
+      : [process.platform === 'darwin' ? 'open' : 'xdg-open', [target]];
     try {
-      spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true }).unref();
-      this.ui.note(`Opened ${server.url} in your browser`);
-    } catch { /* no browser to open — the link is in the answer */ }
+      // A missing opener (no xdg-open) fails later, as an event; unheard, it would crash ucode.
+      spawn(cmd, args, { stdio: 'ignore', detached: true, windowsHide: true }).on('error', () => {}).unref();
+      return true;
+    } catch { return false; /* no browser to open — the link is in the answer */ }
   }
 
   cmdStats() {
@@ -2597,11 +2613,16 @@ export class Agent {
     const made = calls.find((c) => c.name === 'create_app' && c.args?.name)?.args.name ?? this.appName;
     const name = String(made ?? path.basename(app)).trim();
     this.appName = name;
-    const link = pathToFileURL(path.join(app, 'index.html')).href;
-    const text = `${name} is done. Open it here: ${link}\n\n(or open \`${show}/index.html\` in your browser)`;
+    const page = path.join(app, 'index.html');
+    const link = pathToFileURL(page).href;
+    // "Quiz is done in 42s": how long the whole build took, from the request.
+    const took = this.turnStarted ? ` in ${formatDuration(Date.now() - this.turnStarted)}` : '';
+    const text = `${name} is done${took}. Open it here: ${link}\n\n(or open \`${show}/index.html\` in your browser)`;
     this.push({ role: 'assistant', content: text });
     this.ui.assistant(text, { closing: true });
     await this.persist();
+    // The app pops up on its own; UCODE_OPEN=0 keeps it to the link.
+    this.openInBrowser(page);
     return { done: true };
   }
 
