@@ -50,6 +50,7 @@ import { Failure, ToolFailure, Declined } from './failure.js';
 import { StuckWatch, eventFor, describeHit } from './stuck.js';
 import { serversReadySince } from '../tools/shell.js';
 import { formatDuration } from '../ui/activity.js';
+import { MAX_FILE_OUTPUT } from '../tools/shared.js';
 import { runDoctor } from './doctor.js';
 import { JS_LOGIC } from './jslogic.js';
 import { deploy } from '../tools/deploy.js';
@@ -108,6 +109,25 @@ const SILENT = new Set(['update_plan']);
 
 /** How many rounds of "the type check found errors, fix them" one turn may take. */
 const MAX_FIX_ROUNDS = 3;
+
+/**
+ * Rides on a new app's request, the last thing the model reads. In the system
+ * prompt and the skill alone, Flash-Lite still built "make me a tasks app" as a
+ * tasks app plus pomodoro timer, kanban board and analytics — twice running.
+ */
+const SCOPE_NOTE =
+  '(From ucode: if this asks for a new app, build it complete and well made, but as the one app asked ' +
+  'for - no extra views or tools such as timers, calendars, kanban boards, analytics, stats or an ' +
+  'editor for making your own, unless the request names them.)';
+
+/** A request that may be for a new app. Loose on purpose: the note it adds says "if". */
+const BUILD_ASK = /\b(?:make|build|create|design|code|write|generate|develop)\b|\bi\s+(?:want|need)\b|\b(?:app|game|website|site|page|tracker|calculator|quiz)\b/i;
+
+/** A file up to this many lines is sent whole on its first read, whatever slice was asked for. */
+const WHOLE_READ_LINES = 1500;
+
+/** Lookups in a row, during a fix round with nothing changed, before ucode says to stop reading. */
+const LOOKUP_NUDGE = 5;
 
 /** Files worth checking after they change. */
 /** A file with a page in it — something a browser can be pointed at. */
@@ -621,6 +641,15 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     'already contains it. Do not re-check work the checks have already reported on.',
     'Fast is not sloppy: it is the same work with the waiting taken out.',
     '',
+    'BUILD WHAT WAS ASKED - ALL OF IT, AND NOTHING ELSE. A short request ("a tasks',
+    'app", "a quiz", "a snake game") still gets a complete, well-made app: every',
+    'feature someone using that kind of app expects on first use. A tasks app adds,',
+    'edits, ticks off, deletes, filters and remembers across a reload. It does NOT',
+    'also get a pomodoro timer, a calendar, an analytics dashboard, stats charts or a',
+    'shortcuts panel - those are other apps. Extra views are where builds break, and',
+    'each one costs the user minutes. One screen that does its job perfectly beats',
+    'four that half work. An extra worth having: offer it in one line at the end.',
+    '',
     'DESIGN IT BEFORE YOU TYPE IT. Fast means fewer round trips. It does not mean a',
     'default theme, and an app that goes out in the palette its starter came with is',
     'not a fast build, it is an undesigned one. There is no design pass after the',
@@ -632,7 +661,7 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '  - An ACCENT that is not the one the starter shipped with.',
     '  - ONE memorable thing this app has that other apps do not: a colour, a type',
     '    move, a texture, one interaction. Exactly one. It is the difference between',
-    '    a design and a theme.',
+    '    a design and a theme - a design choice, never an extra feature or view.',
     'Name the tone and the accent in your opening line, so they are settled before any',
     'file exists: "I will build Tide - a tasks app in one HTML file, calm, warm grey',
     'with a single amber accent." That is not narrating a plan, that is the decision.',
@@ -1205,6 +1234,9 @@ export class Agent {
     this.appName = null;
     this.appTemplate = null;
     this.reads = new Map();
+    this.fixing = false;
+    this.lookups = 0;
+    this.nudgedAt = 0;
     this.declines = 0;
     this.apps = [];
     this.wrote = new Map();
@@ -1216,9 +1248,8 @@ export class Agent {
     // model answered: asked for a dark mode toggle on its second turn, a live
     // run re-read two files and repeated its first turn's summary instead.
     this.autoLoad(input);
-    this.push(images.length
-      ? { role: 'user', content: input, images }
-      : { role: 'user', content: input });
+    const request = images.length ? { role: 'user', content: input, images } : { role: 'user', content: input };
+    this.push(request);
 
     if (!this.session.title || this.session.title === 'Untitled') {
       this.session.title = titleFrom(input);
@@ -1231,6 +1262,7 @@ export class Agent {
     // Nothing to look up in an empty folder, so those tools do not go out with
     // the request. Decided per turn: the moment there is code, they are back.
     this.fresh = !hasCode(this.map);
+    if (this.fresh || BUILD_ASK.test(input)) request.content = `${input}\n\n${SCOPE_NOTE}`;
     this.wantsWeb = WANTS_WEB.test(input);
     await this.persist();
 
@@ -1486,6 +1518,7 @@ export class Agent {
           const problems = await this.autoCheck();
           if (problems) {
             fixRounds++;
+            this.fixing = true;
             if (reply.text) this.push({ role: 'assistant', content: reply.text });
             this.push({
               role: 'user',
@@ -1571,6 +1604,7 @@ export class Agent {
       if (handed?.done) return;
       if (handed?.problems && fixRounds < MAX_FIX_ROUNDS) {
         fixRounds++;
+        this.fixing = true;
         this.push({
           role: 'user',
           content:
@@ -1643,8 +1677,16 @@ export class Agent {
       const noted = (call) => {
         if (FILE_WRITES.has(call.name)) {
           for (const p of pathsOf(call)) { this.touched.add(p); this.sinceCheck.add(p); this.forgetReads(p); }
+          this.lookups = 0;
+          this.nudgedAt = 0;
+        } else if (PARALLEL_SAFE.has(call.name)) {
+          this.lookups = (this.lookups ?? 0) + 1;
         }
-        if (call.name === 'run_command' || call.name === 'run_commands') this.ranSomething = true;
+        if (call.name === 'run_command' || call.name === 'run_commands') {
+          this.ranSomething = true;
+          // A command can rewrite any file, so no whole read is still known to be current.
+          for (const key of this.reads?.keys() ?? []) if (key.endsWith('#whole')) this.reads.delete(key);
+        }
       };
 
       if (group.length > 1) {
@@ -1878,7 +1920,34 @@ export class Agent {
       const found = /^(\d+) problem/.exec(out.summary ?? '');
       this.ui.runStat?.(found ? `${found[1]} to fix` : 'clean');
     }
-    this.push({ role: 'tool', toolCallId: call.id, name: call.name, content: out.content + this.stuckNote(call, { out }) });
+    this.push({ role: 'tool', toolCallId: call.id, name: call.name, content: out.content + this.stuckNote(call, { out }) + this.lookupNote(call) });
+  }
+
+  /**
+   * Reading on and on while ucode's list of errors waits. A live fix round
+   * read a 1000-line app.js in seventeen slices, changed nothing, and ran the
+   * free key into its per-minute limit: every read resends the conversation.
+   */
+  lookupNote(call) {
+    if (!this.fixing || !PARALLEL_SAFE.has(call.name)) return '';
+    if (this.lookups < LOOKUP_NUDGE || this.lookups - this.nudgedAt < LOOKUP_NUDGE) return '';
+    this.nudgedAt = this.lookups;
+    return `\n\nSTOP reading - that is ${this.lookups} lookups since ucode listed the errors, and nothing has been ` +
+      'changed yet. What you need is already above. Make the fix now with edit_file or multi_edit; ucode ' +
+      'checks the app again straight after.';
+  }
+
+  /** Lines in a file small enough to send whole in one read, or null. */
+  async wholeSize(file) {
+    try {
+      const text = await readFile(path.resolve(this.cwd, file), 'utf8');
+      if (text.includes('\0')) return null;
+      const lines = text.split('\n').length;
+      // The line-number gutter adds about eight characters a line to what read_file sends.
+      return lines <= WHOLE_READ_LINES && text.length + lines * 8 <= MAX_FILE_OUTPUT ? { lines } : null;
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -2034,6 +2103,27 @@ export class Agent {
     // refused as "unchanged", and a live build spent sixty steps being told so.
     if (call.name === 'read_file' && call.args?.path) {
       const file = String(call.args.path);
+
+      // A file that fits is sent whole the first time, and not again until
+      // something writes to it. Slices were the loop: a live fix round read one
+      // app.js in seventeen of them, never edited, and hit the per-minute limit.
+      // The lead only — a worker has its own conversation, without the lead's reads.
+      if (offered === this.offering) {
+        const whole = `${fileKey(file)}#whole`;
+        if (this.reads.has(whole)) {
+          return {
+            content: `All of ${file} is already above: you read the whole file and nothing has written to it ` +
+              'since. Use that text instead of reading it again. If something in it needs changing, change it ' +
+              'now with edit_file or multi_edit.',
+            summary: 'unchanged, already read in full',
+          };
+        }
+        // Marked before the await, so two reads of one file in a parallel batch send it once.
+        this.reads.set(whole, 1);
+        const size = await this.wholeSize(file);
+        if (size) call.args = { ...call.args, offset: 1, limit: size.lines };
+        else this.reads.delete(whole);
+      }
       const key = `${fileKey(file)}#${Number(call.args.offset) || 1}:${Number(call.args.limit) || 0}`;
       const seen = (this.reads ??= new Map()).get(key) ?? 0;
       if (seen >= 2) {
@@ -2809,6 +2899,8 @@ export class Agent {
       this.ui.stopSpinner();
       if (result.folded) {
         this.working = result.messages;
+        // What was read is summarised away now, so it may be read again.
+        this.reads = new Map();
         this.ui.note(
           `folded ${result.droppedCount} earlier messages into a summary ` +
           '(the full history is still saved in this session)'

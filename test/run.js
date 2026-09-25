@@ -1661,7 +1661,8 @@ await test('re-reads are counted per page, and a write starts the count again', 
   agent.ui = { mode: 'build' };
   agent.offering = new Set(['read_file']);
   agent.reads = new Map();
-  await write('pages.js', Array.from({ length: 50 }, (_, i) => `const v${i} = ${i};`).join('\n'));
+  // Past the size that is sent whole, so it is read a page at a time.
+  await write('pages.js', Array.from({ length: 1600 }, (_, i) => `const v${i} = ${i};`).join('\n'));
   const read = (args) => agent.dispatch({ id: 'r', name: 'read_file', args: { path: 'pages.js', ...args } });
   await read({});
   await read({});
@@ -1669,6 +1670,24 @@ await test('re-reads are counted per page, and a write starts the count again', 
   ok(!(await read({ offset: 20, limit: 10 })).summary?.includes('unchanged'), 'another page is new text');
   agent.forgetReads('./pages.js');
   ok(!(await read({})).summary?.includes('unchanged'), 'after a write it is read again, however it was spelled');
+});
+
+await test('a file that fits is read whole once, and not again until it changes', async () => {
+  const { Agent } = await import('../src/core/loop.js');
+  const agent = new Agent({ cwd: sandbox, ui: { mode: 'build' } });
+  agent.offering = new Set(['read_file']);
+  agent.reads = new Map();
+  await write('whole.js', Array.from({ length: 300 }, (_, i) => `const w${i} = ${i};`).join('\n'));
+  const read = (args) => agent.dispatch({ id: 'w', name: 'read_file', args: { path: 'whole.js', ...args } });
+  const first = await read({ offset: 120, limit: 20 });
+  ok(first.content.includes('const w0 = 0;') && first.content.includes('const w299 = 299;'), 'a slice of a small file comes back whole');
+  ok((await read({ offset: 200, limit: 10 })).summary.includes('already read in full'), 'and it is not sent a second time');
+  agent.forgetReads('whole.js');
+  ok((await read({})).content.includes('const w299'), 'after a write it is read again');
+
+  agent.fixing = true; agent.lookups = 5; agent.nudgedAt = 0;
+  ok(agent.lookupNote({ name: 'read_file' }).includes('STOP reading'), 'five lookups in a fix round get told to edit');
+  eq(agent.lookupNote({ name: 'read_file' }), '', 'once, not on every read after');
 });
 
 await test('a worker is held to its own tools, not the lead\'s', async () => {

@@ -99,7 +99,11 @@ export const tools = [
       'In "next-shadcn" every path in "files" goes under src/: a page is a route only at ' +
       '<app>/src/app/page.tsx or <app>/src/app/<segment>/page.tsx, an API handler only at ' +
       '<app>/src/app/api/<name>/route.ts, and components at <app>/src/components/<feature>/. ' +
-      'A page.tsx written anywhere else is an ordinary file the router never serves.',
+      'A page.tsx written anywhere else is an ordinary file the router never serves. ' +
+      'Scope: build what was asked, complete and well made - every feature someone using that kind of ' +
+      'app expects on first use (a tasks app adds, edits, ticks off, deletes, filters and remembers across ' +
+      'a reload) - and nothing from a different app (no timer, calendar or analytics bolted onto a tasks ' +
+      'app). Features nobody named cost minutes and are where builds break.',
     parameters: {
       type: 'object',
       properties: {

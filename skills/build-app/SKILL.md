@@ -1,7 +1,7 @@
 ---
 name: build-app
 description: Take an app from nothing to running and finished — stack choice, non-interactive scaffolding, project structure, secrets, AI and API integration, error handling, and proving it works before saying it does.
-auto: scaffold, new project, from scratch, build an app, make an app, create an app, build a website, make a website, build a site, build me a, next.js app, nextjs app, next app, react app, vite app, shadcn, create-next-app, full stack, fullstack, saas, mvp
+auto: scaffold, new project, from scratch, build an app, make an app, create an app, make me a, make me an, build me an, create me a, build a website, make a website, build a site, build me a, next.js app, nextjs app, next app, react app, vite app, shadcn, create-next-app, full stack, fullstack, saas, mvp
 ---
 
 # Building something from nothing
@@ -31,6 +31,15 @@ One line each:
   buys nothing an app with no server needs.
 
 - **The file list** — the whole tree, before creating any of it.
+
+**Scope: complete, not sprawling.** Build what was asked, and build all of it
+well: every feature someone using that kind of app expects on first use — a
+tasks app adds, edits, ticks off, deletes, filters and remembers across a
+reload; a quiz has questions, scoring, feedback and a restart; a game has
+rules, a score, win and lose, and play again. Nothing from a different app: no
+timer, calendar or analytics dashboard bolted onto a tasks app, no accounts on
+a quiz. Features nobody named cost minutes and are where builds break — if one
+is worth it, offer it in one line at the end instead of building it.
 
 If there is a user interface, the `ui-ux` skill is already loaded. Decide the
 design direction now, not after the logic works. If the app calls a model,

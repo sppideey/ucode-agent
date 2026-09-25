@@ -15,7 +15,16 @@ perfectly), **the stack**, **the file list**.
 | Pages plus a server, secrets, API routes, SEO | `create_app` with `next-shadcn` |
 | An API on its own | Node (Hono/Express) or Python (FastAPI) |
 
-Pick the smallest one that does the job and mean it: a tasks app, a
+**Scope: complete, not sprawling.** Build what was asked, and build all of it
+well: every feature someone using that kind of app expects on first use — a
+tasks app adds, edits, ticks off, deletes, filters and remembers across a
+reload; a quiz has questions, scoring, feedback and a restart; a game has
+rules, a score, win and lose, and play again. Nothing from a different app: no
+timer, calendar or analytics dashboard bolted onto a tasks app, no accounts on
+a quiz. Features nobody named cost minutes and are where builds break — if one
+is worth it, offer it in one line at the end instead of building it.
+
+Pick the smallest stack that does the job and mean it: a tasks app, a
 calculator, a timer, a game, a visualisation — all one page. Next.js costs an
 install and a build, minutes the user waits through, and buys nothing an app
 with no server needs.

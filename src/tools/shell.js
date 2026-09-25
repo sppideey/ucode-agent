@@ -58,6 +58,13 @@ const LOOKS_LIKE_INSTALL =
 const OPENS_BROWSER = /^\s*(?:cd\s+[^&;|]+&&\s*)?(?:start(?:\s+"")?|open|xdg-open|explorer(?:\.exe)?|cmd(?:\.exe)?\s+\/c\s+start)\s+\S+\.html?\b|^\s*(?:start|open|xdg-open)\s+https?:\/\//i;
 
 /**
+ * Installing a browser to test the app. ucode already drives a real one after
+ * every change; a live quiz build spent two minutes on `npx @puppeteer/browsers
+ * install chrome` before it timed out.
+ */
+const INSTALLS_BROWSER = /@puppeteer\/browsers\s+install|\bplaywright(?:@\S+)?\s+install\b/i;
+
+/**
  * Any kill by program name rather than by process number.
  *
  * `taskkill /F /IM python.exe` in a live build ended six Python processes on
@@ -669,6 +676,14 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
     return result(
       'Not run: ucode opens the app for the user itself once it works. There is no need to open it.',
       'not needed — ucode shows the app',
+    );
+  }
+
+  if (INSTALLS_BROWSER.test(command)) {
+    return result(
+      'Not run: ucode already opens the app in a real browser after every change and reports what it finds. ' +
+        'Fix what that report names; there is no browser to install.',
+      'not needed — ucode has a browser',
     );
   }
 
