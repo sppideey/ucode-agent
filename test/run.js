@@ -218,6 +218,73 @@ await test('output cannot knock the frame out of place', () => {
   screen.streamBuf = '';
 });
 
+await test('the "+ file" button is where it is drawn, and a click or ctrl+o asks for a file', () => {
+  const clickAt = (screen, rowText, row) => {
+    const col = bare(rowText).indexOf('+ file') + 1;          // 1-based column of the "+"
+    ok(col > 0, `the button is drawn: ${bare(rowText)}`);
+    let asked = 0;
+    screen.onAttach = () => asked++;
+    screen.onMouse(0, col, row, 'M');
+    return asked;
+  };
+
+  // The welcome screen, before anything is said.
+  const { screen: welcome, written } = fakeScreen(100, 30);
+  welcome.render();
+  const g = welcome.welcomeGeometry();
+  const statusRow = g.boxTop + g.inputRows + 3;
+  eq(clickAt(welcome, frameRows(written.at(-1))[statusRow - 1], statusRow), 1, 'a click on the welcome box asks');
+
+  // The working screen, with the box at the bottom.
+  const { screen } = fakeScreen(100, 30);
+  screen.add('hello');
+  eq(clickAt(screen, boxRow(screen.statusRow(), screen.width()), screen.rows - 1), 1, 'a click on the bottom box asks');
+  let asked = 0;
+  screen.onAttach = () => asked++;
+  screen.onMouse(0, screen.plusTo + 3, screen.rows - 1, 'M');
+  eq(asked, 0, 'a click beside it does not');
+  screen.onKey('\x0f');
+  eq(asked, 1, 'ctrl+o does the same as the button');
+
+  screen.addAttachment('C:/Users/om/Desktop/sketch.png');
+  ok(bare(screen.statusRow()).includes('+ sketch.png'), 'what was added shows in the box');
+  eq(screen.takeAttachments().length, 1);
+  eq(screen.attachments.length, 0, 'and goes with one message only');
+});
+
+await test('files passed to create_app without the folder still land inside the app', async () => {
+  const { intoFolder } = await import('../src/tools/scaffold.js');
+  const files = intoFolder([
+    { path: 'index.html', content: 'a' },
+    { path: './main.js', content: 'b' },
+    { path: 'water/style.css', content: 'c' },
+    { path: '../outside.txt', content: 'd' },
+    { path: 'sub/../../sneaky.txt', content: 'e' },
+  ], 'water');
+  eq(files.map((f) => f.path).join(','), 'water/index.html,water/main.js,water/style.css,../outside.txt,sub/../../sneaky.txt');
+});
+
+await test('a chosen file becomes a picture or a reference, and the rest are refused', async () => {
+  const { chooseFile, loadAttachments } = await import('../src/core/attach.js');
+  const fake = (stdout, code) => (cmd, args, opts, cb) => cb(code ? Object.assign(new Error('x'), { code }) : null, stdout);
+  eq(await chooseFile({ platform: 'darwin', run: fake('/Users/om/Desktop/sketch.png\n') }), '/Users/om/Desktop/sketch.png');
+  eq(await chooseFile({ platform: 'darwin', run: fake('', 1) }), null, 'a cancel is null');
+  eq(await chooseFile({ platform: 'linux', run: fake('', 'ENOENT') }), undefined, 'no dialog program is undefined');
+
+  await fs.mkdir(path.join(sandbox, 'refs'), { recursive: true });
+  await write('refs/brief.txt', 'A quiz about planets.\n```\nnot the end\n```');
+  await fs.writeFile(path.join(sandbox, 'refs', 'dot.png'), Buffer.from('89504e470d0a1a0a', 'hex'));
+  await fs.writeFile(path.join(sandbox, 'refs', 'blob.bin'), Buffer.from([1, 0, 2, 0]));
+  const got = await loadAttachments(['brief.txt', 'dot.png', 'blob.bin', 'gone.txt'].map((f) => path.join(sandbox, 'refs', f)));
+  eq(got.images.length, 1);
+  ok(got.images[0].startsWith('data:image/png;base64,'), 'a picture goes as a picture');
+  ok(got.text.includes('Reference file brief.txt') && got.text.includes('A quiz about planets.'), 'text goes as reference');
+  ok(got.text.includes('````\nA quiz'), 'fenced longer than the backticks inside it');
+  eq(got.notes.filter((n) => n.startsWith('attached')).length, 2);
+  ok(got.notes.some((n) => /blob\.bin is not a picture or a text file/.test(n)), 'a binary is refused with a reason');
+  ok(got.notes.some((n) => /could not read gone\.txt/.test(n)), 'a missing file is said');
+});
+
 await test('a resumed session replays the whole conversation, verbatim', () => {
   const { screen } = fakeScreen(100, 40);
   const agent = new Agent({ cwd: 'C:/projects/app', ui: screen });

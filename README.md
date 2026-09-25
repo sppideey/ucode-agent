@@ -27,7 +27,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                                                           v1.62.5
+                                                                           v1.62.6
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box
@@ -376,7 +376,7 @@ Everything after the frontmatter is the instruction.
 | `/clear` | clear the screen, keep the conversation |
 | `/exit` | save and quit |
 
-`ctrl+b` plan/build · `esc` stops a running turn · `ctrl+d` quits ·
+`ctrl+b` plan/build · click `+ file` (or `ctrl+o`) to add a picture or file · `esc` stops a running turn · `ctrl+d` quits ·
 `↑ ↓` scroll the conversation, or walk history once you are typing ·
 `tab` completes a command
 

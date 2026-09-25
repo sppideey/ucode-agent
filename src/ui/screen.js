@@ -40,7 +40,7 @@ import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
-  bannerPaint, RAIL, modeChip, asNarrationLine } from './theme.js';
+  bannerPaint, RAIL, modeChip, ADD_CHIP, asNarrationLine } from './theme.js';
 import { FRAME_MS, spinnerGlyph, formatDuration, doneLine, workingLine, bannerSweep, SWEEP_MS } from './activity.js';
 import { gitBranch } from '../core/git.js';
 import { renderer, render } from './markdown.js';
@@ -209,6 +209,12 @@ export class Screen {
     // the chip is clickable wherever the terminal forwards clicks.
     this.mode = 'build';
     this.chipTo = 0;
+    // The "+ file" button: its columns on the status row, and the files it has
+    // added so far, which go with the next message. Ctrl+O does the same.
+    this.plusFrom = 0;
+    this.plusTo = 0;
+    this.attachments = [];
+    this.onAttach = null;
     this.onInterrupt = null;
     this.onModeChange = null;
     this.spinTimer = null;
@@ -802,7 +808,7 @@ export class Screen {
       ['dir', value(shortenPath(this.facts.cwd ?? this.cwd, room - 10))],
       branch && ['branch', value(branch)],
       VERSION && ['version', value(this.facts.update ? `${VERSION} → ${this.facts.update} next start` : VERSION)],
-      ['keys', value('/help · esc interrupts · ctrl+b plan')],
+      ['keys', value('/help · esc interrupts · ctrl+b plan · ctrl+o file')],
     ].filter(Boolean).slice(0, BANNER.length - 1);
 
     while (facts.length < BANNER.length - 1) facts.push(['', '']);
@@ -980,7 +986,7 @@ export class Screen {
   statusRow(width = this.width()) {
     const inner = width - 2;             // the space between the two borders
     const chip = this.modeChip();
-    const left = ` ${chip}  ${chalk.white(this.model || '—')}`;
+    const left = ` ${chip}  ${ADD_CHIP}  ${chalk.white(this.model || '—')}`;
 
     // How long the turn has taken, back in the box beside the other two facts
     // about the session. It is not on the live line: that line says what is
@@ -993,9 +999,13 @@ export class Screen {
 
     // Where a click on the bottom row still counts as hitting the mode chip.
     this.chipTo = 2 + visLen(chip);
+    this.plusFrom = this.chipTo + 3;                     // after the two spaces
+    this.plusTo = this.plusFrom + visLen(ADD_CHIP) - 1;
 
     const between = Math.max(1, inner - visLen(left) - visLen(right));
-    const middle = this.flashText ? dim(clip(this.flashText, between - 2)) : '';
+    const files = this.attachments.map((f) => path.basename(f)).join(', ');
+    const middle = this.flashText ? dim(clip(this.flashText, between - 2))
+      : files ? sky(clip(`+ ${files}`, between - 2)) : '';
 
     const tail = middle ? `${middle}   ` : '';
     const pad = Math.max(1, inner - visLen(left) - visLen(tail) - visLen(right));
@@ -1417,11 +1427,29 @@ export class Screen {
     if (this.welcoming()) {
       const g = this.welcomeGeometry();
       const statusRow = g.boxTop + g.inputRows + 3;          // 1-based
-      if (row === statusRow && col > g.left + 1 && col <= g.left + this.chipTo) this.toggleMode();
+      if (row !== statusRow) return;
+      if (col > g.left + 1 && col <= g.left + this.chipTo) this.toggleMode();
+      else if (col >= g.left + this.plusFrom && col <= g.left + this.plusTo) this.onAttach?.();
       return;
     }
-    // The mode chip, at the left of the bottom row.
-    if (row === this.rows - 1 && col >= 2 && col <= this.chipTo) this.toggleMode();
+    // The mode chip and the "+ file" button, at the left of the bottom row.
+    if (row !== this.rows - 1) return;
+    if (col >= 2 && col <= this.chipTo) this.toggleMode();
+    else if (col >= this.plusFrom && col <= this.plusTo) this.onAttach?.();
+  }
+
+  /** A file chosen with "+ file", to go with the next message. */
+  addAttachment(file) {
+    if (!this.attachments.includes(file)) this.attachments.push(file);
+    this.render();
+  }
+
+  /** The files for the message being sent; the button starts empty again. */
+  takeAttachments() {
+    const files = this.attachments;
+    this.attachments = [];
+    this.render();
+    return files;
   }
 
   onKey(key) {
@@ -1453,7 +1481,10 @@ export class Screen {
           this.history.unshift(text);
           // Answers to a y/N or a numbered pick are not messages, so they are
           // not echoed: the prompt reports its own outcome.
-          if (!this.pendingPrompt) this.userMessage(text);
+          if (!this.pendingPrompt) {
+            this.userMessage(text);
+            for (const f of this.attachments) this.push(dim(`  + ${path.basename(f)}`));
+          }
         }
         this.render();
         this.submit(text);
@@ -1481,7 +1512,12 @@ export class Screen {
         this.toggleMode();
         return;
 
-      case '\x15':  // ctrl+u — clear the line
+      case '\x0f':  // ctrl+o — the "+ file" button, for terminals that send no clicks
+        this.onAttach?.();
+        return;
+
+      case '\x15':  // ctrl+u — clear the line; on an empty line, the attached files
+        if (!this.buffer) this.attachments = [];
         this.buffer = this.buffer.slice(this.cursor);
         this.cursor = 0;
         break;

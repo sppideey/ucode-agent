@@ -67,6 +67,24 @@ export function normaliseFiles(files) {
   });
 }
 
+/**
+ * Every file passed to create_app belongs in the app's folder.
+ *
+ * Traced: a build from a sketch passed "index.html", "style.css" and
+ * "main.js" with no folder. They landed beside the app, the folder kept the
+ * blank starter, and nothing was checked or handed over. A path already under
+ * the folder, absolute, or reaching out with .. is left as it was.
+ */
+export function intoFolder(files, folder) {
+  const prefix = `${folder}/`;
+  return files.map((f) => {
+    if (!f || typeof f.path !== 'string') return f;
+    const p = path.posix.normalize(f.path.replace(/\\/g, '/'));
+    if (path.isAbsolute(p) || p.startsWith('..') || p.startsWith(prefix)) return f;
+    return { ...f, path: prefix + p };
+  });
+}
+
 /** What each starter is for, so the choice is made on purpose. */
 export const TEMPLATE_NOTES = {
   'next-shadcn': 'Next.js, TypeScript, Tailwind and shadcn/ui. For anything with routes, data or many components.',
@@ -431,7 +449,8 @@ export async function createApp({ folder, name, description, template = 'plain-h
   // The app's own files, written in this same call. Two round trips become
   // one, and round trips are nearly all of the time a build takes.
   // Next.js only: paths that have missed src/ are corrected before they land.
-  const placed = template === 'next-shadcn' ? placeForNext(given, path.basename(target.abs)) : { files: given, moved: [] };
+  const inFolder = intoFolder(given, target.show);
+  const placed = template === 'next-shadcn' ? placeForNext(inFolder, path.basename(target.abs)) : { files: inFolder, moved: [] };
   const mine = placed.files;
   const wrote = mine.length ? await batchWrite({ files: mine }) : null;
   const written = new Set(mine.map((f) => resolveIn(f.path, 'create_app', 'files').abs));

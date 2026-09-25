@@ -53,6 +53,7 @@ import { formatDuration } from '../ui/activity.js';
 import { MAX_FILE_OUTPUT } from '../tools/shared.js';
 import { openInBrowser } from './opener.js';
 import { withScope } from './scope.js';
+import { chooseFile, projectFiles, loadAttachments } from './attach.js';
 import { runDoctor } from './doctor.js';
 import { JS_LOGIC } from './jslogic.js';
 import { deploy } from '../tools/deploy.js';
@@ -1021,6 +1022,7 @@ export class Agent {
         }
       };
       this.ui.onModeChange = () => this.showHeader({ clear: false });
+      this.ui.onAttach = () => { this.attachFile().catch(() => {}); };
     }
 
     for (const problem of this.skills.problems ?? []) {
@@ -1232,12 +1234,18 @@ export class Agent {
     forgetReviews(); // a new request: its apps get a fresh design review
     setRequest(input); // create_app checks this before choosing a starter
     const images = await this.attachImages(input);
+    // Files added with the "+ file" button: pictures go as pictures, text as reference.
+    const added = await loadAttachments(this.ui.takeAttachments?.() ?? []);
+    for (const line of added.notes) this.ui.note(line);
+    images.push(...added.images);
     // The skill goes in ahead of the request, so the request is the last
     // thing the model reads. After it, a page of house rules was what the
     // model answered: asked for a dark mode toggle on its second turn, a live
     // run re-read two files and repeated its first turn's summary instead.
     this.autoLoad(input);
-    const request = images.length ? { role: 'user', content: input, images } : { role: 'user', content: input };
+    const request = images.length
+      ? { role: 'user', content: input + added.text, images }
+      : { role: 'user', content: input + added.text };
     this.push(request);
 
     if (!this.session.title || this.session.title === 'Untitled') {
@@ -1251,7 +1259,7 @@ export class Agent {
     // Nothing to look up in an empty folder, so those tools do not go out with
     // the request. Decided per turn: the moment there is code, they are back.
     this.fresh = !hasCode(this.map);
-    request.content = withScope(input, { fresh: this.fresh });
+    request.content = withScope(input, { fresh: this.fresh }) + added.text;
     this.wantsWeb = WANTS_WEB.test(input);
     await this.persist();
 
@@ -1782,6 +1790,27 @@ export class Agent {
     if (!server || (this.opened ??= new Set()).has(server.url)) return;
     this.opened.add(server.url);
     if (this.openInBrowser(server.url)) this.ui.note(`Opened ${server.url} in your browser`);
+  }
+
+  /**
+   * The "+ file" button: choose a file with the computer's own dialog — or,
+   * where there is none, from the project's files — to go with the next message.
+   */
+  async attachFile() {
+    if (this.attaching) return; // a second click while the dialog is open
+    this.attaching = true;
+    try {
+      let file = await chooseFile();
+      if (file === undefined) {
+        const files = await projectFiles(this.cwd);
+        if (!files.length) { this.ui.note('no files in this folder to add'); return; }
+        const index = await this.ui.pick(files, { hint: 'enter to add · esc to cancel' });
+        file = Number.isInteger(index) ? path.join(this.cwd, files[index]) : null;
+      }
+      if (file) this.ui.addAttachment(path.resolve(this.cwd, file));
+    } finally {
+      this.attaching = false;
+    }
   }
 
   /** Show a URL or a page in the project in the desktop browser (see opener.js). UCODE_OPEN=0 turns it off. */
@@ -3005,7 +3034,7 @@ ${out.content}` });
     }
     this.ui.blank();
     this.ui.write(dim('  /models, /session and /sessions do the same as /model and /resume.'));
-    this.ui.write(dim('  ctrl+b swaps plan and build · esc stops a running turn · ctrl+d quits'));
+    this.ui.write(dim('  ctrl+b swaps plan and build · + file (or ctrl+o) adds a picture or file · esc stops a running turn · ctrl+d quits'));
     this.ui.blank();
   }
 

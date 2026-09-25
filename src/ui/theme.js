@@ -127,6 +127,9 @@ export const PLAN_CHIP = chalk.bgHex('#24344f').hex('#8fbcff').bold;
 export const modeChip = (mode) =>
   mode === 'plan' ? PLAN_CHIP(' PLAN ') : BUILD_CHIP(' BUILD ');
 
+/** The "+ file" button beside the mode chip, in the quieter of the two chip styles. */
+export const ADD_CHIP = PLAN_CHIP(' + file ');
+
 /** The spinner. Braille dots, because they animate in place without jitter. */
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
