@@ -456,7 +456,12 @@ The tests need no network and no framework — `node test/run.js` runs them all.
 
 ## Licence
 
-MIT — see [LICENSE](LICENSE). Made with ❤️ by om dixit.
+Dual-licensed under either of, at your option:
+
+- MIT — see [LICENSE](LICENSE)
+- Apache License 2.0 — see [LICENSE-APACHE](LICENSE-APACHE)
+
+Made with ❤️ by om dixit.
 
 The edit matchers, the summary template, the context-overflow and transient-error
 patterns and tool-name repair are adapted from
