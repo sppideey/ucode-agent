@@ -252,6 +252,55 @@ await test('the "+ file" button is where it is drawn, and a click or ctrl+o asks
   eq(screen.attachments.length, 0, 'and goes with one message only');
 });
 
+await test('the mic button listens, and enter or ctrl+t decide what happens to the words', async () => {
+  const { isSilent, cleanTranscript, recordersFor, startRecording } = await import('../src/core/voice.js');
+  const wav = (peak, samples = 16000) => {
+    const b = Buffer.alloc(44 + samples * 2);
+    b.write('RIFF', 0); b.write('data', 36);
+    for (let i = 0; i < samples; i++) b.writeInt16LE(i % 50 === 0 ? peak : 0, 44 + i * 2);
+    return b;
+  };
+  ok(isSilent(wav(300), 800), 'room noise is silence');
+  ok(!isSilent(wav(-5000), 800), 'speech is not');
+  ok(isSilent(wav(5000, 1000), 800), 'a blip under a third of a second is nothing');
+  eq(cleanTranscript('"Make me a\n to-do app."\n'), 'Make me a to-do app.');
+  eq(cleanTranscript(null), '');
+
+  eq(recordersFor('win32', 'x.wav')[0].cmd, 'powershell.exe');
+  eq(recordersFor('darwin', 'x.wav').map((r) => r.cmd).join(','), 'rec,ffmpeg');
+  eq(recordersFor('linux', 'x.wav')[0].cmd, 'arecord');
+  const { EventEmitter } = await import('node:events');
+  const missing = () => {
+    const child = new EventEmitter();
+    queueMicrotask(() => child.emit('error', Object.assign(new Error('nope'), { code: 'ENOENT' })));
+    return child;
+  };
+  const why = await startRecording({ platform: 'darwin', run: missing }).then(() => '', (err) => err.message);
+  ok(/brew install sox/.test(why), 'no recorder says how to get one');
+
+  const { screen } = fakeScreen(100, 30);
+  screen.add('hello');
+  const calls = [];
+  screen.onMic = (action) => calls.push(action);
+  screen.onKey('\x14');
+  screen.onMouse(0, screen.micFrom, screen.rows - 1, 'M');
+  eq(calls.join(','), 'toggle,toggle', 'ctrl+t and a click both press the mic');
+  screen.setListening('listening');
+  ok(bare(screen.statusRow()).includes('listening'), 'the chip says it is listening');
+  screen.onKey('\r');
+  screen.onKey('\x1b');
+  eq(calls.slice(2).join(','), 'send,cancel', 'enter sends, esc cancels');
+  screen.setListening(null);
+  screen.buffer = 'build';
+  screen.cursor = 5;
+  screen.insertText('a quiz app');
+  eq(screen.buffer, 'build a quiz app', 'the words join what was typed');
+  let sent = null;
+  screen.submit = (text) => { sent = text; };
+  screen.insertText('now', { send: true });
+  eq(sent, 'build a quiz app now', 'send presses enter for them');
+});
+
 await test('files passed to create_app without the folder still land inside the app', async () => {
   const { intoFolder } = await import('../src/tools/scaffold.js');
   const files = intoFolder([

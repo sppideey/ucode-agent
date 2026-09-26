@@ -276,6 +276,37 @@ export function resetConnection() {
   client = null;
 }
 
+const TRANSCRIBE_PROMPT =
+  'Transcribe the speech in this recording word for word, in the language spoken. ' +
+  'Reply with only the words spoken - no quotes, no notes. If nothing is said, reply with nothing.';
+
+/**
+ * Write down what was said in a WAV recording (the mic button). Uses the
+ * session's model, and the backup model when that one is overloaded.
+ */
+export async function transcribe(wav, { timeout = 45_000 } = {}) {
+  const request = (id) => connection().chat.completions.create({
+    model: id,
+    messages: [{
+      role: 'user',
+      content: [
+        { type: 'text', text: TRANSCRIBE_PROMPT },
+        { type: 'input_audio', input_audio: { data: wav.toString('base64'), format: 'wav' } },
+      ],
+    }],
+  }, { timeout });
+
+  let res;
+  try {
+    res = await request(current);
+  } catch (err) {
+    const backup = backupFor(current);
+    if (!backup) throw explain(err, current);
+    res = await request(backup).catch((again) => { throw explain(again, backup); });
+  }
+  return res.choices?.[0]?.message?.content ?? '';
+}
+
 // ---------------------------------------------------------------------------
 // Live quota, taken from whatever rate-limit headers come back
 // ---------------------------------------------------------------------------

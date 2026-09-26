@@ -368,6 +368,7 @@ Everything after the frontmatter is the instruction.
 | `/undo` | put back every file the last turn changed |
 | `/look [url]` | open the running app and report what is on the page |
 | `/deploy [folder]` | put the app online and get its link |
+| `/mic` | say what you want instead of typing it — same as `ctrl+t` |
 | `/stats` | time, steps and tokens this session |
 | `/doctor` | check that everything ucode needs is working |
 | `/skills` | what it knows how to do, and what is loaded |
@@ -379,6 +380,18 @@ Everything after the frontmatter is the instruction.
 `ctrl+b` plan/build · click `+ file` (or `ctrl+o`) to add a picture or file · `esc` stops a running turn · `ctrl+d` quits ·
 `↑ ↓` scroll the conversation, or walk history once you are typing ·
 `tab` completes a command
+
+### Speak instead of typing
+
+Press `ctrl+t` (or click `mic`, or type `/mic`) and say what you want —
+"make me a quiz app about planets". The chip turns red while it listens.
+`enter` stops and sends it; `ctrl+t` stops and puts the words in the box to
+check first; `esc` throws it away. It stops by itself after two minutes.
+
+Gemini writes down what you said, so nothing extra is needed beyond your key.
+Recording uses what the computer already has: Windows' built-in recorder, `sox`
+or `ffmpeg` on macOS (`brew install sox`), `arecord` or `sox` on Linux. If a
+quiet mic is taken for silence, set `UCODE_MIC_QUIET` lower than 800.
 
 ## Options
 

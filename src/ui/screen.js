@@ -40,7 +40,7 @@ import {
   theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
-  bannerPaint, RAIL, modeChip, ADD_CHIP, asNarrationLine } from './theme.js';
+  bannerPaint, RAIL, modeChip, ADD_CHIP, micChip, asNarrationLine } from './theme.js';
 import { FRAME_MS, spinnerGlyph, formatDuration, doneLine, workingLine, bannerSweep, SWEEP_MS } from './activity.js';
 import { gitBranch } from '../core/git.js';
 import { renderer, render } from './markdown.js';
@@ -60,7 +60,7 @@ export function isLabel(text) {
 export const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
   '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
-  '/stats', '/doctor', '/deploy', '/look', '/undo',
+  '/stats', '/doctor', '/deploy', '/look', '/undo', '/mic',
 ];
 
 // ANSI ----------------------------------------------------------------------
@@ -215,6 +215,12 @@ export class Screen {
     this.plusTo = 0;
     this.attachments = [];
     this.onAttach = null;
+    // The mic button: null when idle, else 'starting' | 'listening' | 'writing'.
+    // Ctrl+T starts and stops it; while it listens, enter stops and sends.
+    this.micFrom = 0;
+    this.micTo = 0;
+    this.listening = null;
+    this.onMic = null;
     this.onInterrupt = null;
     this.onModeChange = null;
     this.spinTimer = null;
@@ -808,7 +814,7 @@ export class Screen {
       ['dir', value(shortenPath(this.facts.cwd ?? this.cwd, room - 10))],
       branch && ['branch', value(branch)],
       VERSION && ['version', value(this.facts.update ? `${VERSION} → ${this.facts.update} next start` : VERSION)],
-      ['keys', value('/help · esc interrupts · ctrl+b plan · ctrl+o file')],
+      ['keys', value('/help · ctrl+t mic · ctrl+o file · ctrl+b plan · esc stops')],
     ].filter(Boolean).slice(0, BANNER.length - 1);
 
     while (facts.length < BANNER.length - 1) facts.push(['', '']);
@@ -986,7 +992,8 @@ export class Screen {
   statusRow(width = this.width()) {
     const inner = width - 2;             // the space between the two borders
     const chip = this.modeChip();
-    const left = ` ${chip}  ${ADD_CHIP}  ${chalk.white(this.model || '—')}`;
+    const mic = micChip(this.listening);
+    const buttons = ` ${chip}  ${ADD_CHIP}  ${mic}`;
 
     // How long the turn has taken, back in the box beside the other two facts
     // about the session. It is not on the live line: that line says what is
@@ -996,16 +1003,24 @@ export class Screen {
     const since = this.activity?.start ?? this.status.since ?? 0;
     const running = this.busy() && since && now - since >= 1000;
     const right = `${running ? `${dim(formatDuration(now - since))}   ` : ''}${this.percentChip()} `;
+    // On a narrow terminal the model name goes before any button does.
+    const withModel = `${buttons}  ${chalk.white(this.model || '—')}`;
+    const left = visLen(withModel) + visLen(right) < inner ? withModel : buttons;
 
     // Where a click on the bottom row still counts as hitting the mode chip.
     this.chipTo = 2 + visLen(chip);
     this.plusFrom = this.chipTo + 3;                     // after the two spaces
     this.plusTo = this.plusFrom + visLen(ADD_CHIP) - 1;
+    this.micFrom = this.plusTo + 3;
+    this.micTo = this.micFrom + visLen(mic) - 1;
 
     const between = Math.max(1, inner - visLen(left) - visLen(right));
     const files = this.attachments.map((f) => path.basename(f)).join(', ');
-    const middle = this.flashText ? dim(clip(this.flashText, between - 2))
-      : files ? sky(clip(`+ ${files}`, between - 2)) : '';
+    // Room for the three spaces after it and at least one before.
+    const room = between - 4;
+    const middle = this.listening === 'listening' ? sky(clip('speak now · enter sends · ctrl+t stops · esc cancels', room))
+      : this.flashText ? dim(clip(this.flashText, room))
+        : files ? sky(clip(`+ ${files}`, room)) : '';
 
     const tail = middle ? `${middle}   ` : '';
     const pad = Math.max(1, inner - visLen(left) - visLen(tail) - visLen(right));
@@ -1430,12 +1445,30 @@ export class Screen {
       if (row !== statusRow) return;
       if (col > g.left + 1 && col <= g.left + this.chipTo) this.toggleMode();
       else if (col >= g.left + this.plusFrom && col <= g.left + this.plusTo) this.onAttach?.();
+      else if (col >= g.left + this.micFrom && col <= g.left + this.micTo) this.onMic?.('toggle');
       return;
     }
-    // The mode chip and the "+ file" button, at the left of the bottom row.
+    // The mode chip, "+ file" and mic buttons, at the left of the bottom row.
     if (row !== this.rows - 1) return;
     if (col >= 2 && col <= this.chipTo) this.toggleMode();
     else if (col >= this.plusFrom && col <= this.plusTo) this.onAttach?.();
+    else if (col >= this.micFrom && col <= this.micTo) this.onMic?.('toggle');
+  }
+
+  /** The mic's state, for the chip: null, 'starting', 'listening' or 'writing'. */
+  setListening(state) {
+    this.listening = state;
+    this.render();
+  }
+
+  /** Words from the mic, into the box at the cursor; `send` presses enter for them. */
+  insertText(text, { send = false } = {}) {
+    const before = this.buffer.slice(0, this.cursor);
+    const joined = before && !before.endsWith(' ') ? `${before} ${text}` : before + text;
+    this.buffer = joined + this.buffer.slice(this.cursor);
+    this.cursor = joined.length;
+    if (send) this.onKey('\r');
+    else this.render();
   }
 
   /** A file chosen with "+ file", to go with the next message. */
@@ -1468,6 +1501,12 @@ export class Screen {
       if (key === '\r' || key === '\n') { this.closePicker(this.picker.index); return; }
       if (key === ESC || key === '\x03') { this.closePicker(null); return; }
       return;
+    }
+
+    // While the mic listens, enter means "done, send it" and esc means "never mind".
+    if (this.listening === 'listening') {
+      if (key === '\r' || key === '\n') { this.onMic?.('send'); return; }
+      if (key === ESC || key === '\x03') { this.onMic?.('cancel'); return; }
     }
 
     switch (key) {
@@ -1514,6 +1553,10 @@ export class Screen {
 
       case '\x0f':  // ctrl+o — the "+ file" button, for terminals that send no clicks
         this.onAttach?.();
+        return;
+
+      case '\x14':  // ctrl+t — the mic button: start listening, or stop and put the words in the box
+        this.onMic?.('toggle');
         return;
 
       case '\x15':  // ctrl+u — clear the line; on an empty line, the attached files

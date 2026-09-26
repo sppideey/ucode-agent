@@ -130,6 +130,13 @@ export const modeChip = (mode) =>
 /** The "+ file" button beside the mode chip, in the quieter of the two chip styles. */
 export const ADD_CHIP = PLAN_CHIP(' + file ');
 
+/** The mic button beside it: quiet when idle, red while it is listening. */
+const LISTEN_CHIP = chalk.bgHex('#e5484d').hex('#ffffff').bold;
+export const micChip = (state) =>
+  state === 'listening' ? LISTEN_CHIP(' ● listening ')
+    : state ? PLAN_CHIP(` ${state === 'starting' ? 'starting' : 'writing'}… `)
+      : PLAN_CHIP(' mic ');
+
 /** The spinner. Braille dots, because they animate in place without jitter. */
 export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 

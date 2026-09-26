@@ -28,7 +28,7 @@ import { spawn } from 'node:child_process';
 
 import {
   ask, model, setModel, modelName, modelList, contextLimit, rateLimits,
-  estimateConversation, MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor, backupFor,
+  estimateConversation, MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor, backupFor, transcribe,
 } from './provider.js';
 import {
   tools, runTool, describe, setRoot, setConfirm, setRequest,
@@ -54,6 +54,7 @@ import { MAX_FILE_OUTPUT } from '../tools/shared.js';
 import { openInBrowser } from './opener.js';
 import { withScope, isNoise } from './scope.js';
 import { chooseFile, projectFiles, loadAttachments } from './attach.js';
+import { startRecording, isSilent, cleanTranscript, MAX_RECORD_MS } from './voice.js';
 import { runDoctor } from './doctor.js';
 import { JS_LOGIC } from './jslogic.js';
 import { deploy } from '../tools/deploy.js';
@@ -1028,6 +1029,7 @@ export class Agent {
       };
       this.ui.onModeChange = () => this.showHeader({ clear: false });
       this.ui.onAttach = () => { this.attachFile().catch(() => {}); };
+      this.ui.onMic = (action) => { this.mic(action).catch((err) => this.ui.error(err, { debug: this.debug })); };
     }
 
     for (const problem of this.skills.problems ?? []) {
@@ -1825,6 +1827,59 @@ export class Agent {
     } finally {
       this.attaching = false;
     }
+  }
+
+  /**
+   * The mic button (ctrl+t, a click, or /mic). 'toggle' starts listening, or
+   * stops and puts the words in the box; 'send' stops and sends them; 'cancel'
+   * throws the recording away.
+   */
+  async mic(action = 'toggle') {
+    const state = this.ui.listening;
+    if (state === 'starting' || state === 'writing') return;
+
+    if (state !== 'listening') {
+      if (action !== 'toggle') return;
+      this.ui.setListening('starting');
+      try {
+        this.recording = await startRecording();
+      } catch (err) {
+        this.ui.setListening(null);
+        this.ui.note(`mic: ${err.message}`);
+        return;
+      }
+      this.ui.setListening('listening');
+      this.micTimer = setTimeout(() => this.ui.onMic?.('toggle'), MAX_RECORD_MS);
+      return;
+    }
+
+    clearTimeout(this.micTimer);
+    // Taken and the state moved on before any await, so a second press
+    // while this one finishes finds nothing to stop.
+    const recording = this.recording;
+    this.recording = null;
+    if (!recording) return;
+    if (action === 'cancel') {
+      this.ui.setListening(null);
+      this.ui.flash('stopped listening');
+      await recording.cancel();
+      return;
+    }
+
+    this.ui.setListening('writing');
+    let text = '';
+    try {
+      const wav = await recording.stop();
+      if (!wav || isSilent(wav)) {
+        this.ui.note('mic: heard nothing — check the microphone is on, then speak a little louder');
+        return;
+      }
+      text = cleanTranscript(await transcribe(wav));
+      if (!text) this.ui.note('mic: could not make out any words — try again, closer to the microphone');
+    } finally {
+      this.ui.setListening(null);
+    }
+    if (text) this.ui.insertText(text, { send: action === 'send' });
   }
 
   /** Show a URL or a page in the project in the desktop browser (see opener.js). UCODE_OPEN=0 turns it off. */
@@ -2961,6 +3016,9 @@ export class Agent {
       case '/doctor':   return this.cmdDoctor();
       case '/look':     return this.cmdLook(arg);
       case '/deploy':   return this.cmdDeploy(arg);
+      case '/mic':
+        if (this.ui.onMic) return this.mic('toggle');
+        return this.ui.note('the mic works in the full-screen view — start ucode in a terminal window');
       case '/exit':
       case '/quit':     return 'exit';
 
@@ -3031,6 +3089,7 @@ ${out.content}` });
       ['/doctor', 'check that everything ucode needs is working'],
       ['/look [url]', 'open the running app and report what is on the page'],
       ['/deploy [folder]', 'put the app online and get its link'],
+      ['/mic', 'say what you want instead of typing it (or ctrl+t)'],
       ['/model', 'show the models and switch between them'],
       ['/resume', 'pick up an earlier conversation'],
       ['/new', 'save this one and start fresh'],
@@ -3049,6 +3108,7 @@ ${out.content}` });
     this.ui.blank();
     this.ui.write(dim('  /models, /session and /sessions do the same as /model and /resume.'));
     this.ui.write(dim('  ctrl+b swaps plan and build · + file (or ctrl+o) adds a picture or file · esc stops a running turn · ctrl+d quits'));
+    this.ui.write(dim('  ctrl+t (or the mic button) listens: speak, then enter to send, ctrl+t to check it first, esc to cancel'));
     this.ui.blank();
   }
 
