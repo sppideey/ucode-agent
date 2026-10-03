@@ -154,7 +154,8 @@ async function review(shots) {
     // tokens came back as an empty review. Keep the thinking short, and leave
     // room for the answer.
     maxOutputTokens: 4000,
-    reasoning: { effort: 'low' },
+    // Gemini's own field; the OpenRouter-style `reasoning` object was ignored.
+    effort: 'low',
     // The free vision model is often busy. One try, and a hard cap: a review
     // that cannot run is skipped, never waited on.
     attempts: 1,

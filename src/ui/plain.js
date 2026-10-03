@@ -24,6 +24,9 @@ const COMMANDS = [
   '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
 ];
 
+/** The tag on an approval prompt. */
+export const badge = (risk) => ({ command: ' shell ', mcp: ' tool ', trust: ' project ' })[risk] ?? ' outside project ';
+
 export class Plain {
   constructor({ cwd, input = process.stdin, output = process.stdout } = {}) {
     this.cwd = cwd;
@@ -293,18 +296,18 @@ export class Plain {
     return this.promptWith(`${blue('› ')}`);
   }
 
-  async confirm({ action, detail, risk }) {
+  async confirm({ action, detail, risk, always }) {
     this.stopSpinner();
-    const badge = risk === 'command' ? ' shell ' : ' outside project ';
-    this.output.write(`\n${chalk.inverse(theme.warn(badge))} ${chalk.white(action)}\n`);
+    this.output.write(`\n${chalk.inverse(theme.warn(badge(risk)))} ${chalk.white(action)}\n`);
     for (const line of String(detail ?? '').split('\n')) {
       if (line) this.output.write(dim(`  ${line}\n`));
     }
 
-    const answer = await this.promptWith(`${blue('  go ahead? ')}${dim('[y/N] ')}`);
+    const answer = await this.promptWith(`${blue('  go ahead? ')}${dim(always ? `[y/N, a = always allow ${always}] ` : '[y/N] ')}`);
     // End of input is a no: never run something nobody approved.
-    const yes = /^(y|yes)$/i.test(String(answer ?? '').trim());
-    this.output.write(dim(yes ? '  approved\n\n' : '  declined\n\n'));
+    const said = String(answer ?? '').trim();
+    const yes = always && /^(a|always)$/i.test(said) ? 'always' : /^(y|yes)$/i.test(said);
+    this.output.write(dim(yes === 'always' ? `  approved — ${always} is always allowed here now\n\n` : yes ? '  approved\n\n' : '  declined\n\n'));
     return yes;
   }
 

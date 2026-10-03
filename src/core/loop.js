@@ -29,10 +29,11 @@ import { spawn } from 'node:child_process';
 import {
   ask, model, setModel, modelName, modelList, contextLimit, rateLimits,
   estimateConversation, MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor, backupFor, transcribe,
+  requestCount, customProvider,
 } from './provider.js';
 import {
   tools, runTool, describe, setRoot, setConfirm, setRequest,
-  PARALLEL_SAFE, WRITES, FILE_WRITES,
+  PARALLEL_SAFE, WRITES, FILE_WRITES, MUTATING,
 } from '../tools/index.js';
 import { projectMap, loadMemory, hasCode, remember, MEMORY_FILE } from './context.js';
 import { autoUpdate } from './updater.js';
@@ -52,13 +53,20 @@ import { serversReadySince } from '../tools/shell.js';
 import { formatDuration } from '../ui/activity.js';
 import { MAX_FILE_OUTPUT } from '../tools/shared.js';
 import { openInBrowser } from './opener.js';
-import { withScope, isNoise } from './scope.js';
+import { withScope, isNoise, asksToBuild, asksToChange } from './scope.js';
 import { chooseFile, projectFiles, loadAttachments } from './attach.js';
 import { startRecording, isSilent, cleanTranscript, MAX_RECORD_MS } from './voice.js';
 import { runDoctor } from './doctor.js';
 import { JS_LOGIC } from './jslogic.js';
 import { deploy } from '../tools/deploy.js';
 import { normaliseFiles } from '../tools/scaffold.js';
+import { setPolicy, allowedNow, confirm } from '../tools/shared.js';
+import { genericLook, genericMessage } from './genericcheck.js';
+import { noteMistakes, lessonsText } from './lessons.js';
+import { Snapshots } from './snapshot.js';
+import { loadSettings, addAllow, isTrusted, trust, runHook } from './settings.js';
+import { McpHub, readServers, USER_MCP, projectMcpFile } from './mcp.js';
+import { loadCommands, expandCommand } from './commands.js';
 
 /**
  * Tool calls allowed in one turn.
@@ -124,7 +132,10 @@ const LOOKUP_NUDGE = 5;
 /** A file with a page in it — something a browser can be pointed at. */
 const PAGE = /\.(?:html?|tsx|jsx)$/i;
 
-const CHECKABLE = /\.(?:[cm]?[jt]sx?|py|html?)$/i;
+const CHECKABLE = /\.(?:[cm]?[jt]sx?|py|html?|go|rs)$/i;
+
+/** The model that is asked, with the user's say-so, when Flash-Lite cannot fix something. */
+const STRONGER = 'gemini-3.5-flash';
 
 /** Where TypeScript keeps what it learned, so the next check is a quick one. */
 export const TSBUILDINFO = 'node_modules/.cache/ucode/types.tsbuildinfo';
@@ -338,7 +349,7 @@ function trace(event) {
 function newStats() {
   return {
     started: Date.now(), workMs: 0, turns: 0, steps: 0, tokensIn: 0, tokensOut: 0,
-    tools: {}, failed: 0, written: 0, edited: 0, commands: 0, builds: 0, stuck: 0,
+    tools: {}, failed: 0, written: 0, edited: 0, commands: 0, builds: 0, stuck: 0, requests: 0,
   };
 }
 
@@ -368,6 +379,7 @@ export function statsLines(st, messages) {
   const rows = [
     ['Session', `${formatDuration(Date.now() - st.started)} open · ${formatDuration(st.workMs)} working · ${plural(st.turns, 'request')}`],
     ['Model', `${n(st.steps)} steps · ${formatTokens(st.tokensIn)} in · ${formatTokens(st.tokensOut)} out`],
+    ...(st.requests ? [['Requests', `${n(st.requests)} sent — what the free daily limit counts`]] : []),
     ['Tools', top],
     ['Files', `${st.written} written · ${st.edited} edited`],
     ['Commands', `${st.commands} run · ${plural(st.builds, 'build')}${st.failed ? ` · ${plural(st.failed, 'tool call')} failed` : ''}`],
@@ -576,7 +588,7 @@ const loadSkillTool = {
   },
 };
 
-function systemPrompt({ cwd, skills, mode, check, map, memory }) {
+function systemPrompt({ cwd, skills, mode, check, map, memory, lessons }) {
   const list = catalogue(skills);
 
   return [
@@ -592,6 +604,14 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
       '',
       memory,
     ] : []),
+    ...(lessons ? [
+      '',
+      '## Mistakes ucode has caught in earlier builds',
+      '',
+      'These keep coming up. Avoid them from the start - each one caught later costs a fix round.',
+      '',
+      lessons,
+    ] : []),
     '',
     '## How to work',
     '',
@@ -599,6 +619,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     'A greeting, a question, a single word, or anything unclear gets a short plain',
     'answer - or one question back about what they would like - never an app. "What',
     'can you do?" is answered in words; "make a quiz app" is built.',
+    'A question about this project or its code is answered from the files, never from a guess:',
+    'read the README and the files involved first (one read_files), then answer.',
     '',
     'AN APP THAT IS AWKWARD TO USE IS NOT FINISHED. Before you call it done, look at',
     'what you built as someone using it for the first time: is the button inside its',
@@ -866,6 +888,8 @@ function systemPrompt({ cwd, skills, mode, check, map, memory }) {
     '- Point at code as path:line so the user can jump straight to it.',
     '- Report honestly. If a command failed or you skipped something, say so.',
     '- Length tracks the question: a one-line question gets a one-line answer.',
+    '- Never call your work sleek, seamless, modern, intuitive, robust or stunning. Those',
+    '  words are said about every app; say what this one does instead.',
     '- Brevity is about your prose and never about your work. What you build is',
     '  finished: every control wired, every state handled, no TODO left behind.',
     ...(list ? [
@@ -1012,6 +1036,82 @@ export class Agent {
     });
     this.skills = await loadSkills({ cwd: this.cwd });
     await this.detectCheck();
+    await this.loadSettings();
+    this.snaps = new Snapshots(this.cwd);
+    this.undoStack = [];
+    this.commands = await loadCommands(this.cwd);
+  }
+
+  /** settings.json, both of them: what runs without asking, and the hooks. */
+  async loadSettings() {
+    this.settings = await loadSettings(this.cwd);
+    setPolicy({
+      askCommands: this.settings.commands === 'ask',
+      allow: this.settings.allow,
+      onAlways: (entry) => addAllow(this.cwd, entry),
+    });
+  }
+
+  /**
+   * MCP servers: yours start at once, in the background, so the first prompt
+   * never waits on one; this project's wait until you have approved them, the
+   * first time a turn runs (see trustProject). Never throws.
+   */
+  startMcp({ project = false } = {}) {
+    const run = async () => {
+      const specs = project
+        ? await readServers(projectMcpFile(this.cwd))
+        : await readServers(USER_MCP);
+      const fresh = specs.filter((s) => !this.mcp?.servers.has(s.name));
+      if (!fresh.length) return;
+      this.mcp ??= new McpHub();
+      const status = await this.mcp.start(fresh, { cwd: this.cwd });
+      for (const s of status.filter((x) => fresh.some((f) => f.name === x.name))) {
+        this.ui.note(s.ok
+          ? `MCP: ${s.name} connected · ${s.tools} tool${s.tools === 1 ? '' : 's'}`
+          : `MCP: ${s.name} did not start — ${s.error}`);
+      }
+    };
+    const started = run().catch((err) => this.ui.note(`MCP: ${err.message}`));
+    this.mcpStarting = Promise.all([this.mcpStarting, started]);
+    return started;
+  }
+
+  /**
+   * A project's own hooks and MCP servers run commands on this computer, so
+   * they wait for a yes - once, and again whenever they change.
+   */
+  async trustProject() {
+    if (this.trustChecked) return;
+    this.trustChecked = true;
+    const hooks = this.settings?.projectHooks ?? { afterEdit: [], beforeCommand: [] };
+    const servers = await readServers(projectMcpFile(this.cwd));
+    const wanted = { hooks, servers };
+    const asks = [
+      ...hooks.afterEdit.map((h) => `after each edit: ${h}`),
+      ...hooks.beforeCommand.map((h) => `before each command: ${h}`),
+      ...servers.map((s) => `MCP server ${s.name}: ${s.url ?? [s.command, ...(s.args ?? [])].join(' ')}`),
+    ];
+    if (!asks.length) return;
+    let yes = await isTrusted(this.cwd, 'project', wanted);
+    if (!yes) {
+      yes = await Promise.resolve(this.ui.confirm({
+        action: 'this project wants to run its own commands',
+        detail: `${asks.join('\n')}\nFrom .ucode/ in this folder. Only say yes if you trust where it came from.`,
+        risk: 'trust',
+      })).catch(() => false);
+      if (yes) await trust(this.cwd, 'project', wanted).catch(() => {});
+    }
+    this.projectTrusted = Boolean(yes);
+    if (yes && servers.length) this.startMcp({ project: true });
+  }
+
+  /** The hooks that may run: yours, and the project's once approved. */
+  hooks(kind) {
+    return [
+      ...(this.settings?.hooks?.[kind] ?? []),
+      ...(this.projectTrusted ? this.settings?.projectHooks?.[kind] ?? [] : []),
+    ];
   }
 
   async start() {
@@ -1038,6 +1138,7 @@ export class Agent {
 
     this.showHeader();
     this.installSignals();
+    this.startMcp();
 
     // Checked in the background; nothing here waits on it.
     autoUpdate({
@@ -1168,6 +1269,7 @@ export class Agent {
 
   async shutdown() {
     await closeBrowser().catch(() => {});
+    this.mcp?.close();
     this.ui.stopSpinner();
     if (this.session.messages.length) {
       await this.persist();
@@ -1247,6 +1349,20 @@ export class Agent {
     this.declines = 0;
     this.apps = [];
     this.wrote = new Map();
+    this.genericChecked = false;
+    this.escalated = false;
+    this.lastProblems = null;
+    this.planItems = [];
+    this.askedAboutPlan = false;
+    this.mutated = false;
+    this.building = asksToBuild(input);
+    this.changing = asksToChange(input);
+    const sentBefore = requestCount();
+    // The whole project as it is now, for /undo — taken while the model
+    // thinks, so nothing waits on it; the first write waits for it (dispatch).
+    this.snapshotting = (this.snaps?.take(`before: ${titleFrom(input)}`) ?? Promise.resolve(null))
+      .then((id) => (id ? { id, input } : null), () => null);
+    if (this.snaps) await this.trustProject().catch(() => {});
     forgetReviews(); // a new request: its apps get a fresh design review
     setRequest(input); // create_app checks this before choosing a starter
     const images = await this.attachImages(input);
@@ -1268,14 +1384,15 @@ export class Agent {
       this.session.title = titleFrom(input);
     }
     // What the model is told about the project, fresh for this turn.
-    [this.map, this.memory] = await Promise.all([
+    [this.map, this.memory, this.lessons] = await Promise.all([
       projectMap(this.cwd).catch(() => ''),
       loadMemory(this.cwd).catch(() => ''),
+      lessonsText().catch(() => ''),
     ]);
     // Nothing to look up in an empty folder, so those tools do not go out with
     // the request. Decided per turn: the moment there is code, they are back.
     this.fresh = !hasCode(this.map);
-    request.content = withScope(input) + added.text;
+    request.content = withScope(input, { hasCode: !this.fresh }) + added.text;
     this.wantsWeb = WANTS_WEB.test(input);
     await this.persist();
 
@@ -1315,6 +1432,10 @@ export class Agent {
       trace({ kind: 'turn', ms: Date.now() - turnStarted });
       this.stats.workMs += Date.now() - turnStarted;
       this.stats.turns++;
+      this.stats.requests += requestCount() - sentBefore;
+      // A turn that changed nothing has nothing for /undo to take back.
+      const before = await this.snapshotting;
+      if (before && this.mutated) this.undoStack.push(before);
       if (!finished) this.closeInterrupted();
       const ok = finished && !this.endedSilently;
       this.busy = false;
@@ -1346,8 +1467,57 @@ export class Agent {
     const live = this.fresh
       ? all.filter((t) => !LOOKUP_TOOLS.has(t.name) && !(t.name === 'web_search' && !this.wantsWeb))
       : all;
-    if (this.ui.mode !== 'plan') return live;
+    // MCP tools can do anything their server does, so a read-only turn gets none.
+    if (this.ui.mode !== 'plan' && !this.readOnly) return [...live, ...(this.mcp?.tools() ?? [])];
     return live.filter((t) => !WRITES.has(t.name));
+  }
+
+  /**
+   * How hard the model thinks on this step (see provider.js for the numbers).
+   * The first step of a build or a change is where the plan and the design
+   * get decided, so it gets more; a fix that has already failed once gets the
+   * most; everything else gets the cheap level that is still real thinking.
+   */
+  effortFor(step, fixRounds) {
+    if (this.fixing && fixRounds >= 2) return 'high';
+    if (step === 0 && (this.building || this.changing)) return 'medium';
+    return 'low';
+  }
+
+  /**
+   * Everything that goes with sending problems back to the model: counting
+   * them for next time, noticing when the last fix did not work, and — once,
+   * with the user's say-so — moving a stuck Flash-Lite to the stronger model.
+   * Returns text to add to the fix-round message.
+   */
+  async beforeFixRound(problems, round) {
+    noteMistakes(problems).catch(() => {});
+
+    const keys = new Set(String(problems).split('\n').map((l) => l.trim()).filter((l) => l.length > 12));
+    const repeated = this.lastProblems && [...keys].some((k) => this.lastProblems.has(k));
+    this.lastProblems = keys;
+    let extra = repeated
+      ? '\n\nThe same problem came back after your last fix, so that fix did not work. Do not repeat ' +
+        'it: read the failing code again and take a different approach.'
+      : '';
+
+    // Only when a fix has already failed: a new problem is not being stuck.
+    if (repeated && round >= 2 && !this.escalated && /flash-lite/.test(model()) && MODELS[STRONGER] && !customProvider()) {
+      this.escalated = true;
+      const yes = await Promise.resolve(this.ui.confirm({
+        action: `${modelName()} is stuck on this. Use ${modelName(STRONGER)} for the rest of this job?`,
+        detail: `${modelName(STRONGER)} is smarter, but has only about 20 free requests a day.`,
+        risk: 'model',
+      })).catch(() => false);
+      if (yes) {
+        setModel(STRONGER);
+        this.cooldownUntil = 0; // the next turn goes back to the model you chose
+        this.ui.note(`switched to ${modelName(STRONGER)} for this job`);
+        if (this.full) this.showHeader({ clear: false });
+        extra += '\n\nA stronger model has taken over for this fix.';
+      }
+    }
+    return extra;
   }
 
   /** Model, tools, model, until it answers with prose. */
@@ -1381,6 +1551,7 @@ export class Agent {
         const opts = {
           signal: this.abort.signal,
           onWait: (text) => this.ui.updateSpinner(text),
+          effort: this.effortFor(step, fixRounds),
         };
         // Only a real terminal has somewhere to stream into.
         if (this.full) {
@@ -1421,10 +1592,11 @@ export class Agent {
               content: systemPrompt({
                 cwd: this.cwd,
                 skills: this.skills,
-                mode: this.ui.mode,
+                mode: this.readOnly ? 'plan' : this.ui.mode,
                 check: this.check,
                 map: this.map,
                 memory: this.memory,
+                lessons: this.lessons,
               }),
             },
             ...dedupe(lean(this.working)),
@@ -1532,6 +1704,7 @@ export class Agent {
           if (problems) {
             fixRounds++;
             this.fixing = true;
+            const extra = await this.beforeFixRound(problems, fixRounds);
             if (reply.text) this.push({ role: 'assistant', content: reply.text });
             this.push({
               role: 'user',
@@ -1539,10 +1712,27 @@ export class Agent {
                 `ucode checked the files you changed and found errors (round ${fixRounds} of ` +
                 `${MAX_FIX_ROUNDS}). Fix all of them with the smallest edits that do it, then ` +
                 'finish. Change nothing else - no restyling, no rewrites of code that works.' +
-                `\n\n${problems}`,
+                `\n\n${problems}${extra}`,
             });
             continue;
           }
+        }
+
+        // The plan it wrote, checked against what it ticked. Items left open
+        // at the end are the commonest way part of a request goes missing.
+        // Once a turn, and only when the turn actually changed something.
+        const open = (this.planItems ?? []).filter((i) => !i.done).map((i) => String(i.text).trim());
+        if (open.length && this.touched.size && !this.askedAboutPlan) {
+          this.askedAboutPlan = true;
+          if (reply.text) this.push({ role: 'assistant', content: reply.text });
+          this.push({
+            role: 'user',
+            content:
+              `Your plan still has ${open.length === 1 ? 'this item' : 'these items'} open: ${open.join('; ')}. ` +
+              'Finish them now. If they are already done, tick them with update_plan and finish; if one ' +
+              'cannot be done, say which and why.',
+          });
+          continue;
         }
 
         // It changed code and never ran anything. Send it back once — but
@@ -1618,12 +1808,13 @@ export class Agent {
       if (handed?.problems && fixRounds < MAX_FIX_ROUNDS) {
         fixRounds++;
         this.fixing = true;
+        const extra = await this.beforeFixRound(handed.problems, fixRounds);
         this.push({
           role: 'user',
           content:
             `ucode opened the app and found errors (round ${fixRounds} of ${MAX_FIX_ROUNDS}). Fix all ` +
             'of them with the smallest edits that do it. Change nothing else. As soon as it works, ' +
-            `ucode hands it to the user.\n\n${handed.problems}`,
+            `ucode hands it to the user.\n\n${handed.problems}${extra}`,
         });
         await this.persist();
         continue;
@@ -2256,12 +2447,85 @@ export class Agent {
     if (call.name === 'load_skill') return this.loadSkill(call.args?.name);
     if (call.name === 'update_plan') return this.updatePlan(call.args?.items);
     if (call.name === 'delegate') return this.delegate(call.args?.tasks);
+    if (this.mcp?.has(call.name)) return this.callMcp(call);
+
+    // The snapshot /undo goes back to has to be on disk before anything changes.
+    if (MUTATING.has(call.name)) {
+      this.mutated = true;
+      await this.snapshotting;
+    }
+    if (call.name === 'run_command' || call.name === 'run_commands') await this.beforeCommand(call);
 
     // Output reaches the screen as the command produces it, so a slow build is
     // something you watch rather than something you sit out in silence.
-    return runTool(call.name, call.args ?? {}, {
+    const out = await runTool(call.name, call.args ?? {}, {
       onOutput: (lines) => this.ui.progress(lines),
     });
+    if (FILE_WRITES.has(call.name)) await this.afterEdit(call, out);
+    return out;
+  }
+
+  /** A tool from an MCP server: asked about first, unless always allowed. */
+  async callMcp(call) {
+    const subject = `mcp:${call.name}`;
+    if (!allowedNow(subject)) {
+      await confirm(`use ${call.name}`, clip(JSON.stringify(call.args ?? {}), 300), 'mcp', subject);
+    }
+    let answer;
+    try {
+      answer = await this.mcp.call(call.name, call.args ?? {});
+    } catch (err) {
+      throw new ToolFailure({
+        kind: 'mcp_failed',
+        attempted: `calling ${call.name}`,
+        failed: err.message,
+        fix: 'Try once more if it looks temporary; otherwise carry on without it and say so.',
+      });
+    }
+    if (answer.isError) {
+      throw new ToolFailure({
+        kind: 'tool_error',
+        attempted: `calling ${call.name}`,
+        failed: clip(answer.text, 2000),
+        fix: 'Correct the arguments and call it again, or carry on without it.',
+      });
+    }
+    return { content: answer.text, summary: `${this.mcp.serverOf(call.name)} answered` };
+  }
+
+  /** beforeCommand hooks: any that exits non-zero stops the command. */
+  async beforeCommand(call) {
+    const hooks = this.hooks('beforeCommand');
+    if (!hooks.length) return;
+    const commands = call.name === 'run_commands'
+      ? (Array.isArray(call.args?.commands) ? call.args.commands : []).map((c) => c?.command)
+      : [call.args?.command];
+    for (const command of commands.filter(Boolean)) {
+      for (const hook of hooks) {
+        const { code, output } = await runHook(hook, { cwd: this.cwd, env: { UCODE_COMMAND: String(command) } });
+        if (code !== 0) {
+          throw new ToolFailure({
+            kind: 'blocked_by_hook',
+            attempted: `running ${clip(String(command), 80)}`,
+            failed: `A beforeCommand hook stopped it (${hook}): ${clip(output || `exit ${code}`, 500)}`,
+            fix: 'Do it another way, or ask the user to change the hook in .ucode/settings.json.',
+          });
+        }
+      }
+    }
+  }
+
+  /** afterEdit hooks (a formatter, say) on the files a write just changed. */
+  async afterEdit(call, out) {
+    const hooks = this.hooks('afterEdit');
+    const files = pathsOf(call);
+    if (!hooks.length || !files.length) return;
+    for (const hook of hooks) {
+      const { code, output } = await runHook(hook, { cwd: this.cwd, files });
+      if (code !== 0 && out && typeof out.content === 'string') {
+        out.content += `\n\n(The afterEdit hook \`${hook}\` failed: ${clip(output || `exit ${code}`, 400)})`;
+      }
+    }
   }
 
   /**
@@ -2320,6 +2584,7 @@ export class Agent {
     const list = (Array.isArray(items) ? items : [])
       .filter((i) => i && String(i.text ?? '').trim())
       .slice(0, 6);
+    this.planItems = list;
     this.ui.plan(list);
     const done = list.filter((i) => i.done).length;
     return { content: `Plan updated: ${done} of ${list.length} done.`, summary: `${done}/${list.length}` };
@@ -2393,7 +2658,7 @@ export class Agent {
       { role: 'system', content: workerPrompt({ cwd: this.cwd, name, memory: this.memory, skills, map: this.map }) },
       { role: 'user', content: String(task.instructions) },
     ];
-    const available = this.toolsNow().filter((t) => !WORKER_EXCLUDED.has(t.name));
+    const available = this.toolsNow().filter((t) => !WORKER_EXCLUDED.has(t.name) && !this.mcp?.has(t.name));
     const offered = new Set(available.map((t) => t.name));
     const wanted = process.env.UCODE_WORKER_MODEL;
     let workerModel = wanted && MODELS[wanted] ? wanted : model();
@@ -2416,7 +2681,7 @@ export class Agent {
       // again costs far less than carrying the whole history.
       thinWorker(messages, contextLimit(workerModel) * 0.6);
       try {
-        reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel });
+        reply = await ask(messages, available, { signal: this.abort?.signal, model: workerModel, effort: 'low' });
       } catch (err) {
         // Same rule as the lead: a busy model is swapped, not a reason to stop.
         if (passing(err) && failovers < 6 && !this.abort?.signal.aborted) {
@@ -2664,6 +2929,13 @@ export class Agent {
       if (failed) problems.push(failed);
     }
 
+    // A Next.js app is not handed over by handOver, so its look is checked here.
+    const app = this.apps?.at(-1);
+    if (app && this.appTemplate === 'next-shadcn') {
+      const generic = await this.genericOnce(app);
+      if (generic) problems.push(generic);
+    }
+
     const live = await this.liveErrors();
     if (live) problems.push(live);
 
@@ -2769,6 +3041,15 @@ export class Agent {
       return { problems: `I opened the app and looked at it:\n\n${content}` };
     }
 
+    // It works; now whether it looks like every other generated app. Once a
+    // turn, milliseconds of reading files, and a fix round only on a hit.
+    const generic = await this.genericOnce(app);
+    if (generic) {
+      this.handOverPending = true;
+      this.ui.runStat?.('looks generic');
+      return { problems: generic };
+    }
+
     this.handOverPending = false;
     // "Tip Calculator is done", with the page as a link the terminal can open.
     const made = calls.find((c) => c.name === 'create_app' && c.args?.name)?.args.name ?? this.appName;
@@ -2785,6 +3066,14 @@ export class Agent {
     // The app pops up on its own; UCODE_OPEN=0 keeps it to the link.
     this.openInBrowser(page);
     return { done: true };
+  }
+
+  /** The generated-look check (genericcheck.js) on the app just built, once a turn. */
+  async genericOnce(app) {
+    if (this.genericChecked || process.env.UCODE_DESIGN_CHECK === '0') return null;
+    this.genericChecked = true;
+    const found = await genericLook(app, this.appTemplate ?? 'plain-html').catch(() => []);
+    return found.length ? genericMessage(found) : null;
   }
 
   async lookOnceThisTurn(root, changed) {
@@ -3012,20 +3301,144 @@ export class Agent {
       case '/search':   return this.cmdSearch(arg);
       case '/copy':     return this.cmdCopy();
       case '/stats':    return this.cmdStats();
-      case '/undo':     return this.cmdUndo();
+      case '/undo':     return this.cmdUndo(arg);
       case '/doctor':   return this.cmdDoctor();
       case '/look':     return this.cmdLook(arg);
       case '/deploy':   return this.cmdDeploy(arg);
+      case '/init':     return this.cmdInit();
+      case '/diff':     return this.cmdDiff();
+      case '/commit':   return this.cmdCommit(arg);
+      case '/review':   return this.cmdReview();
+      case '/mcp':      return this.cmdMcp();
+      case '/permissions': return this.cmdPermissions(arg);
       case '/mic':
         if (this.ui.onMic) return this.mic('toggle');
         return this.ui.note('the mic works in the full-screen view — start ucode in a terminal window');
       case '/exit':
       case '/quit':     return 'exit';
 
-      default:
+      default: {
+        // One of the user's own, from .ucode/commands/<name>.md.
+        this.commands = await loadCommands(this.cwd);
+        const own = this.commands.get(name.slice(1).toLowerCase());
+        if (own) return this.turn(expandCommand(own.body, arg));
         this.ui.write(theme.warn(`  no such command: ${name}`));
         this.ui.note('/help lists them.');
+      }
     }
+  }
+
+  /** Run git in the project; resolves to { code, out }. */
+  git(args) {
+    return new Promise((resolve) => {
+      let out = '';
+      const child = spawn('git', args, { cwd: this.cwd, windowsHide: true });
+      child.stdout.on('data', (d) => { out += d; });
+      child.stderr.on('data', (d) => { out += d; });
+      child.on('error', (err) => resolve({ code: -1, out: err.message }));
+      child.on('close', (code) => resolve({ code, out: out.trim() }));
+    });
+  }
+
+  /** /init: read the project and write what ucode should know into UCODE.md. */
+  cmdInit() {
+    return this.turn(
+      `Read this project - its package files, README, config and the main source folders - and write ${MEMORY_FILE} ` +
+      'in the project root for a coding agent that has never seen it: what it is, the stack, the commands to ' +
+      'install, run, test and build, the folder layout, and the conventions the code follows. Under 60 lines, ' +
+      `facts only. If ${MEMORY_FILE} exists, update it and keep anything the user wrote. Do not change any other file.`,
+    );
+  }
+
+  /** /diff: what changed — since the session started, or uncommitted in git. */
+  async cmdDiff() {
+    const first = this.undoStack?.[0]?.id;
+    if (first && (await this.snaps?.ready())) {
+      const changes = await this.snaps.changedSince(first);
+      if (!changes.length) { this.ui.note('nothing has changed this session'); return; }
+      const word = { A: 'added', M: 'changed', D: 'deleted' };
+      this.ui.blank();
+      for (const c of changes) this.ui.write(`  ${dim((word[c.status] ?? c.status).padEnd(8))} ${c.file}`);
+      this.ui.blank();
+      return;
+    }
+    const { code, out } = await this.git(['status', '--short']);
+    if (code !== 0) { this.ui.note('nothing to compare yet — this folder is not a git repository and no turn has changed it'); return; }
+    this.ui.write(out ? out.split('\n').map((l) => `  ${l}`).join('\n') : dim('  no uncommitted changes'));
+  }
+
+  /** /commit [message]: commit everything, with a message written from the diff when none is given. */
+  async cmdCommit(message) {
+    const status = await this.git(['status', '--porcelain']);
+    if (status.code !== 0) { this.ui.note('this folder is not a git repository'); return; }
+    if (!status.out) { this.ui.note('nothing to commit'); return; }
+    let text = message;
+    if (!text) {
+      this.ui.startSpinner('writing a commit message');
+      const diff = (await this.git(['diff', 'HEAD'])).out || status.out;
+      try {
+        const reply = await ask([
+          { role: 'system', content: 'Write a git commit message for this diff: a subject line under 70 characters in the imperative, then a blank line and up to three short lines on why. Reply with the message only.' },
+          { role: 'user', content: diff.slice(0, 30_000) },
+        ], [], { effort: 'low' });
+        text = reply.text.replace(/^```\w*\n?|```$/g, '').trim();
+      } finally {
+        this.ui.stopSpinner();
+      }
+    }
+    if (!text) { this.ui.note('no message — /commit <message> to give one'); return; }
+    this.ui.write(`\n${text.split('\n').map((l) => `  ${l}`).join('\n')}\n`);
+    const yes = await this.ui.confirm({ action: 'commit everything with this message', detail: `${status.out.split('\n').length} files`, risk: 'command' });
+    if (!yes) { this.ui.note('not committed'); return; }
+    await this.git(['add', '-A']);
+    const done = await this.git(['commit', '-m', text]);
+    this.ui.write(done.code === 0 ? `  ${theme.ok('✓')} committed` : theme.error(`  ${done.out.split('\n')[0]}`));
+  }
+
+  /** /review: read the uncommitted changes for bugs, without changing anything. */
+  async cmdReview() {
+    const diff = await this.git(['diff', 'HEAD']);
+    if (diff.code !== 0 || !diff.out) { this.ui.note('no uncommitted changes to review (this needs git)'); return; }
+    this.readOnly = true;
+    try {
+      await this.turn(
+        'Review these uncommitted changes for bugs: wrong logic, missed edge cases, broken error handling, ' +
+        'security holes. Read the surrounding code where you need it. List each real problem as file:line, ' +
+        `what goes wrong and the fix - most serious first. If there are none, say so in one line.\n\n\`\`\`diff\n${diff.out.slice(0, 40_000)}\n\`\`\``,
+      );
+    } finally {
+      this.readOnly = false;
+    }
+  }
+
+  /** /mcp: which servers are connected, and how to add one. */
+  async cmdMcp() {
+    await this.mcpStarting;
+    const status = this.mcp?.status() ?? [];
+    this.ui.blank();
+    if (!status.length) this.ui.write(dim('  no MCP servers yet'));
+    for (const s of status) {
+      this.ui.write(`  ${s.ok ? theme.ok('●') : theme.error('●')} ${blue(s.name)}  ${dim(s.ok ? `${s.tools} tools` : s.error)}`);
+    }
+    this.ui.blank();
+    this.ui.write(dim('  add one:  ucode mcp add <name> <command> [args...]   or   ucode mcp add <name> --url <url>'));
+    this.ui.write(dim(`  or edit ${USER_MCP} (every project) or .ucode/mcp.json (this one)`));
+    this.ui.blank();
+  }
+
+  /** /permissions [ask|auto]: whether commands are asked about, and what is always allowed. */
+  async cmdPermissions(arg) {
+    const want = arg.trim().toLowerCase();
+    if (want === 'ask' || want === 'auto') {
+      const { projectSettingsFile, readJson, writeJson } = await import('./settings.js');
+      const file = projectSettingsFile(this.cwd);
+      await writeJson(file, { ...(await readJson(file)), commands: want });
+      await this.loadSettings();
+    }
+    this.ui.blank();
+    this.ui.write(`  commands  ${blue(this.settings.commands === 'ask' ? 'ask first' : 'run without asking')}  ${dim('/permissions ask · /permissions auto')}`);
+    this.ui.write(`  allowed   ${this.settings.allow.length ? this.settings.allow.join(' · ') : dim('nothing yet — answer "a" at a prompt to add')}`);
+    this.ui.blank();
   }
 
   /**
@@ -3066,7 +3479,21 @@ ${out.content}` });
    * one that just happened — and it says how many files it touched rather than
    * listing them, the way everything else here reports work.
    */
-  async cmdUndo() {
+  async cmdUndo(arg = '') {
+    // Snapshots first: they cover what commands changed, and go back further.
+    const n = Math.max(1, Number.parseInt(arg, 10) || 1);
+    if (this.undoStack?.length) {
+      const take = Math.min(n, this.undoStack.length);
+      const target = this.undoStack[this.undoStack.length - take];
+      const { restored, removed, failed } = await this.snaps.restore(target.id);
+      this.undoStack.splice(this.undoStack.length - take, take);
+      const parts = [];
+      if (restored.length) parts.push(`${restored.length} file${restored.length === 1 ? '' : 's'} put back`);
+      if (removed.length) parts.push(`${removed.length} removed`);
+      this.ui.write(`  ${theme.ok('✓')} ${parts.join(', ') || 'nothing to do'} — back to before "${clip(target.input, 50)}"`);
+      for (const f of failed) this.ui.write(theme.error(`  could not undo ${f}`));
+      return;
+    }
     const count = changedCount();
     if (!count) {
       this.ui.note('nothing to undo — the last turn changed no files.');
@@ -3084,7 +3511,13 @@ ${out.content}` });
   cmdHelp() {
     const rows = [
       ['/help', 'this list'],
-      ['/undo', 'put back every file the last turn changed'],
+      ['/undo [n]', 'put the project back as it was before the last turn (or n turns)'],
+      ['/diff', 'what has changed this session'],
+      ['/commit [msg]', 'commit the changes, with a message written for you'],
+      ['/review', 'check the uncommitted changes for bugs, changing nothing'],
+      ['/init', `read the project and write ${MEMORY_FILE} for it`],
+      ['/mcp', 'connected MCP servers and their tools'],
+      ['/permissions', 'ask before commands, or run them; what is always allowed'],
       ['/stats', 'time, steps and tokens this session'],
       ['/doctor', 'check that everything ucode needs is working'],
       ['/look [url]', 'open the running app and report what is on the page'],
@@ -3100,6 +3533,8 @@ ${out.content}` });
       ['/clear', 'clear the screen, keep the conversation'],
       ['/exit', 'save and quit'],
     ];
+
+    for (const c of this.commands?.values() ?? []) rows.push([`/${c.name}`, `yours: ${c.description}`]);
 
     this.ui.blank();
     for (const [command, what] of rows) {

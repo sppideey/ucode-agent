@@ -794,8 +794,30 @@ const CAVEAT = /\b(?:however|failed|couldn't|could not|cannot|can't|didn't|did n
 const ACTIONABLE = /\b(?:open|run|serve|visit|try|start|npm|npx|node|pnpm|yarn)\b|https?:\/\/|\.(?:html?|css|jsx?|tsx?|md|json|py|rs|go)\b/i;
 const BULLET = /^\s*(?:[-*•>]|\d+[.)]|[✓✔✅☑])\s+/;
 
+/**
+ * Words that say nothing about this app, because they are said about every
+ * app: "a sleek, modern and intuitive interface for a seamless experience".
+ */
+export const STOCK = /\b(?:seamless(?:ly)?|sleek|modern and clean|clean and modern|robust|intuitive|user-friendly|cutting-edge|state-of-the-art|elevate[sd]?|effortless(?:ly)?|stunning|delightful|vibrant|happy coding|feel free to|i hope (?:this|you)|let me know if)\b/i;
+
+/**
+ * The closing message without its stock sentences. A sentence goes only when
+ * it is pure filler: one that says how to try the app, or admits something is
+ * unfinished, stays whatever words it uses. Never returns nothing.
+ */
+export function withoutStock(text) {
+  const lines = String(text ?? '').replace(/\r/g, '').split('\n');
+  const out = [];
+  for (const line of lines) {
+    if (!STOCK.test(line)) { out.push(line); continue; }
+    const kept = line.split(/(?<=[.!?])\s+/).filter((s) => !STOCK.test(s) || ACTIONABLE.test(s) || CAVEAT.test(s));
+    if (kept.length) out.push(kept.join(' '));
+  }
+  return out.join('\n').trim() || lines.join('\n').trim();
+}
+
 export function trimAnswer(text, max = ANSWER_LINES) {
-  const all = String(text ?? '').replace(/\r/g, '').split('\n');
+  const all = withoutStock(text).split('\n');
 
   let start = 0;
   while (start < all.length && (!all[start].trim() || RESTATED.test(all[start].trim()))) start++;

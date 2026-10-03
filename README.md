@@ -365,7 +365,13 @@ Everything after the frontmatter is the instruction.
 | `/session delete 2,5` | delete saved conversations by number (or `d d` in the list) |
 | `/new` | save this one and start fresh |
 | `/remember <note>` | add a standing note to this project's `UCODE.md` |
-| `/undo` | put back every file the last turn changed |
+| `/undo [n]` | put the project back as it was before the last turn — or `n` turns — including what commands changed |
+| `/diff` | what has changed this session |
+| `/commit [msg]` | commit the changes, with a message written from the diff if you give none |
+| `/review` | read the uncommitted changes for bugs, changing nothing |
+| `/init` | read the project and write its `UCODE.md` |
+| `/mcp` | connected MCP servers and their tools |
+| `/permissions [ask\|auto]` | ask before every command, or run them; what is always allowed |
 | `/look [url]` | open the running app and report what is on the page |
 | `/deploy [folder]` | put the app online and get its link |
 | `/mic` | say what you want instead of typing it — same as `ctrl+t` |
@@ -393,6 +399,86 @@ Recording uses what the computer already has: Windows' built-in recorder, `sox`
 or `ffmpeg` on macOS (`brew install sox`), `arecord` or `sox` on Linux. If a
 quiet mic is taken for silence, set `UCODE_MIC_QUIET` lower than 800.
 
+### Your own commands
+
+A file `.ucode/commands/explain.md` (or `~/.ucode/commands/` for every
+project) becomes `/explain`. Its text is the prompt; `$ARGUMENTS` is replaced
+by whatever you type after the command.
+
+### MCP servers
+
+Connect tools from any MCP server — library docs, GitHub, a database:
+
+```
+ucode mcp add context7 npx -y @upstash/context7-mcp
+ucode mcp add github --url https://api.githubcopilot.com/mcp/ --header "Authorization=Bearer ${GITHUB_TOKEN}"
+ucode mcp list
+ucode mcp remove github
+```
+
+They are saved in `~/.ucode/mcp.json` (`--project` puts them in this folder's
+`.ucode/mcp.json`). ucode asks before each MCP tool runs; answer `a` to always
+allow that tool. A project's own servers and hooks only run once you approve them.
+
+### Permissions and hooks
+
+`.ucode/settings.json` (or `~/.ucode/settings.json`):
+
+```json
+{
+  "commands": "ask",
+  "allow": ["npm test", "git status"],
+  "hooks": {
+    "afterEdit": ["npx prettier --write {files}"],
+    "beforeCommand": ["node guard.js"]
+  }
+}
+```
+
+`"commands": "ask"` puts every command to you first (`/permissions ask`);
+answering `a` adds it to `allow`. A `beforeCommand` hook that exits non-zero
+stops the command; it sees it in `UCODE_COMMAND`.
+
+### Run it without a keyboard
+
+```
+ucode -p "fix the failing test"            prints the answer
+ucode -p "make a quiz app" --json --yes    one JSON line: ok, answer, files, steps, requests, time
+```
+
+Progress goes to stderr. With no `--yes`, anything that would be asked is declined.
+`npm run eval` runs ten real jobs this way and checks each one — use it before
+a release (it spends about 100 free requests).
+
+### Other models
+
+Any OpenAI-compatible server works, Ollama on your own computer included —
+free and offline:
+
+```
+UCODE_BASE_URL=http://localhost:11434/v1 UCODE_MODEL=qwen2.5-coder ucode
+```
+
+## How it thinks
+
+- **Thinking levels.** Flash-Lite does not think at all unless asked. ucode
+  asks for a little on every step (it costs nothing on a straightforward
+  write), more on the first step of a build, and the most when a fix has
+  already failed. `UCODE_THINK=0` turns it off.
+- **A design direction for every build** — a tone, two typefaces and an accent —
+  so two apps never come out the same, and a check for the generated look
+  (the starter's colours, Inter, purple gradients, gradient text, emoji icons)
+  that sends it back to be fixed. `UCODE_DESIGN_CHECK=0` turns the check off.
+- **Learns from its mistakes.** Problems ucode keeps catching are counted in
+  `~/.ucode/lessons.json`, and the common ones are warned about before the next build.
+- **Tries a different approach** when the same problem survives a fix, and
+  offers to hand that fix to Gemini 3.5 Flash — only if you say yes, since it
+  has about 20 free requests a day.
+- **Changes to existing code** get their own rules: find the code, read only
+  what is involved, make the smallest change in the code's own style.
+- **Stays under the free limit.** Requests are spaced to Google's per-minute
+  limit instead of being refused and waited out; `/stats` shows how many were sent.
+
 ## Options
 
 ```
@@ -401,6 +487,9 @@ ucode [options]
   -m, --model <id>   which model to use
   -C, --cwd <dir>    work in another directory
       --plan         start in plan mode
+  -p, --print <task> do one task with no keyboard, print the answer, exit
+      --json         with -p: one JSON object about the run
+  -y, --yes          with -p: say yes to anything that would be asked
       --debug        print stack traces when something breaks
   -v, --version      print the version
   -h, --help         the above
@@ -420,7 +509,11 @@ Environment overrides: `UCODE_MODEL`, `UCODE_WORKER_MODEL` (a faster model for
 parallel workers), `UCODE_WORKER_STEPS`, `UCODE_MAX_CONTEXT_TOKENS`,
 `UCODE_MAX_STEPS`, `UCODE_MAX_TOOL_OUTPUT`, `UCODE_REQUEST_TIMEOUT_MS`,
 `UCODE_STALL_MS` (how long a silent reply is waited on before asking again, 60s),
-`UCODE_BASE_URL`, `UCODE_NO_UPDATE`.
+`UCODE_BASE_URL`, `UCODE_NO_UPDATE`, `UCODE_THINK=0`, `UCODE_DESIGN_CHECK=0`,
+`UCODE_RPM` (requests a minute before pacing, 0 = off), `UCODE_RIPGREP=0`.
+
+Search uses ripgrep (`rg`) when it is installed — much faster on a big
+project — and its own search otherwise.
 
 Web search needs a Tavily key — free, 1000 searches a month, no card. Without
 one, ucode answers from what it knows and says that it could not check.

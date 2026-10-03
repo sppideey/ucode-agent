@@ -10,6 +10,7 @@
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { ToolFailure, Declined } from '../core/failure.js';
+import { isAllowed, commandKey } from '../core/settings.js';
 
 /**
  * How much of a result the model may see.
@@ -63,7 +64,25 @@ export function setConfirm(fn) {
   asker = fn;
 }
 
-export async function confirm(action, detail, risk = 'write') {
+/**
+ * What may run without asking. `askCommands` is the "commands": "ask" setting;
+ * `allow` is the always-allow list; `onAlways` saves a new entry to it.
+ */
+let policy = { askCommands: false, allow: [], onAlways: null };
+
+export function setPolicy(next) {
+  policy = { ...policy, ...next };
+}
+
+/** Is this command, or "mcp:tool", on the always-allow list? */
+export const allowedNow = (subject) => isAllowed(policy.allow, subject);
+
+/**
+ * Ask before acting. `always` names what an "always" answer allows from then
+ * on: a command's first words, or "mcp:tool". Callers check allowedNow()
+ * against the whole command first — the entry is only what gets saved.
+ */
+export async function confirm(action, detail, risk = 'write', always = null) {
   if (!asker) {
     throw new ToolFailure({
       kind: 'cannot_ask',
@@ -72,7 +91,19 @@ export async function confirm(action, detail, risk = 'write') {
       fix: 'Run ucode in a terminal so it can prompt before acting.',
     });
   }
-  if (!(await asker({ action, detail, risk }))) throw new Declined(action);
+  const answer = await asker({ action, detail, risk, always });
+  if (answer === 'always' && always) {
+    policy = { ...policy, allow: [...policy.allow, always] };
+    await Promise.resolve(policy.onAlways?.(always)).catch(() => {});
+    return;
+  }
+  if (!answer) throw new Declined(action);
+}
+
+/** A command about to run, put to the user first when they asked for that. */
+export async function approveCommand(command, where) {
+  if (!policy.askCommands || allowedNow(command)) return;
+  await confirm(`run ${String(command).trim().slice(0, 160)}`, `in ${where}`, 'command', commandKey(command));
 }
 
 // ---------------------------------------------------------------------------

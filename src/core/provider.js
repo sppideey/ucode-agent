@@ -146,6 +146,73 @@ let stalls = 0;
 let current = process.env.UCODE_MODEL || DEFAULT_MODEL;
 let client = null;
 
+/**
+ * Another OpenAI-compatible server instead of Google: Ollama on this computer,
+ * or any host the user points UCODE_BASE_URL at. Its models are its own, so
+ * any id is accepted, and it gets none of the Google-only pacing.
+ */
+export function customProvider() {
+  const url = process.env.UCODE_BASE_URL;
+  return Boolean(url) && !/googleapis\.com/i.test(url);
+}
+
+/**
+ * How hard the model thinks, per request: 'low', 'medium' or 'high'.
+ *
+ * Measured on Flash-Lite: with nothing set it does not think at all, and got a
+ * two-step riddle wrong that 'low' got right for under a second more. On a
+ * whole-app write 'low' thinks nothing and costs nothing, while 'medium' and
+ * 'high' spend about 2,800 thinking tokens (+5s). So the loop asks for 'low'
+ * on ordinary steps and saves the dearer levels for where they pay.
+ *
+ * UCODE_THINK=0 sends no level at all. A server that rejects the field is
+ * remembered and not sent it again.
+ */
+let effortRejected = false;
+const thinkingOn = () => process.env.UCODE_THINK !== '0' && !effortRejected;
+
+/** Requests actually sent this process — what the free daily limit counts. */
+let requests = 0;
+export const requestCount = () => requests;
+
+/**
+ * Google's free tier counts requests per minute, per model: about 15 on
+ * Flash-Lite and 10 on Flash. Going over costs a refusal and then a wait of up
+ * to a minute; spacing the requests out beforehand costs a second or two, and
+ * only when a build is actually running that fast. One under the limit, since
+ * workers share it. UCODE_RPM sets the number; 0 turns pacing off.
+ */
+export function rpmFor(id) {
+  const set = process.env.UCODE_RPM;
+  if (set !== undefined && set !== '') return Math.max(0, Number(set) || 0);
+  if (customProvider()) return 0;
+  return /flash-lite/.test(id) ? 14 : 9;
+}
+
+/** How long to wait before the next request, given when the recent ones went out. */
+export function paceDelay(times, now, rpm) {
+  if (!rpm) return 0;
+  const recent = times.filter((t) => now - t < 60_000);
+  if (recent.length < rpm) return 0;
+  return Math.max(0, recent[recent.length - rpm] + 60_000 - now);
+}
+
+const sentAt = new Map(); // model id -> times its requests went out
+
+async function pace(id, opts) {
+  // One shared list per model, read fresh after every wait and added to with
+  // no await in between: parallel workers each see the others' requests.
+  for (;;) {
+    const wait = paceDelay(sentAt.get(id) ?? [], Date.now(), rpmFor(id));
+    if (!wait || opts.signal?.aborted) break;
+    opts.onWait?.(`keeping under Google's free per-minute limit — ${Math.ceil(wait / 1000)}s`);
+    await pause(Math.min(1000, wait));
+  }
+  const now = Date.now();
+  sentAt.set(id, [...(sentAt.get(id) ?? []).filter((t) => now - t < 60_000), now]);
+  requests++;
+}
+
 export function model() {
   return current;
 }
@@ -160,7 +227,7 @@ export function setModel(id) {
       fix: `Pick one of: ${Object.keys(MODELS).join(', ')}`,
     });
   }
-  if (!MODELS[wanted]) {
+  if (!MODELS[wanted] && !customProvider()) {
     throw new Failure({
       kind: 'bad_model',
       attempted: `switching to "${wanted}"`,
@@ -235,8 +302,8 @@ export function providerKey() {
 }
 
 function apiKey() {
-  // UCODE_API_KEY is the documented name. The provider's own variable name is
-  // still read, so a key set up for another tool keeps working here.
+  // A local server such as Ollama wants no key, but the client insists on one.
+  if (customProvider()) return (process.env.UCODE_API_KEY || providerKey() || 'local').trim();
   const key = providerKey();
   if (!key) {
     throw new Failure({
@@ -711,6 +778,7 @@ export async function ask(messages, tools = [], opts = {}) {
   if (opts.temperature !== undefined) request.temperature = opts.temperature;
   if (opts.maxOutputTokens) request.max_tokens = opts.maxOutputTokens;
   if (opts.reasoning) request.reasoning = opts.reasoning;
+  if (opts.effort && thinkingOn()) request.reasoning_effort = opts.effort;
 
   // A side call (the design review) passes fewer: it is better skipped than
   // waited on through a string of rate-limit pauses.
@@ -727,20 +795,32 @@ export async function ask(messages, tools = [], opts = {}) {
 
   for (let attempt = 1; attempt <= attempts; attempt++) {
     try {
+      await pace(id, opts);
+      let reply;
       if (opts.onText) {
-        const reply = await streamed(request, callOpts, id);
-        stalls = 0;
-        return reply;
+        reply = await streamed(request, callOpts, id);
+      } else {
+        const { data, response } = await connection().chat.completions
+          .create(request, { signal: opts.signal })
+          .withResponse();
+        noteLimits(response?.headers);
+        reply = normalize(data, id, request.tools?.map((t) => t.function.name));
       }
-      const { data, response } = await connection().chat.completions
-        .create(request, { signal: opts.signal })
-        .withResponse();
-      noteLimits(response?.headers);
       stalls = 0;
-      return normalize(data, id, request.tools?.map((t) => t.function.name));
+      if (request.reasoning_effort === undefined && opts.effort && thinkingOn()) effortRejected = true;
+      return reply;
     } catch (err) {
       noteLimits(err?.headers);
       problem = explain(err, id);
+
+      // A server that does not know reasoning_effort rejects the whole request.
+      // Asked once more without it; only if that works is it left off for good,
+      // so a 400 for some other reason never switches thinking off.
+      if (problem.kind === 'bad_request' && request.reasoning_effort !== undefined && printed === 0) {
+        delete request.reasoning_effort;
+        attempt--;
+        continue;
+      }
 
       // Retrying a model that keeps freezing only repeats the wait. After a
       // few in a row, say so and hand the choice back.
@@ -923,6 +1003,7 @@ async function streamed(request, opts, id) {
       promptTokens: usage?.prompt_tokens ?? 0,
       outputTokens: usage?.completion_tokens ?? 0,
       totalTokens: usage?.total_tokens ?? 0,
+      cachedTokens: usage?.prompt_tokens_details?.cached_tokens ?? 0,
     },
     finishReason,
     model: id,
@@ -1178,6 +1259,7 @@ function normalize(data, id, names) {
       promptTokens: u.prompt_tokens ?? 0,
       outputTokens: u.completion_tokens ?? 0,
       totalTokens: u.total_tokens ?? 0,
+      cachedTokens: u.prompt_tokens_details?.cached_tokens ?? 0,
     },
     finishReason,
     model: id,

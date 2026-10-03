@@ -3,6 +3,7 @@
  * name pattern, and which lines match a regular expression.
  */
 
+import { spawn } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
@@ -10,6 +11,59 @@ import {
   resolveIn, guard, result, fsFailure, looksBinary, bytes, walk, globToRegExp,
   SKIP, MAX_GLOB_HITS, MAX_GREP_HITS, WALK_WIDTH,
 } from './shared.js';
+
+/** Whether `rg` runs here, asked once. UCODE_RIPGREP=0 never uses it. */
+let hasRipgrep;
+function ripgrepReady() {
+  if (process.env.UCODE_RIPGREP === '0') return Promise.resolve(false);
+  hasRipgrep ??= new Promise((resolve) => {
+    const child = spawn('rg', ['--version'], { windowsHide: true, stdio: 'ignore' });
+    child.on('error', () => resolve(false));
+    child.on('close', (code) => resolve(code === 0));
+  });
+  return hasRipgrep;
+}
+
+/**
+ * The same search through ripgrep, with the same rules as the walk below: the
+ * same folders skipped, hidden files and .gitignored ones searched, the same
+ * line format. Resolves to { hits, files }, or null when ripgrep is missing or
+ * cannot read the pattern.
+ */
+async function ripgrep(pattern, dir, { filter, ignoreCase }) {
+  if (!(await ripgrepReady())) return null;
+  const args = ['--line-number', '--no-heading', '--color', 'never', '--hidden', '--no-ignore', '--sort', 'path'];
+  for (const skip of SKIP) args.push('-g', `!${skip}/`);
+  if (filter) args.push('-g', filter);
+  if (ignoreCase) args.push('-i');
+  args.push('-e', pattern, '--', '.');
+
+  return new Promise((resolve) => {
+    const hits = [];
+    const files = new Set();
+    let rest = '';
+    let done = false;
+    const child = spawn('rg', args, { cwd: dir, windowsHide: true });
+    const finish = (value) => { if (!done) { done = true; resolve(value); } };
+    child.on('error', () => finish(null));
+    child.stdout.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      const lines = (rest + chunk).split(/\r?\n/);
+      rest = lines.pop();
+      for (const line of lines) {
+        const m = /^(.*?):(\d+):(.*)$/.exec(line);
+        if (!m || hits.length >= MAX_GREP_HITS) continue;
+        const rel = m[1].replace(/^\.[\\/]/, '').replace(/\\/g, '/');
+        const text = m[3].trim();
+        files.add(rel);
+        hits.push(`${rel}:${m[2]}: ${text.length > 200 ? `${text.slice(0, 200)}…` : text}`);
+      }
+      if (hits.length >= MAX_GREP_HITS) { child.kill(); finish({ hits, files: files.size }); }
+    });
+    // 0 found, 1 nothing found, 2 an error such as a pattern it cannot read.
+    child.on('close', (code) => finish(code === 0 || code === 1 || hits.length ? { hits, files: files.size } : null));
+  });
+}
 
 export async function listDir({ path: p = '.' }) {
   const target = resolveIn(p || '.', 'list_dir');
@@ -130,6 +184,26 @@ export async function grep({ pattern, path: p = '.', glob: filter, ignore_case =
   const stat = await fs.stat(target.abs).catch((err) => {
     throw fsFailure(err, 'searching file contents', target.show);
   });
+
+  // A directory goes to ripgrep when it is installed: it is many times faster
+  // on a real project. A pattern ripgrep reads differently (lookarounds,
+  // back-references) makes it fail, and the search below runs instead.
+  if (!stat.isFile()) {
+    const fast = await ripgrep(pattern, target.abs, { filter, ignoreCase: ignore_case });
+    if (fast) {
+      if (!fast.hits.length) {
+        return result(`No line matched /${pattern}/ under ${target.show}${filter ? ` (limited to ${filter})` : ''}.`, 'no matches');
+      }
+      const capped = fast.hits.length >= MAX_GREP_HITS
+        ? `\n[stopped at ${MAX_GREP_HITS} matches — narrow the pattern, or pass a glob]`
+        : '';
+      return result(
+        fast.hits.join('\n') + capped,
+        `${fast.hits.length} match${fast.hits.length === 1 ? '' : 'es'} in ` +
+        `${fast.files} file${fast.files === 1 ? '' : 's'}`
+      );
+    }
+  }
 
   let base = target.abs;
   let candidates;

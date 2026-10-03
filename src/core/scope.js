@@ -33,9 +33,68 @@ const QUESTION = /\?\s*$|^\s*(?:what|how|why|when|where|who|which|can|could|does
 /** Does this message ask for something to be built? Never for a question. */
 export const asksToBuild = (input) => !QUESTION.test(input) && BUILDS.some((re) => re.test(input));
 
-/** The request as the model sees it: one that asks for an app carries the note. */
-export function withScope(input) {
-  return asksToBuild(input) ? `${input}\n\n${SCOPE_NOTE}` : input;
+/**
+ * A design direction for one build, so two apps never come out the same.
+ *
+ * Left to itself the model reaches for the same tone, the same system font and
+ * whatever accent the starter shipped with. Handing it a direction - a tone,
+ * a pair of typefaces, an accent - is a choice already made, which is free; a
+ * generic build caught afterwards costs a fix round. Every font is a free
+ * Google Font with a system fallback, so an offline page still renders.
+ */
+export const DIRECTIONS = [
+  { tone: 'calm', display: 'DM Serif Display', body: 'DM Sans', accent: '#c2410c', base: 'light' },
+  { tone: 'technical', display: 'JetBrains Mono', body: 'IBM Plex Sans', accent: '#16a34a', base: 'dark' },
+  { tone: 'playful', display: 'Baloo 2', body: 'Nunito', accent: '#e11d48', base: 'light' },
+  { tone: 'editorial', display: 'Fraunces', body: 'Source Sans 3', accent: '#b45309', base: 'light' },
+  { tone: 'clinical', display: 'IBM Plex Sans', body: 'IBM Plex Sans', accent: '#0369a1', base: 'light' },
+  { tone: 'industrial', display: 'Space Grotesk', body: 'Space Grotesk', accent: '#eab308', base: 'dark' },
+  { tone: 'warm', display: 'Bricolage Grotesque', body: 'Figtree', accent: '#ea580c', base: 'light' },
+  { tone: 'dense', display: 'Manrope', body: 'Manrope', accent: '#2563eb', base: 'light' },
+  { tone: 'retro', display: 'Righteous', body: 'Rubik', accent: '#db2777', base: 'dark' },
+  { tone: 'natural', display: 'Lora', body: 'Karla', accent: '#4d7c0f', base: 'light' },
+  { tone: 'bold', display: 'Archivo Black', body: 'Archivo', accent: '#dc2626', base: 'light' },
+  { tone: 'soft', display: 'Quicksand', body: 'Mulish', accent: '#0e7490', base: 'light' },
+];
+
+/** The direction note for one build. `pick` is for tests. */
+export function directionNote(pick = Math.random) {
+  const d = DIRECTIONS[Math.floor(pick() * DIRECTIONS.length) % DIRECTIONS.length];
+  const type = d.display === d.body ? `"${d.display}"` : `"${d.display}" for headings and "${d.body}" for text`;
+  return '(From ucode: design direction for this build, unless the request sets its own - ' +
+    `tone ${d.tone}; type ${type}, from Google Fonts with a system fallback; accent ${d.accent} ` +
+    `on a ${d.base} base. In the same reply as your first tool call, say in one line the app's name, ` +
+    'its tone, its accent and the one memorable detail it will have, then build to exactly that.)';
+}
+
+/**
+ * A change to code that already exists - the other half of what ucode is for.
+ *
+ * Every rule in the system prompt about building is about a new app: design
+ * it, write it whole, hand it over. Asked to fix a bug in a real project, a
+ * model following those rules redesigns the page. So a change request in a
+ * folder with code in it carries its own note instead.
+ */
+export const EDIT_NOTE =
+  '(From ucode: this is a change to an existing project. Find the code first - find_symbol, grep ' +
+  'or outline - then read only the files involved, together in one read_files. Make the smallest ' +
+  'change that does it, in the style the code already uses. Do not redesign, rename or reformat ' +
+  'what works, and do not start a new app. Then run the project\'s checks.)';
+
+const CHANGE = /\b(?:fix|bug|error|broken|crash|fails?|change|update|refactor|rename|add|remove|delete|improve|optimi[sz]e|clean ?up|move|replace|support|implement|make it|make the)\b/i;
+
+/** Does this message ask for a change to code that is already here? */
+export const asksToChange = (input) => !asksToBuild(input) && CHANGE.test(input);
+
+/**
+ * The request as the model sees it. One that asks for an app carries the
+ * scope note and a design direction; a change in a folder with code in it
+ * carries the note for working in an existing project.
+ */
+export function withScope(input, { hasCode = false, pick = Math.random } = {}) {
+  if (asksToBuild(input)) return `${input}\n\n${directionNote(pick)}\n${SCOPE_NOTE}`;
+  if (hasCode && asksToChange(input)) return `${input}\n\n${EDIT_NOTE}`;
+  return input;
 }
 
 /** A message with no letters or digits in it ("+", "?", "...") — nothing to answer or build. */

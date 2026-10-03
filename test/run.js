@@ -8,6 +8,11 @@
  * after itself. Nothing here makes a network call.
  */
 
+// Nothing a test does may land in the real ~/.ucode.
+process.env.UCODE_SNAPSHOTS = '0';
+process.env.UCODE_LESSONS = '0';
+process.env.UCODE_RPM = '0';
+
 import { promises as fs } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';

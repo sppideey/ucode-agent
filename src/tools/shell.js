@@ -14,7 +14,7 @@ import { openSync, closeSync, readFileSync, mkdirSync, statSync } from 'node:fs'
 import os from 'node:os';
 import path from 'node:path';
 import { ToolFailure } from '../core/failure.js';
-import { resolveIn, guard, confirm, result, getRoot, MAX_OUTPUT } from './shared.js';
+import { resolveIn, guard, confirm, approveCommand, result, getRoot, MAX_OUTPUT } from './shared.js';
 
 const DEFAULT_TIMEOUT = 120_000;
 const MAX_TIMEOUT = 600_000;
@@ -712,6 +712,9 @@ export async function runCommand({ command, cwd, timeout_ms, background }, { onO
     ? resolveIn(cwd, 'run_command', 'cwd')
     : { abs: getRoot(), inside: true, show: '.' };
   await guard(workdir, `run a command in ${workdir.abs}`);
+
+  // "commands": "ask" in settings: every command is put to the user first.
+  await approveCommand(command, workdir.show);
 
   const env = childEnv();
   const server = startsServer(command);

@@ -42,7 +42,11 @@ export async function testRunnerFor(dir) {
     ['pytest.ini', 'pyproject.toml', 'setup.cfg', 'tox.ini'].map((f) =>
       fs.access(path.join(dir, f)).then(() => true, () => false))
   );
-  return py.some(Boolean) ? 'pytest' : null;
+  if (py.some(Boolean)) return 'pytest';
+  const at = (f) => fs.access(path.join(dir, f)).then(() => true, () => false);
+  if (await at('go.mod')) return 'go';
+  if (await at('Cargo.toml')) return 'cargo';
+  return null;
 }
 
 /** Quote a path for a shell, and use forward slashes so Windows agrees. */
@@ -70,6 +74,15 @@ export function relatedCommand(runner, files) {
     const tests = list.filter(isTestFile);
     if (!tests.length) return null;
     return `python -m pytest -q ${tests.map(arg).join(' ')}`;
+  }
+  // Go tests a package at a time: the packages that hold the changed files.
+  if (runner === 'go') {
+    const dirs = [...new Set(list.filter((f) => /\.go$/i.test(f)).map((f) => path.dirname(f).replace(/\\/g, '/')))];
+    if (!dirs.length) return null;
+    return `go test ${dirs.map((d) => `./${d === '.' ? '' : `${d}/`}...`).join(' ')}`;
+  }
+  if (runner === 'cargo') {
+    return list.some((f) => /\.rs$/i.test(f)) ? 'cargo test --quiet' : null;
   }
   return null;
 }

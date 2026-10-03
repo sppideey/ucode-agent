@@ -39,6 +39,9 @@ function parseArgs(argv) {
     else if (a === '--cwd' || a === '-C') args.cwd = path.resolve(argv[++i]);
     else if (a === '--help' || a === '-h') args.help = true;
     else if (a === '--version' || a === '-v') args.version = true;
+    else if (a === '--print' || a === '-p') args.print = argv[i + 1] && !argv[i + 1].startsWith('-') ? argv[++i] : '-';
+    else if (a === '--json') args.json = true;
+    else if (a === '--yes' || a === '-y') args.yes = true;
   }
 
   return args;
@@ -59,10 +62,16 @@ async function usage() {
     '    -C, --cwd <dir>    work in another directory\n' +
     '        --plan         start in plan mode: read and research, change nothing\n' +
     '        --debug        print stack traces when something breaks\n' +
+    '    -p, --print <task> do one task with no keyboard, print the answer, exit\n' +
+    '        --json         with -p: print one JSON object about the run instead\n' +
+    '    -y, --yes          with -p: say yes to anything that would be asked\n' +
     '    -v, --version      print the version\n' +
     '    -h, --help         this message\n' +
     '    doctor             check that everything ucode needs is working\n' +
-    '    login <key>        save your key for every folder on this machine\n\n' +
+    '    login <key>        save your key for every folder on this machine\n' +
+    '    mcp add <name> <command> [args...]   connect an MCP server (--url <url> for a remote one)\n' +
+    '    mcp list | mcp remove <name>\n\n' +
+    `  ${sky('Other models')}  UCODE_BASE_URL=http://localhost:11434/v1 UCODE_MODEL=<model> ucode  (Ollama, offline)\n\n` +
     `  ${sky('Models')}\n${models}\n\n` +
     `  Needs GEMINI_API_KEY in the environment or in ${ENV_FILE}\n` +
     '  Free keys: https://aistudio.google.com/apikey\n\n'
@@ -89,6 +98,33 @@ async function main() {
 
   if (args.version) {
     process.stdout.write(`${VERSION}\n`);
+    return;
+  }
+
+  if (process.argv[2] === 'mcp') {
+    const { mcpCommand } = await import('./src/core/mcpcli.js');
+    process.stdout.write(`${await mcpCommand(process.argv.slice(3))}\n`);
+    return;
+  }
+
+  if (args.print !== undefined) {
+    let prompt = args.print;
+    if (prompt === '-') {
+      const chunks = [];
+      for await (const chunk of process.stdin) chunks.push(chunk);
+      prompt = Buffer.concat(chunks).toString('utf8').trim();
+    }
+    if (!prompt) {
+      process.stderr.write('ucode -p needs a task: ucode -p "fix the failing test"\n');
+      process.exitCode = 2;
+      return;
+    }
+    const [, { setModel }] = await heavy();
+    if (args.model) setModel(args.model);
+    const { runHeadless } = await import('./src/core/headless.js');
+    const code = await runHeadless({ cwd: args.cwd, prompt, json: args.json, yes: args.yes, plan: args.plan });
+    // A one-shot run ends here, whatever handle something left open.
+    process.stdout.write('', () => process.exit(code));
     return;
   }
 

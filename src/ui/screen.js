@@ -44,6 +44,7 @@ import {
 import { FRAME_MS, spinnerGlyph, formatDuration, doneLine, workingLine, bannerSweep, SWEEP_MS } from './activity.js';
 import { gitBranch } from '../core/git.js';
 import { renderer, render } from './markdown.js';
+import { badge } from './plain.js';
 import { VERSION } from '../core/version.js';
 
 /**
@@ -1203,22 +1204,23 @@ export class Screen {
   }
 
   /** y/n, answered on the input line. */
-  confirm({ action, detail, risk }) {
+  confirm({ action, detail, risk, always }) {
     this.push('');
-    this.push(`${chalk.inverse(theme.warn(risk === 'command' ? ' shell ' : ' outside project '))} ${chalk.white(action)}`);
+    this.push(`${chalk.inverse(theme.warn(badge(risk)))} ${chalk.white(action)}`);
     for (const line of String(detail ?? '').split('\n')) {
       if (line) this.push(dim(`  ${line}`));
     }
 
-    this.pendingPrompt = 'go ahead? [y/N]';
+    this.pendingPrompt = always ? `go ahead? [y/N, a = always allow ${always}]` : 'go ahead? [y/N]';
     this.scroll = 0; // the question has to be on screen to be answered
     this.render();
 
     return this.nextLine().then((answer) => {
       this.pendingPrompt = null;
       // End of input counts as no. Never run something nobody approved.
-      const yes = /^(y|yes)$/i.test(String(answer ?? '').trim());
-      this.push(dim(yes ? '  approved' : '  declined'));
+      const said = String(answer ?? '').trim();
+      const yes = always && /^(a|always)$/i.test(said) ? 'always' : /^(y|yes)$/i.test(said);
+      this.push(dim(yes === 'always' ? `  approved — ${always} is always allowed here now` : yes ? '  approved' : '  declined'));
       this.push('');
       return yes;
     });
