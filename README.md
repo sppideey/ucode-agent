@@ -4,6 +4,22 @@ A coding agent that lives in your terminal. It reads your code, edits it, runs
 your commands, and keeps every conversation on disk. It runs on Google's
 Gemini models, free with a key.
 
+## At a glance
+
+| | |
+| --- | --- |
+| **Builds** | a whole app in about a minute, from a starter that already works, opened for you when it does |
+| **Thinks** | a thinking level per step — cheap on easy steps, more on the plan, most when a fix has failed |
+| **Designs** | its own tone, typefaces and accent for every app, and a check that sends the generated look back |
+| **Checks** | types, syntax, related tests, the running server's errors, and the page itself — opened and clicked |
+| **Fixes** | sends problems back to the model, tries a different approach when a fix fails, learns the common ones |
+| **Edits real code** | finds the code first, smallest change in the code's own style; renames by code shape |
+| **Undoes** | `/undo [n]` puts the whole project back, including what commands changed |
+| **Git** | `/diff`, `/commit` with a written message, `/review` for bugs |
+| **Extends** | MCP servers, hooks, skills, your own slash commands |
+| **Automates** | `ucode -p "task" --json` for scripts and CI; `npm run eval` runs ten real jobs |
+| **Stays free** | Gemini's free tier, paced to its per-minute limit — or Ollama, offline |
+
 It opens on a quiet screen — the name, the place to type, and the version in the
 corner:
 
@@ -19,7 +35,7 @@ corner:
   ╭──────────────────────────────────────────────────────────────────────────────╮
   │ › Ask anything…                                                              │
   │                                                                              │
-  │  BUILD   North Mini Code                                                  0% │
+  │  BUILD   Gemini 3.5 Flash-Lite                                            0% │
   ╰──────────────────────────────────────────────────────────────────────────────╯
 
    try   build me a landing page for a coffee shop
@@ -27,7 +43,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                                                           v1.62.7
+                                                                           v1.64.0
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box
@@ -49,7 +65,7 @@ The dashboard is at http://localhost:3000, and `npm run dev` brings it back up.
 ╭──────────────────────────────────────────────────────────────────────────────────╮
 │ › now add a dark mode toggle                                                     │
 │                                                                                  │
-│  BUILD   North Mini Code                                                      4% │
+│  BUILD   Gemini 3.5 Flash-Lite                                                4% │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
 ```
 
@@ -101,7 +117,7 @@ When Google is overloaded and Flash-Lite stops answering, ucode carries on with
 
 ## What it does
 
-**Twenty-one tools.** `create_app`, `read_file`, `read_files`, `write_file`,
+**Twenty-one tools, and any MCP server you add.** `create_app`, `read_file`, `read_files`, `write_file`,
 `batch_write`, `edit_file`, `multi_edit`, `edit_files`, `rename_symbol`,
 `find_symbol`, `outline`, `type_of`, `add_block`, `list_dir`, `glob`, `grep`,
 `run_command`, `run_commands`, `look_at_app`, `web_search`, `deploy`. Read-only
@@ -253,7 +269,7 @@ check and a screenshot; the only way to find out is to press something.
 
 It also reports console errors, failed requests, content that spills off a
 phone screen, broken images and unlabeled controls, saves screenshots to
-`.ucode/screenshots`, and has Nemotron Nano Omni review them the way a designer
+`.ucode/screenshots`, and has Gemini review them the way a designer
 would. The model fixes what it finds before calling the app done. Both widths load at once, and the designer review — the slow part — runs
 on the first look at an app in each request and is skipped, not waited on, when
 the vision model is busy. The look after the fixes re-runs only the fast checks:
@@ -448,7 +464,7 @@ ucode -p "make a quiz app" --json --yes    one JSON line: ok, answer, files, ste
 
 Progress goes to stderr. With no `--yes`, anything that would be asked is declined.
 `npm run eval` runs ten real jobs this way and checks each one — use it before
-a release (it spends about 100 free requests).
+a release (it spends about 30 free requests, and takes about seven minutes).
 
 ### Other models
 
@@ -499,7 +515,12 @@ ucode [options]
 
 | | |
 | --- | --- |
-| `~/.ucode/.env` | `UCODE_API_KEY`, and `TAVILY_API_KEY` for web search |
+| `~/.ucode/.env` | `GEMINI_API_KEY`, and `TAVILY_API_KEY` for web search |
+| `~/.ucode/settings.json`, `.ucode/settings.json` | permissions, always-allowed commands, hooks |
+| `~/.ucode/mcp.json`, `.ucode/mcp.json` | MCP servers |
+| `.ucode/commands/*.md` | your own slash commands |
+| `~/.ucode/snapshots/` | the project before each turn, for `/undo` |
+| `~/.ucode/lessons.json` | mistakes ucode keeps catching, warned about next time |
 | `~/.ucode/sessions/` | one JSON per conversation |
 | `.ucode/skills/` | skills belonging to a project |
 | `UCODE.md` | project memory, read every turn |
@@ -529,6 +550,13 @@ src/core/window.js    folding a long conversation to fit
 src/core/skills.js    loading skills, and deciding which load themselves
 src/core/context.js   the project map and project memory
 src/core/failure.js   one error shape: what, why, what next
+src/core/scope.js     what a request carries: build scope, design direction, edit rules
+src/core/genericcheck.js  the check for a generated-looking design
+src/core/lessons.js   mistakes counted across sessions, warned about up front
+src/core/snapshot.js  the project before every turn, for /undo
+src/core/settings.js  permissions, always-allow, hooks, project trust
+src/core/mcp.js       the MCP client: stdio and HTTP servers, no SDK
+src/core/headless.js  ucode -p: one job, no keyboard
 src/tools/            the twenty-one tools, plus their shared plumbing
 src/ui/screen.js      the full-screen interface
 src/ui/plain.js       the same interface for when there is no terminal
