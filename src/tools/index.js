@@ -722,6 +722,10 @@ export function describe(name, args = {}) {
       return `Searching the web for ${clip(args.query, 60)}`;
     case 'load_skill':
       return `Loading the ${clip(args.name, 40)} skill`;
+    case 'change_look':
+      return args.reset ? 'Putting ucode\'s look back' : 'Changing how ucode looks';
+    case 'change_terminal':
+      return args.reset ? 'Putting the terminal back' : 'Changing the terminal';
     default:
       return `${name} ${clip(JSON.stringify(args), 60)}`;
   }

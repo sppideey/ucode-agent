@@ -1747,7 +1747,7 @@ await test('a plain app is handed over the moment it works, and sent back when i
   const call = { name: 'create_app', args: { folder: 'handme', files: [{ path: 'handme/index.html', content: 'x' }] } };
   const good = await agent.handOver([call]);
   ok(good?.done, `a working page is handed over: ${JSON.stringify(good)?.slice(0, 200)}`);
-  ok(/^handme is done in \d+s\. Open it here: file:\/\/.*handme\/index\.html/.test(said[0] ?? ''), said[0]);
+  ok(/^handme is done in (?:\d+m )?\d+s\. Open it here: file:\/\/.*handme\/index\.html/.test(said[0] ?? ''), said[0]);
   ok(/handme[\\/]index\.html$/.test(opened[0] ?? ''), `the page is opened in the browser: ${opened[0]}`);
 
   await write('handme/index.html', page("document.getElementById('missing').onclick = () => {};"));

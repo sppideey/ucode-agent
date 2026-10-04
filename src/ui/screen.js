@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import {
-  theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER,
+  theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER, look,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
   bannerPaint, RAIL, modeChip, ADD_CHIP, micChip, asNarrationLine } from './theme.js';
@@ -819,7 +819,7 @@ export class Screen {
     ].filter(Boolean).slice(0, BANNER.length - 1);
 
     while (facts.length < BANNER.length - 1) facts.push(['', '']);
-    facts.push(['', 'made with ❤ by om dixit']);
+    facts.push(['', look.byline]);
 
     const rows = BANNER.map((art, i) => {
       const [label, text] = facts[i] ?? ['', ''];

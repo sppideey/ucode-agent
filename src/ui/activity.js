@@ -12,7 +12,7 @@
  */
 
 import chalk, { Chalk } from 'chalk';
-import { dim, sky, theme, clip, SPINNER, bannerRGB, bannerPaint } from './theme.js';
+import { dim, sky, theme, clip, SPINNER, bannerRGB, bannerPaint, look, hexRGB } from './theme.js';
 
 /** One painter per colour level, so a test can ask for truecolour on a pipe. */
 const painters = new Map();
@@ -289,7 +289,7 @@ export function spinnerGlyph(frame, t, { level = chalk.level } = {}) {
   const glyph = SPINNER[((frame % SPINNER.length) + SPINNER.length) % SPINNER.length];
   if (level < 2) return theme.blue(glyph);
   const k = (Math.sin((Math.max(0, t) / 1000) * Math.PI * 2) + 1) / 2;
-  const [r, g, b] = mix([0x2f, 0x6f, 0xe0], [0x9f, 0xc6, 0xff], k);
+  const [r, g, b] = mix(hexRGB(look.deep), hexRGB(look.light), k);
   return painter(level).rgb(r, g, b)(glyph);
 }
 

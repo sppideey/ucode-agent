@@ -14,7 +14,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, dim, boxTop, boxBottom, boxRow,
   BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine, bannerPaint, modeChip, narrationMark, groupKind,
-  tidyReply, trimAnswer,
+  tidyReply, trimAnswer, look,
 } from './theme.js';
 import { formatDuration, doneLine } from './activity.js';
 import { renderer, render } from './markdown.js';
@@ -101,7 +101,7 @@ export class Plain {
       ['keys', '/help'],
       ['', ''],
       ['', ''],
-      ['', 'made with ❤ by om dixit'],
+      ['', look.byline],
     ];
 
     // There is no input box to hang the status off here, so it goes on the

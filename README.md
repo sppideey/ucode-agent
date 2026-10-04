@@ -17,6 +17,7 @@ Gemini models, free with a key.
 | **Undoes** | `/undo [n]` puts the whole project back, including what commands changed |
 | **Git** | `/diff`, `/commit` with a written message, `/review` for bugs |
 | **Extends** | MCP servers, hooks, skills, your own slash commands |
+| **Restyles** | itself and your terminal, when you ask: "make ucode orange and my terminal navy" |
 | **Automates** | `ucode -p "task" --json` for scripts and CI; `npm run eval` runs ten real jobs |
 | **Stays free** | Gemini's free tier, paced to its per-minute limit — or Ollama, offline |
 
@@ -43,7 +44,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                                                           v1.64.0
+                                                                           v1.65.0
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box
@@ -388,6 +389,7 @@ Everything after the frontmatter is the instruction.
 | `/init` | read the project and write its `UCODE.md` |
 | `/mcp` | connected MCP servers and their tools |
 | `/permissions [ask\|auto]` | ask before every command, or run them; what is always allowed |
+| `/theme [what]` | change how ucode or your terminal looks — or just ask in words |
 | `/look [url]` | open the running app and report what is on the page |
 | `/deploy [folder]` | put the app online and get its link |
 | `/mic` | say what you want instead of typing it — same as `ctrl+t` |
@@ -414,6 +416,32 @@ Gemini writes down what you said, so nothing extra is needed beyond your key.
 Recording uses what the computer already has: Windows' built-in recorder, `sox`
 or `ffmpeg` on macOS (`brew install sox`), `arecord` or `sox` on Linux. If a
 quiet mic is taken for silence, set `UCODE_MIC_QUIET` lower than 800.
+
+### Change how it looks — and your terminal
+
+Just ask: "make ucode orange with the arc spinner", "put my name under the
+logo", "make my terminal navy with a bigger font", "make the terminal a bit
+see-through". Or use `/theme`:
+
+```
+/theme                   what it looks like now, and the choices
+/theme orange            a new colour at once (a name, #ff8c2b, or rgb(...))
+/theme reset             ucode's own blue again
+/theme terminal reset    the terminal back the way it was
+```
+
+ucode's look is saved in `~/.ucode/theme.json` — accent, spinner (`dots`,
+`line`, `arc`, `circle`, `square`, `bounce`, `pulse`, `star`) and the line
+under the logo — so it survives restarts and updates.
+
+The terminal is changed the way each one allows, after you say yes:
+
+| Terminal | What changes | How long |
+| --- | --- | --- |
+| Windows Terminal | background, text, cursor, font, size, opacity | kept, every tab (the old settings are backed up) |
+| Terminal.app (macOS) | background, text, cursor, font, size | this window |
+| iTerm2 (macOS) | background, text, cursor | this session |
+| Linux, VS Code and others | background, text, cursor | this session |
 
 ### Your own commands
 

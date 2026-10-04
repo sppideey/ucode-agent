@@ -9,12 +9,17 @@
  */
 
 import chalk from 'chalk';
+import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 
 // One hue, three weights. Anything that needs a fourth is asking for emphasis
-// it has not earned.
-export const blue = chalk.hex('#4d8dff');   // structure: borders, the caret, the wordmark
-export const sky = chalk.hex('#8fbcff');    // secondary: labels that still matter
-export const deep = chalk.hex('#2f6fe0');   // pressed, quiet, behind
+// it has not earned. The hue is the user's to change ("make ucode orange"):
+// these are `let`, so every module that imported them sees a new look the
+// moment applyLook() runs - see the "Your look" section below.
+export let blue = chalk.hex('#4d8dff');   // structure: borders, the caret, the wordmark
+export let sky = chalk.hex('#8fbcff');    // secondary: labels that still matter
+export let deep = chalk.hex('#2f6fe0');   // pressed, quiet, behind
 export const dim = chalk.dim;
 
 /**
@@ -25,7 +30,7 @@ export const dim = chalk.dim;
  * terminal fonts visibly thicker, which is enough to separate "where you type"
  * from "what you are reading" without a second colour.
  */
-export const edge = chalk.hex('#4d8dff').bold;
+export let edge = chalk.hex('#4d8dff').bold;
 
 /**
  * The colour level to use for a stream, or null to leave chalk's guess alone.
@@ -87,8 +92,8 @@ export const BANNER_WIDTH = Math.max(...BANNER.map((r) => r.length));
  * the page. chalk downshifts the hex to whatever the terminal actually has, so
  * on a 16-colour terminal this is flat blue again rather than nothing.
  */
-const GRADIENT_TOP = [0x8f, 0xbc, 0xff];      // sky, at the crown
-const GRADIENT_BOTTOM = [0x2f, 0x6f, 0xe0];   // deep, in the shadow
+let GRADIENT_TOP = [0x8f, 0xbc, 0xff];      // sky, at the crown
+let GRADIENT_BOTTOM = [0x2f, 0x6f, 0xe0];   // deep, in the shadow
 
 export function bannerRGB(row, rows = BANNER.length) {
   const t = rows > 1 ? Math.min(1, Math.max(0, row / (rows - 1))) : 0;
@@ -121,14 +126,14 @@ export const RAIL = '▌';
  * once: it is the width of the word, the way a diff's tint is the width of the
  * line it marks.
  */
-export const BUILD_CHIP = chalk.bgHex('#4d8dff').hex('#0b1220').bold;
-export const PLAN_CHIP = chalk.bgHex('#24344f').hex('#8fbcff').bold;
+export let BUILD_CHIP = chalk.bgHex('#4d8dff').hex('#0b1220').bold;
+export let PLAN_CHIP = chalk.bgHex('#24344f').hex('#8fbcff').bold;
 
 export const modeChip = (mode) =>
   mode === 'plan' ? PLAN_CHIP(' PLAN ') : BUILD_CHIP(' BUILD ');
 
 /** The "+ file" button beside the mode chip, in the quieter of the two chip styles. */
-export const ADD_CHIP = PLAN_CHIP(' + file ');
+export let ADD_CHIP = PLAN_CHIP(' + file ');
 
 /** The mic button beside it: quiet when idle, red while it is listening. */
 const LISTEN_CHIP = chalk.bgHex('#e5484d').hex('#ffffff').bold;
@@ -138,7 +143,7 @@ export const micChip = (state) =>
       : PLAN_CHIP(' mic ');
 
 /** The spinner. Braille dots, because they animate in place without jitter. */
-export const SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+export let SPINNER = ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
 
 // ---------------------------------------------------------------------------
 // Boxes
@@ -870,3 +875,127 @@ function withinRoom(text, room = ANSWER_ROOM) {
   }
   return (out.trim() || text.slice(0, room)).trim();
 }
+
+// ---------------------------------------------------------------------------
+// Your look
+// ---------------------------------------------------------------------------
+
+/**
+ * ucode's look is the user's to change, by asking: "make yourself orange",
+ * "a calmer spinner", "put my name under the logo". It is a small file of
+ * choices rather than an edit to this one, so it survives every update and can
+ * never break ucode - a value that does not parse is simply ignored.
+ *
+ *   { "accent": "#ff8c2b", "light": "#ffb454", "deep": "#c2410c",
+ *     "spinner": "dots", "byline": "made by me" }
+ *
+ * Only accent is needed; light and deep are worked out from it.
+ */
+export const LOOK_FILE = process.env.UCODE_LOOK_FILE || path.join(os.homedir(), '.ucode', 'theme.json');
+
+export const SPINNERS = {
+  dots: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
+  line: ['-', '\\', '|', '/'],
+  arc: ['◜', '◠', '◝', '◞', '◡', '◟'],
+  circle: ['◐', '◓', '◑', '◒'],
+  square: ['◰', '◳', '◲', '◱'],
+  bounce: ['⠁', '⠂', '⠄', '⠂'],
+  pulse: ['·', '•', '●', '•'],
+  star: ['✶', '✸', '✹', '✺', '✹', '✸'],
+};
+
+export const DEFAULT_LOOK = Object.freeze({
+  accent: '#4d8dff', light: '#8fbcff', deep: '#2f6fe0', spinner: 'dots', byline: 'made with ❤ by om dixit',
+});
+
+const NAMED = {
+  red: '#ef4444', orange: '#f97316', amber: '#f59e0b', gold: '#eab308', yellow: '#facc15', lime: '#84cc16',
+  green: '#22c55e', emerald: '#10b981', teal: '#14b8a6', cyan: '#06b6d4', sky: '#0ea5e9', blue: '#4d8dff',
+  indigo: '#6366f1', violet: '#8b5cf6', purple: '#a855f7', magenta: '#d946ef', pink: '#ec4899', rose: '#f43f5e',
+  white: '#f5f5f5', grey: '#9ca3af', gray: '#9ca3af', silver: '#c0c0c0', black: '#111111', brown: '#a16207',
+  coral: '#ff7f50', salmon: '#fa8072', navy: '#1e3a8a', maroon: '#9f1239', olive: '#65a30d', mint: '#6ee7b7',
+  lavender: '#c4b5fd', peach: '#fdba74', crimson: '#dc143c', turquoise: '#40e0d0',
+};
+
+/** '#abc', '#aabbcc', 'rgb(1,2,3)' or a colour name, as '#rrggbb' - or null. */
+export function normaliseColour(value) {
+  const v = String(value ?? '').trim().toLowerCase();
+  if (NAMED[v]) return NAMED[v];
+  const short = /^#?([0-9a-f])([0-9a-f])([0-9a-f])$/.exec(v);
+  if (short) return `#${short[1]}${short[1]}${short[2]}${short[2]}${short[3]}${short[3]}`;
+  const long = /^#?([0-9a-f]{6})$/.exec(v);
+  if (long) return `#${long[1]}`;
+  const rgb = /^rgb\(\s*(\d{1,3})[\s,]+(\d{1,3})[\s,]+(\d{1,3})\s*\)$/.exec(v);
+  if (rgb && rgb.slice(1).every((n) => Number(n) <= 255)) {
+    return `#${rgb.slice(1).map((n) => Number(n).toString(16).padStart(2, '0')).join('')}`;
+  }
+  return null;
+}
+
+export const hexRGB = (hex) => [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16));
+const rgbHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
+
+/** Part of the way from one colour to another: t = 0 is a, 1 is b. */
+export const mixHex = (a, b, t) => rgbHex(hexRGB(a).map((v, i) => v + (hexRGB(b)[i] - v) * t));
+
+/** The look in the file, or nothing. Never throws. */
+export function readLook(file = LOOK_FILE) {
+  try {
+    const data = JSON.parse(readFileSync(file, 'utf8'));
+    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
+  } catch {
+    return {};
+  }
+}
+
+/** The current look, filled out: what applyLook settled on. */
+export let look = { ...DEFAULT_LOOK };
+
+/** Put a look on screen. Missing or broken values fall back to the default. */
+export function applyLook(wanted = {}) {
+  const accent = normaliseColour(wanted.accent) ?? DEFAULT_LOOK.accent;
+  const own = accent !== DEFAULT_LOOK.accent;
+  const light = normaliseColour(wanted.light) ?? (own ? mixHex(accent, '#ffffff', 0.45) : DEFAULT_LOOK.light);
+  const deepHex = normaliseColour(wanted.deep) ?? (own ? mixHex(accent, '#000000', 0.25) : DEFAULT_LOOK.deep);
+  const spinner = SPINNERS[wanted.spinner] ? wanted.spinner : DEFAULT_LOOK.spinner;
+  const byline = typeof wanted.byline === 'string' ? wanted.byline.replace(/[\x00-\x1f]/g, '').slice(0, 40) : DEFAULT_LOOK.byline;
+
+  look = { accent, light, deep: deepHex, spinner, byline };
+  blue = chalk.hex(accent);
+  sky = chalk.hex(light);
+  deep = chalk.hex(deepHex);
+  edge = chalk.hex(accent).bold;
+  theme.blue = blue;
+  theme.sky = sky;
+  theme.deep = deep;
+  GRADIENT_TOP = hexRGB(light);
+  GRADIENT_BOTTOM = hexRGB(deepHex);
+  BUILD_CHIP = chalk.bgHex(accent).hex('#0b1220').bold;
+  PLAN_CHIP = chalk.bgHex(mixHex(deepHex, '#0b1220', 0.65)).hex(light).bold;
+  ADD_CHIP = PLAN_CHIP(' + file ');
+  SPINNER = SPINNERS[spinner];
+  return look;
+}
+
+/**
+ * Change the look and keep it: `changes` are merged into what is saved, a key
+ * set to null goes back to its default, and { reset: true } starts over.
+ */
+export function saveLook(changes = {}, { reset = false, file = LOOK_FILE } = {}) {
+  const merged = reset ? {} : { ...readLook(file) };
+  for (const [key, value] of Object.entries(changes)) {
+    if (!(key in DEFAULT_LOOK)) continue;
+    if (value === null || value === '') delete merged[key];
+    else merged[key] = value;
+  }
+  // An accent alone gets its own light and dark steps, not the old ones.
+  if ('accent' in changes && !('light' in changes)) delete merged.light;
+  if ('accent' in changes && !('deep' in changes)) delete merged.deep;
+  mkdirSync(path.dirname(file), { recursive: true });
+  const temp = `${file}.${process.pid}.tmp`;
+  writeFileSync(temp, `${JSON.stringify(merged, null, 2)}\n`);
+  renameSync(temp, file);
+  return applyLook(merged);
+}
+
+applyLook(readLook());

@@ -67,6 +67,8 @@ import { Snapshots } from './snapshot.js';
 import { loadSettings, addAllow, isTrusted, trust, runHook } from './settings.js';
 import { McpHub, readServers, USER_MCP, projectMcpFile } from './mcp.js';
 import { loadCommands, expandCommand } from './commands.js';
+import { SPINNERS, saveLook, look, normaliseColour } from '../ui/theme.js';
+import { customizeTerminal, resetTerminal, detectTerminal, TERMINAL_NAMES } from './terminal.js';
 
 /**
  * Tool calls allowed in one turn.
@@ -568,6 +570,53 @@ export class Writing {
 
 /** Tools that only mean anything once there is code in the folder. */
 const LOOKUP_TOOLS = new Set(['find_symbol', 'outline', 'rename_symbol', 'type_of']);
+
+/**
+ * A request about ucode's own look, or the terminal's - not an app's. Only
+ * then do the two tools below go out: "make it purple" about an app must not
+ * repaint ucode instead.
+ */
+const WANTS_LOOK = /\b(?:ucode|terminal|yourself|your (?:own )?(?:colou?rs?|look|theme|style|banner|spinner|font|byline)|this (?:terminal|window))\b/i;
+
+const lookTool = {
+  name: 'change_look',
+  description:
+    'Change how ucode itself looks in the terminal - only when the user asks about ucode, not about an app. ' +
+    'Sets the accent colour (borders, wordmark, chips; a lighter and a deeper step are worked out from it), ' +
+    'the spinner, and the line under the logo. Saved, so it stays after a restart. reset: true goes back to ucode\'s own blue.',
+  parameters: {
+    type: 'object',
+    properties: {
+      accent: { type: 'string', description: 'A hex colour like "#ff8c2b", or a name like "orange", "teal", "pink".' },
+      light: { type: 'string', description: 'Optional: the lighter step (labels, the top of the wordmark).' },
+      deep: { type: 'string', description: 'Optional: the deeper step (the bottom of the wordmark).' },
+      spinner: { type: 'string', enum: Object.keys(SPINNERS), description: 'The spinner shape.' },
+      byline: { type: 'string', description: 'The short line beside the logo, up to 40 characters.' },
+      reset: { type: 'boolean', description: 'Go back to the default look.' },
+    },
+  },
+};
+
+const terminalTool = {
+  name: 'change_terminal',
+  description:
+    'Change the terminal window ucode is running in - its background, text colour, cursor, font, font size, or ' +
+    'see-through opacity - only when the user asks about their terminal. Windows Terminal keeps the change; ' +
+    'Terminal.app changes this window; other terminals change colours for this session. The user approves it ' +
+    'first. reset: true puts the terminal back.',
+  parameters: {
+    type: 'object',
+    properties: {
+      background: { type: 'string', description: 'Hex like "#1e1e2e" or a name like "navy".' },
+      foreground: { type: 'string', description: 'The text colour.' },
+      cursor: { type: 'string', description: 'The cursor colour.' },
+      font: { type: 'string', description: 'A font installed on this computer, e.g. "Cascadia Code" or "Menlo".' },
+      font_size: { type: 'integer', description: 'Font size, 6 to 48.' },
+      opacity: { type: 'integer', description: 'How solid the window is, 20 to 100 (Windows Terminal only).' },
+      reset: { type: 'boolean', description: 'Put the terminal back as it was.' },
+    },
+  },
+};
 
 /** A request that plainly wants the internet keeps web_search in a new project. */
 const WANTS_WEB = /\b(?:search|google|web|online|internet|latest|current|news|docs|documentation|api reference|look up|find out about)\b/i;
@@ -1394,6 +1443,13 @@ export class Agent {
     this.fresh = !hasCode(this.map);
     request.content = withScope(input, { hasCode: !this.fresh }) + added.text;
     this.wantsWeb = WANTS_WEB.test(input);
+    this.wantsLook = WANTS_LOOK.test(input) || this.lookTurn === true;
+    // Offering the tools was not enough: Flash-Lite said "Changing the look"
+    // and stopped. Said on the request itself, it calls them.
+    if (this.wantsLook) {
+      request.content += '\n\n(From ucode: to change how ucode itself looks, call change_look; to change the ' +
+        'terminal window, call change_terminal. Call them now - do not just say you will - then say in one line what changed.)';
+    }
     await this.persist();
 
     // A busy model was swapped for a fallback earlier; after a few minutes the
@@ -1463,13 +1519,13 @@ export class Agent {
    * wrong turns available to a model deciding what to do next.
    */
   toolsNow() {
-    const all = [...tools, loadSkillTool, planTool, delegateTool];
+    const all = [...tools, loadSkillTool, planTool, delegateTool, ...(this.wantsLook ? [lookTool, terminalTool] : [])];
     const live = this.fresh
       ? all.filter((t) => !LOOKUP_TOOLS.has(t.name) && !(t.name === 'web_search' && !this.wantsWeb))
       : all;
     // MCP tools can do anything their server does, so a read-only turn gets none.
     if (this.ui.mode !== 'plan' && !this.readOnly) return [...live, ...(this.mcp?.tools() ?? [])];
-    return live.filter((t) => !WRITES.has(t.name));
+    return live.filter((t) => !WRITES.has(t.name) && t !== lookTool && t !== terminalTool);
   }
 
   /**
@@ -2447,6 +2503,8 @@ export class Agent {
     if (call.name === 'load_skill') return this.loadSkill(call.args?.name);
     if (call.name === 'update_plan') return this.updatePlan(call.args?.items);
     if (call.name === 'delegate') return this.delegate(call.args?.tasks);
+    if (call.name === 'change_look') return this.changeLook(call.args ?? {});
+    if (call.name === 'change_terminal') return this.changeTerminal(call.args ?? {});
     if (this.mcp?.has(call.name)) return this.callMcp(call);
 
     // The snapshot /undo goes back to has to be on disk before anything changes.
@@ -2463,6 +2521,57 @@ export class Agent {
     });
     if (FILE_WRITES.has(call.name)) await this.afterEdit(call, out);
     return out;
+  }
+
+  /** change_look: ucode's own colours, spinner and byline, saved and shown at once. */
+  changeLook(args) {
+    const changes = {};
+    for (const key of ['accent', 'light', 'deep', 'spinner', 'byline']) {
+      if (args[key] !== undefined) changes[key] = args[key];
+    }
+    if (!args.reset && !Object.keys(changes).length) {
+      throw new ToolFailure({
+        kind: 'bad_args', attempted: 'changing how ucode looks',
+        failed: 'Nothing to change was given.', fix: 'Pass accent, spinner or byline - or reset: true.',
+      });
+    }
+    for (const key of ['accent', 'light', 'deep']) {
+      if (changes[key] && !normaliseColour(changes[key])) {
+        throw new ToolFailure({
+          kind: 'bad_args', attempted: 'changing ucode\'s colour',
+          failed: `"${changes[key]}" is not a colour ucode can read.`, fix: 'Use a hex like "#ff8c2b" or a name like "orange".',
+        });
+      }
+    }
+    const now = saveLook(changes, { reset: Boolean(args.reset) });
+    this.showHeader({ clear: false });
+    this.ui.render?.();
+    return {
+      content: `ucode now looks like this: accent ${now.accent}, spinner ${now.spinner}, byline "${now.byline}". It is saved and already on screen.`,
+      summary: `accent ${now.accent} · ${now.spinner}`,
+    };
+  }
+
+  /** change_terminal: the terminal window itself, after the user says yes. */
+  async changeTerminal(args) {
+    const name = TERMINAL_NAMES[detectTerminal()];
+    if (args.reset) {
+      await confirm(`put ${name} back the way it was`, 'Undoes the changes ucode made to it.', 'write');
+      const done = await resetTerminal();
+      return { content: done.message, summary: done.ok ? 'terminal reset' : 'nothing to reset' };
+    }
+    const wanted = Object.entries(args).filter(([, v]) => v !== undefined && v !== null && v !== '').map(([k, v]) => `${k} ${v}`);
+    await confirm(`change ${name}: ${wanted.join(', ')}`, 'ucode keeps a backup; "/theme terminal reset" puts it back.', 'write');
+    let done;
+    try {
+      done = await customizeTerminal(args);
+    } catch (err) {
+      throw new ToolFailure({ kind: 'bad_args', attempted: `changing ${name}`, failed: err.message, fix: 'Correct the values and try again.' });
+    }
+    if (!done.ok) {
+      throw new ToolFailure({ kind: 'not_supported', attempted: `changing ${name}`, failed: done.message, fix: 'Tell the user what this terminal allows instead.' });
+    }
+    return { content: done.message, summary: 'terminal changed' };
   }
 
   /** A tool from an MCP server: asked about first, unless always allowed. */
@@ -3311,6 +3420,7 @@ export class Agent {
       case '/review':   return this.cmdReview();
       case '/mcp':      return this.cmdMcp();
       case '/permissions': return this.cmdPermissions(arg);
+      case '/theme':    return this.cmdTheme(arg);
       case '/mic':
         if (this.ui.onMic) return this.mic('toggle');
         return this.ui.note('the mic works in the full-screen view — start ucode in a terminal window');
@@ -3426,6 +3536,51 @@ export class Agent {
     this.ui.blank();
   }
 
+  /**
+   * /theme                   how ucode looks now, and what can change
+   * /theme reset             ucode's own blue again
+   * /theme terminal reset    the terminal back as it was
+   * /theme orange | #ff8c2b  a new accent, at once
+   * /theme <anything else>   asked for in words: "/theme make the terminal navy with a bigger font"
+   */
+  async cmdTheme(arg) {
+    const said = arg.trim();
+    if (!said) {
+      this.ui.blank();
+      this.ui.write(`  ${blue('accent')}   ${look.accent}   ${dim('light')} ${look.light}   ${dim('deep')} ${look.deep}`);
+      this.ui.write(`  ${blue('spinner')}  ${look.spinner}  ${dim(`(${Object.keys(SPINNERS).join(', ')})`)}`);
+      this.ui.write(`  ${blue('byline')}   ${look.byline}`);
+      this.ui.write(`  ${blue('terminal')} ${TERMINAL_NAMES[detectTerminal()]}`);
+      this.ui.blank();
+      this.ui.write(dim('  /theme orange · /theme reset · /theme terminal reset · or just ask: "make ucode green and my terminal navy"'));
+      this.ui.blank();
+      return;
+    }
+    if (/^reset$/i.test(said)) {
+      saveLook({}, { reset: true });
+      this.showHeader({ clear: false });
+      this.ui.note('ucode is back to its own blue');
+      return;
+    }
+    if (/^terminal\s+reset$/i.test(said)) {
+      const done = await resetTerminal();
+      this.ui.note(done.message);
+      return;
+    }
+    if (/^\S+$/.test(said) && normaliseColour(said)) {
+      saveLook({ accent: said });
+      this.showHeader({ clear: false });
+      this.ui.note(`ucode is ${look.accent} now — saved for next time too`);
+      return;
+    }
+    this.lookTurn = true;
+    try {
+      await this.turn(`Change how ucode or this terminal looks: ${said}`);
+    } finally {
+      this.lookTurn = false;
+    }
+  }
+
   /** /permissions [ask|auto]: whether commands are asked about, and what is always allowed. */
   async cmdPermissions(arg) {
     const want = arg.trim().toLowerCase();
@@ -3518,6 +3673,7 @@ ${out.content}` });
       ['/init', `read the project and write ${MEMORY_FILE} for it`],
       ['/mcp', 'connected MCP servers and their tools'],
       ['/permissions', 'ask before commands, or run them; what is always allowed'],
+      ['/theme [what]', 'change how ucode or your terminal looks — or just ask in words'],
       ['/stats', 'time, steps and tokens this session'],
       ['/doctor', 'check that everything ucode needs is working'],
       ['/look [url]', 'open the running app and report what is on the page'],
