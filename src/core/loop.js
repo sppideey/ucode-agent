@@ -1179,6 +1179,7 @@ export class Agent {
       this.ui.onModeChange = () => this.showHeader({ clear: false });
       this.ui.onAttach = () => { this.attachFile().catch(() => {}); };
       this.ui.onMic = (action) => { this.mic(action).catch((err) => this.ui.error(err, { debug: this.debug })); };
+      this.ui.listCommands = () => this.paletteList();
     }
 
     for (const problem of this.skills.problems ?? []) {
@@ -1404,7 +1405,7 @@ export class Agent {
     this.planItems = [];
     this.askedAboutPlan = false;
     this.mutated = false;
-    this.building = asksToBuild(input);
+    this.building = asksToBuild(input) && !WANTS_LOOK.test(input);
     this.changing = asksToChange(input);
     const sentBefore = requestCount();
     // The whole project as it is now, for /undo — taken while the model
@@ -1441,7 +1442,10 @@ export class Agent {
     // Nothing to look up in an empty folder, so those tools do not go out with
     // the request. Decided per turn: the moment there is code, they are back.
     this.fresh = !hasCode(this.map);
-    request.content = withScope(input, { hasCode: !this.fresh }) + added.text;
+    // "make my terminal black" reads like "make my app": a request about the
+    // look gets the look note below, never an app's scope and design notes.
+    const aboutLook = WANTS_LOOK.test(input) || this.lookTurn === true;
+    request.content = (aboutLook ? input : withScope(input, { hasCode: !this.fresh })) + added.text;
     this.wantsWeb = WANTS_WEB.test(input);
     this.wantsLook = WANTS_LOOK.test(input) || this.lookTurn === true;
     // Offering the tools was not enough: Flash-Lite said "Changing the look"
@@ -2136,7 +2140,7 @@ export class Agent {
   }
 
   cmdStats() {
-    for (const line of statsLines(this.stats, this.working?.length ?? 0)) this.ui.write(line);
+    return this.show('Stats', statsLines(this.stats, this.working?.length ?? 0).slice(2));
   }
 
   async cmdDoctor() {
@@ -2144,7 +2148,7 @@ export class Agent {
     try {
       const lines = await runDoctor();
       this.ui.stopSpinner();
-      for (const line of lines) this.ui.write(line);
+      await this.show('Doctor', lines.slice(2));
     } finally {
       this.ui.stopSpinner();
     }
@@ -3467,14 +3471,13 @@ export class Agent {
       const changes = await this.snaps.changedSince(first);
       if (!changes.length) { this.ui.note('nothing has changed this session'); return; }
       const word = { A: 'added', M: 'changed', D: 'deleted' };
-      this.ui.blank();
-      for (const c of changes) this.ui.write(`  ${dim((word[c.status] ?? c.status).padEnd(8))} ${c.file}`);
-      this.ui.blank();
+      await this.show('Changed this session', changes.map((c) => `  ${dim((word[c.status] ?? c.status).padEnd(8))} ${c.file}`));
       return;
     }
     const { code, out } = await this.git(['status', '--short']);
     if (code !== 0) { this.ui.note('nothing to compare yet — this folder is not a git repository and no turn has changed it'); return; }
-    this.ui.write(out ? out.split('\n').map((l) => `  ${l}`).join('\n') : dim('  no uncommitted changes'));
+    if (!out) { this.ui.note('no uncommitted changes'); return; }
+    await this.show('Uncommitted changes', out.split('\n').map((l) => `  ${l}`));
   }
 
   /** /commit [message]: commit everything, with a message written from the diff when none is given. */
@@ -3525,15 +3528,13 @@ export class Agent {
   async cmdMcp() {
     await this.mcpStarting;
     const status = this.mcp?.status() ?? [];
-    this.ui.blank();
-    if (!status.length) this.ui.write(dim('  no MCP servers yet'));
-    for (const s of status) {
-      this.ui.write(`  ${s.ok ? theme.ok('●') : theme.error('●')} ${blue(s.name)}  ${dim(s.ok ? `${s.tools} tools` : s.error)}`);
-    }
-    this.ui.blank();
-    this.ui.write(dim('  add one:  ucode mcp add <name> <command> [args...]   or   ucode mcp add <name> --url <url>'));
-    this.ui.write(dim(`  or edit ${USER_MCP} (every project) or .ucode/mcp.json (this one)`));
-    this.ui.blank();
+    await this.show('MCP servers', [
+      ...(status.length ? [] : [dim('  no MCP servers yet')]),
+      ...status.map((s) => `  ${s.ok ? theme.ok('●') : theme.error('●')} ${blue(s.name)}  ${dim(s.ok ? `${s.tools} tools` : s.error)}`),
+      '',
+      dim('  add one:  ucode mcp add <name> <command> [args...]   or   ucode mcp add <name> --url <url>'),
+      dim(`  or edit ${USER_MCP} (every project) or .ucode/mcp.json (this one)`),
+    ]);
   }
 
   /**
@@ -3546,14 +3547,14 @@ export class Agent {
   async cmdTheme(arg) {
     const said = arg.trim();
     if (!said) {
-      this.ui.blank();
-      this.ui.write(`  ${blue('accent')}   ${look.accent}   ${dim('light')} ${look.light}   ${dim('deep')} ${look.deep}`);
-      this.ui.write(`  ${blue('spinner')}  ${look.spinner}  ${dim(`(${Object.keys(SPINNERS).join(', ')})`)}`);
-      this.ui.write(`  ${blue('byline')}   ${look.byline}`);
-      this.ui.write(`  ${blue('terminal')} ${TERMINAL_NAMES[detectTerminal()]}`);
-      this.ui.blank();
-      this.ui.write(dim('  /theme orange · /theme reset · /theme terminal reset · or just ask: "make ucode green and my terminal navy"'));
-      this.ui.blank();
+      await this.show('Theme', [
+        `  ${blue('accent')}   ${look.accent}   ${dim('light')} ${look.light}   ${dim('deep')} ${look.deep}`,
+        `  ${blue('spinner')}  ${look.spinner}  ${dim(`(${Object.keys(SPINNERS).join(', ')})`)}`,
+        `  ${blue('byline')}   ${look.byline}`,
+        `  ${blue('terminal')} ${TERMINAL_NAMES[detectTerminal()]}`,
+        '',
+        dim('  /theme orange · /theme reset · /theme terminal reset · or just ask: "make ucode green and my terminal navy"'),
+      ]);
       return;
     }
     if (/^reset$/i.test(said)) {
@@ -3590,10 +3591,10 @@ export class Agent {
       await writeJson(file, { ...(await readJson(file)), commands: want });
       await this.loadSettings();
     }
-    this.ui.blank();
-    this.ui.write(`  commands  ${blue(this.settings.commands === 'ask' ? 'ask first' : 'run without asking')}  ${dim('/permissions ask · /permissions auto')}`);
-    this.ui.write(`  allowed   ${this.settings.allow.length ? this.settings.allow.join(' · ') : dim('nothing yet — answer "a" at a prompt to add')}`);
-    this.ui.blank();
+    await this.show('Permissions', [
+      `  commands  ${blue(this.settings.commands === 'ask' ? 'ask first' : 'run without asking')}  ${dim('/permissions ask · /permissions auto')}`,
+      `  allowed   ${this.settings.allow.length ? this.settings.allow.join(' · ') : dim('nothing yet — answer "a" at a prompt to add')}`,
+    ]);
   }
 
   /**
@@ -3663,7 +3664,8 @@ ${out.content}` });
     for (const f of failed) this.ui.write(theme.error(`  could not undo ${f}`));
   }
 
-  cmdHelp() {
+  /** Every command with what it does: /help, and the palette that opens on "/". */
+  helpRows() {
     const rows = [
       ['/help', 'this list'],
       ['/undo [n]', 'put the project back as it was before the last turn (or n turns)'],
@@ -3691,15 +3693,29 @@ ${out.content}` });
     ];
 
     for (const c of this.commands?.values() ?? []) rows.push([`/${c.name}`, `yours: ${c.description}`]);
+    return rows;
+  }
 
+  /** The palette's list: each command by its bare name, with what it does. */
+  paletteList() {
+    return this.helpRows().map(([command, what]) => ({ name: command.split(' ')[0], what }));
+  }
+
+  cmdHelp() {
+    const out = this.helpRows().map(([command, what]) => `  ${blue(command.padEnd(18))} ${dim(what)}`);
+    out.push('');
+    out.push(dim('  /models, /session and /sessions do the same as /model and /resume.'));
+    out.push(dim('  ctrl+b swaps plan and build · + file (or ctrl+o) adds a picture or file · esc stops a running turn · ctrl+d quits'));
+    out.push(dim('  ctrl+t (or the mic button) listens: speak, then enter to send, ctrl+t to check it first, esc to cancel'));
+    return this.show('Commands', out);
+  }
+
+  /** Information for the user: a popup where there is a screen to draw it on, lines where there is not. */
+  async show(title, lines) {
+    if (this.ui.panel) { await this.ui.panel(title, lines); return; }
     this.ui.blank();
-    for (const [command, what] of rows) {
-      this.ui.write(`  ${blue(command.padEnd(18))} ${dim(what)}`);
-    }
-    this.ui.blank();
-    this.ui.write(dim('  /models, /session and /sessions do the same as /model and /resume.'));
-    this.ui.write(dim('  ctrl+b swaps plan and build · + file (or ctrl+o) adds a picture or file · esc stops a running turn · ctrl+d quits'));
-    this.ui.write(dim('  ctrl+t (or the mic button) listens: speak, then enter to send, ctrl+t to check it first, esc to cancel'));
+    this.ui.write(`  ${blue(title)}`);
+    for (const line of lines.slice(0, lines.findLastIndex((l) => l !== '') + 1)) this.ui.write(line);
     this.ui.blank();
   }
 
@@ -3730,6 +3746,7 @@ ${out.content}` });
       }));
 
       const chosen = await this.ui.pick(items, {
+        title: 'Switch model',
         active: Math.max(0, all.findIndex((m) => m.active)),
         hint: '↑↓ move · enter to switch · esc to cancel',
       });
@@ -3839,6 +3856,7 @@ ${out.content}` });
         const picked = await this.ui.pick(
           shown.map((s, i) => this.describeSession(s, width, i)),
           {
+            title: 'Resume a conversation',
             active,
             deletable: true,
             hint:
@@ -3980,17 +3998,16 @@ ${out.content}` });
       return;
     }
 
-    this.ui.blank();
-    for (const s of this.skills) {
-      const live = this.loaded.has(s.name);
-      const how = live && this.short.has(s.name) ? dim('  · short form') : '';
-      const auto = s.triggers.length ? dim('  · loads itself') : '';
-      this.ui.write(`  ${live ? blue('●') : dim('○')} ${blue(s.name)}${how}${auto}`);
-      this.ui.write(`    ${dim(s.description)}`);
-    }
-    this.ui.blank();
-    this.ui.write(dim('  ● already loaded here · ucode pulls one in when the task matches'));
-    this.ui.blank();
+    await this.show('Skills', [
+      ...this.skills.flatMap((s) => {
+        const live = this.loaded.has(s.name);
+        const how = live && this.short.has(s.name) ? dim('  · short form') : '';
+        const auto = s.triggers.length ? dim('  · loads itself') : '';
+        return [`  ${live ? blue('●') : dim('○')} ${blue(s.name)}${how}${auto}`, `    ${dim(s.description)}`];
+      }),
+      '',
+      dim('  ● already loaded here · ucode pulls one in when the task matches'),
+    ]);
   }
 
   async cmdSearch(query) {

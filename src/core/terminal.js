@@ -79,6 +79,14 @@ export function cleanRequest(req = {}) {
   return out;
 }
 
+const IMAGE_KEYS = ['backgroundImage', 'backgroundImageOpacity', 'backgroundImageStretchMode', 'backgroundImageAlignment'];
+
+/** Whether any profile draws a picture behind the text. */
+export const hasBackgroundImage = (settings) => {
+  const profiles = Array.isArray(settings?.profiles) ? settings.profiles : [settings?.profiles?.defaults, ...(settings?.profiles?.list ?? [])];
+  return profiles.some((p) => p?.backgroundImage);
+};
+
 /** Windows Terminal: set the look on the defaults, and on any profile that overrides it. */
 export function applyToWindowsTerminal(settings, want) {
   const next = structuredClone(settings);
@@ -86,7 +94,14 @@ export function applyToWindowsTerminal(settings, want) {
   next.profiles ??= {};
   next.profiles.defaults ??= {};
   const set = (profile) => {
-    if (want.background) profile.background = want.background;
+    if (want.background) {
+      profile.background = want.background;
+      // A background picture is drawn over the colour, so a colour set under
+      // one never shows: asked for black, the window stayed the picture's
+      // purple while ucode said it had changed. The picture goes, and the
+      // backup keeps it for /theme terminal reset.
+      for (const key of IMAGE_KEYS) delete profile[key];
+    }
     if (want.foreground) profile.foreground = want.foreground;
     if (want.cursor) profile.cursorColor = want.cursor;
     if (want.font || want.font_size) {
@@ -99,7 +114,7 @@ export function applyToWindowsTerminal(settings, want) {
   };
   set(next.profiles.defaults);
   // A profile with its own value would hide the default, so it changes too.
-  const keys = ['background', 'foreground', 'cursorColor', 'font', 'opacity'];
+  const keys = ['background', 'foreground', 'cursorColor', 'font', 'opacity', 'backgroundImage'];
   for (const profile of next.profiles.list ?? []) {
     if (keys.some((k) => profile[k] !== undefined)) set(profile);
   }
@@ -178,8 +193,17 @@ export async function customizeTerminal(request, { env = process.env, platform =
     await fs.mkdir(backups(), { recursive: true });
     const backup = path.join(backups(), 'windows-terminal.json');
     if (!existsSync(backup)) await fs.writeFile(backup, JSON.stringify({ file, text }));
-    await fs.writeFile(file, `${JSON.stringify(applyToWindowsTerminal(settings, want), null, 4)}\n`);
-    return { ok: true, message: 'Changed Windows Terminal — every tab, and it stays. "/theme terminal reset" puts it back.' };
+    const next = applyToWindowsTerminal(settings, want);
+    await fs.writeFile(file, `${JSON.stringify(next, null, 4)}\n`);
+    // Read back what Windows Terminal will read, rather than trusting the write.
+    const check = JSON.parse(await fs.readFile(file, 'utf8'));
+    if (want.background && check.profiles?.defaults?.background !== want.background) {
+      return { ok: false, message: 'Windows Terminal\'s settings did not take the change.' };
+    }
+    const picture = want.background && hasBackgroundImage(settings)
+      ? ' Its background picture was taken off so the colour shows (it comes back with /theme terminal reset).'
+      : '';
+    return { ok: true, message: `Changed Windows Terminal — every tab, and it stays.${picture} "/theme terminal reset" puts it back.` };
   }
 
   if (kind === 'apple-terminal') return appleTerminal(want);

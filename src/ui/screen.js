@@ -37,7 +37,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import {
-  theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER, look,
+  theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER, look, SELECTED, BOX,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
   bannerPaint, RAIL, modeChip, ADD_CHIP, micChip, asNarrationLine } from './theme.js';
@@ -62,6 +62,7 @@ export const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
   '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
   '/stats', '/doctor', '/deploy', '/look', '/undo', '/mic',
+  '/init', '/diff', '/commit', '/review', '/mcp', '/permissions', '/theme',
 ];
 
 // ANSI ----------------------------------------------------------------------
@@ -184,7 +185,6 @@ const SUGGEST_LABEL = 6;
 
 /** Rows the suggestions occupy under the box: one of air, then the three. */
 const SUGGEST_ROWS = SUGGESTIONS.length + 1;
-
 export class Screen {
   constructor({ cwd, input = process.stdin, output = process.stdout } = {}) {
     this.cwd = cwd;
@@ -858,7 +858,10 @@ export class Screen {
    * hoping the two agree.
    */
   inputLines(width = this.inner()) {
-    const prefix = this.pendingPrompt ? `${this.pendingPrompt} ` : '› ';
+    // No arrow in front: it was drawn over the first character of the row,
+    // which is the arrow itself only when nothing else is there - a question
+    // waiting for an answer lost its first letter ("o ahead? [y/N]").
+    const prefix = this.pendingPrompt ? `${this.pendingPrompt} ` : '';
     const full = prefix + this.buffer;
 
     const rows = [];
@@ -915,7 +918,7 @@ export class Screen {
       : (width >= WORKING_HINT_NEEDS ? WORKING_HINT : WORKING_HINT_SHORT);
     const painted = rows.map((row, i) =>
       i === 0
-        ? boxRow(` ${border('›')}${empty ? ` ${dim(hint)}` : row.slice(1)}`, width, border)
+        ? boxRow(` ${empty ? dim(hint) : row}`, width, border)
         : boxRow(` ${row}`, width, border)
     );
     return [
@@ -1203,27 +1206,189 @@ export class Screen {
     else this.queue.push(text);
   }
 
-  /** y/n, answered on the input line. */
+  /**
+   * A question, as a popup over the input box: Yes, No, and - where there is
+   * something to remember - Always. Answered as it always was, y, n or a and
+   * enter; or the arrows and enter, starting on No, so an enter pressed out of
+   * habit never runs anything; esc is no. A key on its own answers nothing:
+   * the question can pop up mid-sentence, and the "a" of "and then" is not
+   * "always". Whatever else is typed stays a message and is sent as one.
+   */
   confirm({ action, detail, risk, always }) {
+    // As plain text: a colour or cursor code inside a command could make it
+    // show as something other than what runs. Stripped, all of it shows.
+    const plainText = (s) => bare(printable(String(s ?? '')));
     this.push('');
-    this.push(`${chalk.inverse(theme.warn(badge(risk)))} ${chalk.white(action)}`);
-    for (const line of String(detail ?? '').split('\n')) {
-      if (line) this.push(dim(`  ${line}`));
+    this.push(`${chalk.inverse(theme.warn(badge(risk)))} ${chalk.white(plainText(action))}`);
+    this.scroll = 0;
+    return new Promise((resolve) => {
+      const options = [
+        { label: 'Yes', value: true, key: 'y', word: 'yes' },
+        { label: 'No', value: false, key: 'n', word: 'no' },
+        ...(always ? [{ label: `Always allow ${plainText(always)}`, value: 'always', key: 'a', word: 'always' }] : []),
+      ];
+      this.asking = {
+        title: `${badge(risk).trim()} · ${plainText(action)}`,
+        detail: plainText(detail).split('\n').filter(Boolean),
+        options,
+        index: 1,
+        scroll: 0,
+        resolve: (yes) => {
+          this.asking = null;
+          this.push(dim(yes === 'always' ? `  approved — ${always} is always allowed here now` : yes ? '  approved' : '  declined'));
+          this.push('');
+          this.render();
+          resolve(yes);
+        },
+      };
+      this.render();
+    });
+  }
+
+  /**
+   * Which answer enter gives now: the one typed, if what is typed is one;
+   * the highlighted one when nothing is typed; -1 when what is typed is a
+   * message rather than an answer.
+   */
+  askedPick() {
+    const a = this.asking;
+    const said = this.buffer.trim().toLowerCase();
+    if (!said) return a.index;
+    return a.options.findIndex((o) => said === o.key || said === o.word);
+  }
+
+  /**
+   * Information in a popup over the input box - /stats, /help, /mcp and the
+   * rest - instead of more lines in the conversation. Arrows scroll it; esc,
+   * enter or q closes it, and the promise settles then.
+   */
+  panel(title, lines) {
+    // Cleaned like the transcript: MCP errors, file names and git output are not ours.
+    const all = lines.flatMap((l) => printable(String(l)).split(NEWLINE));
+    const filled = (l) => bare(l).trim() !== '';
+    const body = all.slice(Math.max(0, all.findIndex(filled)), all.findLastIndex(filled) + 1);
+    return new Promise((resolve) => {
+      this.panelOpen = { title, lines: body, scroll: 0, resolve };
+      this.render();
+    });
+  }
+
+  closePanel() {
+    const resolve = this.panelOpen?.resolve;
+    this.panelOpen = null;
+    this.render();
+    resolve?.();
+  }
+
+  /**
+   * The commands that match what has been typed after "/", for the palette.
+   * Matches at the start of the name come first, then anywhere in it.
+   */
+  paletteItems() {
+    if (this.picker || this.asking || this.panelOpen || this.pendingPrompt) return [];
+    const typed = this.buffer;
+    if (!typed.startsWith('/') || /\s/.test(typed)) return [];
+    const q = typed.slice(1).toLowerCase();
+    const all = this.listCommands?.() ?? COMMANDS.map((name) => ({ name, what: '' }));
+    const first = all.filter((c) => c.name.slice(1).toLowerCase().startsWith(q));
+    const then = all.filter((c) => !first.includes(c) && c.name.toLowerCase().includes(q));
+    return [...first, ...then];
+  }
+
+  /**
+   * Whatever floats over the input box right now - a picker, a question, a
+   * panel or the command palette - as framed rows `width` wide, at most
+   * `room` tall. Empty when there is nothing to show.
+   */
+  popupLines(width, room) {
+    const inner = Math.max(10, width - 4);
+    let title = null;
+    let rows = [];       // { text, chosen?, warn? }
+    let index = 0;
+    let hint = '';
+    let scroll = null;
+
+    if (this.picker) {
+      const { items, armed } = this.picker;
+      title = this.picker.title ?? null;
+      index = this.picker.index;
+      // Conversation titles come from what was said, so they are cleaned like the transcript.
+      items.forEach((item, i) => {
+        const body = typeof item === 'string' ? item : item.label;
+        rows.push({ text: printable(body), chosen: i === index, warn: i === armed, item: i });
+        if (typeof item !== 'string' && item.sub) rows.push({ text: printable(item.sub), sub: true, item: i });
+      });
+      hint = armed !== null && armed !== undefined
+        ? 'press d again to delete this conversation · any other key keeps it'
+        : this.picker.hint;
+    } else if (this.asking) {
+      // Wrapped, never cut, and scrolled with pgup/pgdn when it is taller than
+      // the room: what is being approved has to be readable in full. The
+      // answers stay in view below it.
+      const a = this.asking;
+      const pick = this.askedPick();
+      const text = [
+        ...wrapAnsi(a.title, inner).map((t) => chalk.bold.white(t)),
+        ...(a.detail.length ? [''] : []),
+        ...a.detail.flatMap((t) => wrapAnsi(t, inner)).map((t) => dim(t)),
+      ];
+      const fit = Math.max(1, room - 3 - a.options.length - 1);  // borders, hint, the gap above the answers
+      a.scroll = Math.min(Math.max(0, a.scroll), Math.max(0, text.length - fit));
+      rows = [
+        ...text.slice(a.scroll, a.scroll + fit).map((t) => ({ text: t })),
+        { text: '' },
+        ...a.options.map((o, i) => ({ text: `${o.key}  ${o.label}`, chosen: i === pick })),
+      ];
+      scroll = 0;
+      hint = (text.length > fit ? `${a.scroll + fit}/${text.length} · pgup pgdn · ` : '')
+        + (pick < 0 ? 'enter sends what you typed as a message · esc no'
+          : `y, n${a.options.length > 2 ? ', a' : ''} or ↑↓, then enter · esc no`);
+    } else if (this.panelOpen) {
+      title = this.panelOpen.title;
+      rows = this.panelOpen.lines.flatMap((text) => wrapAnsi(text, inner)).map((text) => ({ text }));
+      scroll = this.panelOpen.scroll;
+      hint = '↑↓ scroll · esc closes';
+    } else {
+      const items = this.paletteItems();
+      if (!items.length) return [];
+      index = Math.min(this.paletteIndex ?? 0, items.length - 1);
+      const nameWidth = Math.min(20, Math.max(...items.map((c) => c.name.length)) + 3);
+      // Your own commands' descriptions come from files in the project, so they are cleaned too.
+      rows = items.map((c, i) => {
+        const what = printable(c.what ?? '');
+        return { text: printable(c.name.padEnd(nameWidth)) + dim(what), plain: printable(c.name.padEnd(nameWidth)) + what, chosen: i === index };
+      });
+      hint = 'enter runs · tab completes · esc closes';
     }
 
-    this.pendingPrompt = always ? `go ahead? [y/N, a = always allow ${always}]` : 'go ahead? [y/N]';
-    this.scroll = 0; // the question has to be on screen to be answered
-    this.render();
+    // Fit: borders, a title and its gap, the hint - and the rows in what is left.
+    const fixed = 2 + (title ? 2 : 0) + (hint ? 1 : 0);
+    const space = Math.max(1, room - fixed);
+    let first = 0;
+    if (scroll !== null) {
+      first = Math.min(Math.max(0, scroll), Math.max(0, rows.length - space));
+      if (this.panelOpen) this.panelOpen.scroll = first;
+    } else {
+      const at = Math.max(0, rows.findIndex((r) => r.chosen));
+      first = Math.min(Math.max(0, at - Math.floor(space / 2)), Math.max(0, rows.length - space));
+    }
+    const shown = rows.slice(first, first + space);
 
-    return this.nextLine().then((answer) => {
-      this.pendingPrompt = null;
-      // End of input counts as no. Never run something nobody approved.
-      const said = String(answer ?? '').trim();
-      const yes = always && /^(a|always)$/i.test(said) ? 'always' : /^(y|yes)$/i.test(said);
-      this.push(dim(yes === 'always' ? `  approved — ${always} is always allowed here now` : yes ? '  approved' : '  declined'));
-      this.push('');
-      return yes;
-    });
+    const paint = sky;
+    const line = (content) => boxRow(` ${content}`, width, paint);
+    const out = [boxTop(width, paint)];
+    if (title) out.push(line(chalk.bold.white(clip(title, inner))), line(''));
+    for (const r of shown) {
+      if (r.warn) out.push(line(theme.warn(`✗ ${bare(r.text)}`)));
+      else if (r.chosen) out.push(paint(BOX.v) + SELECTED(padVis(` ${clip(bare(r.plain ?? r.text), inner)}`, width - 2)) + paint(BOX.v));
+      // boxRow cuts at the border by what shows; clip() counts colour codes
+      // as letters and could cut one in half, leaving "22…" on screen.
+      else out.push(line(r.sub ? `  ${r.text}` : r.text));
+    }
+    const more = rows.length > shown.length ? `${first + shown.length}/${rows.length} · ` : '';
+    if (hint) out.push(line(dim(clip(more + hint, inner))));
+    out.push(boxBottom(width, paint));
+    return out;
   }
 
   /**
@@ -1233,8 +1398,9 @@ export class Screen {
    * cannot be given up permanently, because under alternate scroll the mouse
    * wheel arrives as arrow keys.
    */
-  pick(items, { active = 0, hint = 'enter to choose · esc to cancel', deletable = false } = {}) {
+  pick(items, { title = null, active = 0, hint = 'enter to choose · esc to cancel', deletable = false } = {}) {
     this.picker = {
+      title,
       items,
       index: Math.min(Math.max(0, active), Math.max(0, items.length - 1)),
       hint,
@@ -1253,48 +1419,6 @@ export class Screen {
     this.pickerResolve = null;
     this.render();
     resolve?.(value);
-  }
-
-  /**
-   * Rows for an open picker, windowed so a long list still fits.
-   *
-   * An item may carry a `sub` line — a second, dimmer row underneath it. That
-   * is what lets a list of saved conversations show what each one was actually
-   * about instead of a column of near-identical titles.
-   */
-  pickerLines(height) {
-    const { items, index, hint, armed } = this.picker;
-    const room = Math.max(1, height - 2);
-
-    // Rows per item, so the window can be sized in rows rather than in items.
-    const rowsFor = (item) => (typeof item !== 'string' && item.sub ? 2 : 1);
-    const perItem = items.map(rowsFor);
-
-    // Walk outward from the selection until the window is full. Starting from
-    // the selection guarantees it is on screen however long the list is.
-    let first = index;
-    let last = index;
-    let used = perItem[index] ?? 1;
-    while (used < room && (first > 0 || last < items.length - 1)) {
-      if (first > 0 && used + perItem[first - 1] <= room) { first--; used += perItem[first]; }
-      else if (last < items.length - 1 && used + perItem[last + 1] <= room) { last++; used += perItem[last]; }
-      else break;
-    }
-
-    const out = [];
-    for (let i = first; i <= last; i++) {
-      const item = items[i];
-      const body = typeof item === 'string' ? item : item.label;
-      if (i === armed) out.push(`${theme.warn('✗')} ${theme.warn(bare(body))}`);
-      else out.push(i === index ? `${blue('❯')} ${chalk.bold.white(body)}` : `  ${dim(body)}`);
-      if (typeof item !== 'string' && item.sub) out.push(`  ${item.sub}`);
-    }
-
-    out.push('');
-    out.push(armed !== null && armed !== undefined
-      ? theme.warn('  press d again to delete this conversation · any other key keeps it')
-      : dim(`  ${hint}`));
-    return out;
   }
 
   /** A numbered list, answered on the input line. */
@@ -1431,7 +1555,14 @@ export class Screen {
     // submits itself a line at a time.
     if (looksPasted(rest)) { this.onPaste(rest); return; }
 
-    for (const key of splitKeys(rest)) this.onKey(key);
+    const keys = splitKeys(rest);
+    // Under a question, a wheel notch (three arrows in one go) scrolls the
+    // conversation behind it, so reading back never moves the answer to Yes.
+    if (this.asking && keys.length > 1 && keys.every((k) => k === `${ESC}[A` || k === `${ESC}[B`)) {
+      this.scrollBy(keys[0] === `${ESC}[A` ? 3 : -3);
+      return;
+    }
+    for (const key of keys) this.onKey(key);
   }
 
   onMouse(button, col, row, press) {
@@ -1469,7 +1600,8 @@ export class Screen {
     const joined = before && !before.endsWith(' ') ? `${before} ${text}` : before + text;
     this.buffer = joined + this.buffer.slice(this.cursor);
     this.cursor = joined.length;
-    if (send) this.onKey('\r');
+    // With a popup open, enter would answer it instead of sending the words.
+    if (send && !this.asking && !this.panelOpen && !this.picker) this.onKey('\r');
     else this.render();
   }
 
@@ -1488,6 +1620,40 @@ export class Screen {
   }
 
   onKey(key) {
+    // A question takes the arrows, pgup/pgdn, esc and enter; letters are typing.
+    if (this.asking) {
+      const a = this.asking;
+      if (key === `${ESC}[5~` || key === `${ESC}[6~`) { a.scroll += key === `${ESC}[5~` ? -5 : 5; this.render(); return; }
+      if (key === `${ESC}[A` || key === `${ESC}[D`) { a.index = Math.max(0, a.index - 1); this.render(); return; }
+      if (key === `${ESC}[B` || key === `${ESC}[C` || key === '\t') { a.index = Math.min(a.options.length - 1, a.index + 1); this.render(); return; }
+      if (key === ESC || key === '\x03') { a.resolve(false); return; }
+      if (key === '\r' || key === '\n') {
+        const pick = a.options[this.askedPick()];
+        if (pick) { this.buffer = ''; this.cursor = 0; a.resolve(pick.value); return; }
+        // Not an answer: a message, sent below as any other, and the question stays.
+      }
+    }
+
+    // A panel scrolls, and anything that means "done" closes it.
+    if (this.panelOpen) {
+      const step = { [`${ESC}[A`]: -1, [`${ESC}[B`]: 1, [`${ESC}[5~`]: -10, [`${ESC}[6~`]: 10 }[key];
+      if (step) { this.panelOpen.scroll = Math.max(0, this.panelOpen.scroll + step); this.render(); return; }
+      if (key === ESC || key === '\r' || key === '\n' || key === 'q' || key === ' ' || key === '\x03') { this.closePanel(); return; }
+      return;
+    }
+
+    // The command palette: shown while a "/command" is being typed.
+    const palette = this.paletteItems();
+    if (palette.length) {
+      const last = palette.length - 1;
+      const at = Math.min(this.paletteIndex ?? 0, last);
+      if (key === `${ESC}[A`) { this.paletteIndex = at === 0 ? last : at - 1; this.render(); return; }
+      if (key === `${ESC}[B`) { this.paletteIndex = at === last ? 0 : at + 1; this.render(); return; }
+      if (key === '\t') { this.buffer = palette[at].name; this.cursor = this.buffer.length; this.paletteIndex = 0; this.render(); return; }
+      if (key === ESC) { this.buffer = ''; this.cursor = 0; this.paletteIndex = 0; this.render(); return; }
+      if (key === '\r' || key === '\n') { this.buffer = palette[at].name; this.cursor = this.buffer.length; this.paletteIndex = 0; }
+    }
+
     // An open picker owns the keyboard until it closes.
     if (this.picker) {
       const last = this.picker.items.length - 1;
@@ -1538,6 +1704,7 @@ export class Screen {
           this.buffer = this.buffer.slice(0, this.cursor - 1) + this.buffer.slice(this.cursor);
           this.cursor--;
         }
+        this.paletteIndex = 0;
         break;
 
       case '\x03':  // ctrl+c
@@ -1611,6 +1778,7 @@ export class Screen {
         if (key >= ' ' && !key.startsWith(ESC)) {
           this.buffer = this.buffer.slice(0, this.cursor) + key + this.buffer.slice(this.cursor);
           this.cursor += key.length;
+          this.paletteIndex = 0;
         } else {
           return;
         }
@@ -1656,8 +1824,11 @@ export class Screen {
 
     const end = Math.max(0, said.length - this.scroll);
     const start = Math.max(0, end - height);
-    const window = this.picker ? this.pickerLines(height) : said.slice(start, end);
+    const window = said.slice(start, end);
     while (window.length < height) window.push('');
+    // A popup sits on the conversation's last rows, directly over the input box.
+    const pop = this.popupLines(width, height);
+    window.splice(Math.max(0, window.length - pop.length), pop.length, ...pop.slice(-height));
 
     const frame = [
       ...this.headerLines(),
@@ -1716,7 +1887,7 @@ export class Screen {
    * a fresh conversation starts from the same quiet screen as a fresh launch.
    */
   welcoming() {
-    return this.lines.length === 0 && !this.picker;
+    return this.lines.length === 0;
   }
 
   /** Where everything on the start screen goes, 0-based rows. */
@@ -1754,6 +1925,13 @@ export class Screen {
     const indent = ' '.repeat(g.left);
     this.inputBox(g.boxWidth).forEach((row, i) => {
       frame[g.boxTop + i] = indent + row;
+    });
+
+    // A popup goes above the box, over the wordmark if it has to.
+    const pop = this.popupLines(g.boxWidth, Math.max(3, g.boxTop));
+    pop.forEach((row, i) => {
+      const at = g.boxTop - pop.length + i;
+      if (at >= 0) frame[at] = indent + row;
     });
 
     // Three things to try, aligned with the text inside the box above them.

@@ -127,6 +127,8 @@ export const RAIL = '▌';
  * line it marks.
  */
 export let BUILD_CHIP = chalk.bgHex('#4d8dff').hex('#0b1220').bold;
+/** The chosen row in a popup: the accent, the width of the popup. */
+export let SELECTED = chalk.bgHex('#4d8dff').hex('#0b1220');
 export let PLAN_CHIP = chalk.bgHex('#24344f').hex('#8fbcff').bold;
 
 export const modeChip = (mode) =>
@@ -971,6 +973,7 @@ export function applyLook(wanted = {}) {
   GRADIENT_TOP = hexRGB(light);
   GRADIENT_BOTTOM = hexRGB(deepHex);
   BUILD_CHIP = chalk.bgHex(accent).hex('#0b1220').bold;
+  SELECTED = chalk.bgHex(accent).hex('#0b1220');
   PLAN_CHIP = chalk.bgHex(mixHex(deepHex, '#0b1220', 0.65)).hex(light).bold;
   ADD_CHIP = PLAN_CHIP(' + file ');
   SPINNER = SPINNERS[spinner];

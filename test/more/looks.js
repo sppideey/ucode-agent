@@ -69,6 +69,13 @@ export default async function ({ test, section, ok, eq, throws, tmp }) {
     eq(next.profiles.defaults.useAcrylic, true);
     eq(next.profiles.list[0].background, '#1e3a8a', 'a profile with its own background follows');
     eq(next.profiles.list[1].background, undefined, 'one without is left to the defaults');
+    const pictured = applyToWindowsTerminal(
+      { profiles: { defaults: { backgroundImage: 'aurora.png', backgroundImageOpacity: 1 }, list: [{ backgroundImage: 'x.png' }] } },
+      { background: '#000000' },
+    );
+    eq(pictured.profiles.defaults.backgroundImage, undefined, 'a picture over the colour is taken off');
+    eq(pictured.profiles.defaults.backgroundImageOpacity, undefined);
+    eq(pictured.profiles.list[0].backgroundImage, undefined, 'in a profile too');
   });
 
   await test('Windows Terminal settings change, with comments, and reset restores the file exactly', async () => {

@@ -17,6 +17,7 @@ Gemini models, free with a key.
 | **Undoes** | `/undo [n]` puts the whole project back, including what commands changed |
 | **Git** | `/diff`, `/commit` with a written message, `/review` for bugs |
 | **Extends** | MCP servers, hooks, skills, your own slash commands |
+| **Pops up** | type `/` for a live list of commands; questions, pickers, `/help`, `/stats`, `/mcp` and the rest open over the input box, not in the chat |
 | **Restyles** | itself and your terminal, when you ask: "make ucode orange and my terminal navy" |
 | **Automates** | `ucode -p "task" --json` for scripts and CI; `npm run eval` runs ten real jobs |
 | **Stays free** | Gemini's free tier, paced to its per-minute limit — or Ollama, offline |
@@ -34,7 +35,7 @@ corner:
 
 
   ╭──────────────────────────────────────────────────────────────────────────────╮
-  │ › Ask anything…                                                              │
+  │ Ask anything…                                                                │
   │                                                                              │
   │  BUILD   Gemini 3.5 Flash-Lite                                            0% │
   ╰──────────────────────────────────────────────────────────────────────────────╯
@@ -44,7 +45,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                                                           v1.65.0
+                                                                           v1.66.0
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box
@@ -64,7 +65,7 @@ change, an arrow to run.
 The dashboard is at http://localhost:3000, and `npm run dev` brings it back up.
 
 ╭──────────────────────────────────────────────────────────────────────────────────╮
-│ › now add a dark mode toggle                                                     │
+│ now add a dark mode toggle                                                       │
 │                                                                                  │
 │  BUILD   Gemini 3.5 Flash-Lite                                                4% │
 ╰──────────────────────────────────────────────────────────────────────────────────╯
@@ -405,6 +406,29 @@ Everything after the frontmatter is the instruction.
 `↑ ↓` scroll the conversation, or walk history once you are typing ·
 `tab` completes a command
 
+Type `/` and the commands pop up over the input box, narrowing as you type:
+`↑ ↓` to choose, `enter` to run, `tab` to fill it in and add more, `esc` to close.
+The rest opens there too, not in the chat — the model and conversation
+pickers, `/help`, `/stats`, `/doctor`, `/mcp`, `/permissions`, `/skills`,
+`/theme`, `/diff` (`↑ ↓` scrolls, `esc` closes) — and every question before a
+command runs: `y`, `n` or `a` (always) then `enter`, or the arrows then
+`enter`. `enter` on its own is no, and anything else you type is sent as a
+message, so a question that pops up mid-sentence is never answered by it.
+
+```
+╭──────────────────────────────────────────────────────────────────────────╮
+│ /stats    time, steps and tokens this session                            │
+│ /skills   what ucode knows how to do                                     │
+│ enter runs · tab completes · esc closes                                  │
+╰──────────────────────────────────────────────────────────────────────────╯
+
+╭──────────────────────────────────────────────────────────────────────────╮
+│ /s                                                                       │
+│                                                                          │
+│  BUILD   Gemini 3.5 Flash-Lite                                        4% │
+╰──────────────────────────────────────────────────────────────────────────╯
+```
+
 ### Speak instead of typing
 
 Press `ctrl+t` (or click `mic`, or type `/mic`) and say what you want —
@@ -438,7 +462,7 @@ The terminal is changed the way each one allows, after you say yes:
 
 | Terminal | What changes | How long |
 | --- | --- | --- |
-| Windows Terminal | background, text, cursor, font, size, opacity | kept, every tab (the old settings are backed up) |
+| Windows Terminal | background, text, cursor, font, size, opacity — a background picture comes off so the colour shows | kept, every tab (the old settings are backed up) |
 | Terminal.app (macOS) | background, text, cursor, font, size | this window |
 | iTerm2 (macOS) | background, text, cursor | this session |
 | Linux, VS Code and others | background, text, cursor | this session |

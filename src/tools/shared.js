@@ -103,7 +103,7 @@ export async function confirm(action, detail, risk = 'write', always = null) {
 /** A command about to run, put to the user first when they asked for that. */
 export async function approveCommand(command, where) {
   if (!policy.askCommands || allowedNow(command)) return;
-  await confirm(`run ${String(command).trim().slice(0, 160)}`, `in ${where}`, 'command', commandKey(command));
+  await confirm(`run ${String(command).trim()}`, `in ${where}`, 'command', commandKey(command));
 }
 
 // ---------------------------------------------------------------------------

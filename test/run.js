@@ -450,7 +450,10 @@ await test('it lives inside the input box, with a blank row above it', () => {
   const box = screen.inputBox();
   eq(box.length, 5, 'top border, the typed line, a blank row, the status, bottom border');
   ok(bare(box[0]).startsWith('╭'));
-  ok(bare(box[1]).includes('›'), 'the typed line');
+  ok(/^│\s+\S/.test(bare(box[1])), 'the typed line');
+  screen.pendingPrompt = 'go ahead? [y/N]';
+  ok(bare(screen.inputBox()[1]).includes('go ahead? [y/N]'), 'a question keeps its first letter');
+  screen.pendingPrompt = null;
   ok(/^│\s+│$/.test(bare(box[2])), 'a blank row separating the two');
   ok(bare(box[3]).includes('BUILD'), 'the status row');
   ok(bare(box[3]).startsWith('│') && bare(box[3]).endsWith('│'), 'framed on both sides');
@@ -491,9 +494,9 @@ await test('the caret sits on the typed line, not on the status row', () => {
   const [row, col] = screen.caret();
   // Counting up from the bottom: border 30, status 29, blank 28, typed line 27.
   eq(row, 27);
-  // Column 1 is the border, 2 is the padding, 3 is the caret glyph, 4 a space,
-  // 5-9 is "hello" — so the cursor waits at 10.
-  eq(col, 10);
+  // Column 1 is the border, 2 is the padding, 3-7 is "hello" — so the cursor
+  // waits at 8. (There was a › at 3 once; it covered the first letter.)
+  eq(col, 8);
 });
 
 await test('the caret follows a wrapped line down', () => {
@@ -525,7 +528,7 @@ await test('the start screen shows until something is said, and parks the caret 
   const g = screen.welcomeGeometry();
   const [row, col] = screen.caret();
   eq(row, g.boxTop + 2, 'on the first line inside the centred box');
-  eq(col, g.left + 5, 'on the first letter of the placeholder');
+  eq(col, g.left + 3, 'on the first letter of the placeholder');
   screen.add('hello');
   ok(!screen.welcoming(), 'the first message leaves the start screen');
 });
