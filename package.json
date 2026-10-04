@@ -1,7 +1,7 @@
 {
   "name": "ucode-agent",
-  "version": "1.67.0",
-  "description": "ucode - a terminal coding agent that reads, edits and runs your code, on Google Gemini models.",
+  "version": "1.67.1",
+  "description": "Free, open-source AI coding agent for your terminal: builds whole apps in about a minute on Google Gemini's free tier, edits real code, checks and fixes its own work.",
   "type": "module",
   "main": "ucode.js",
   "bin": {
@@ -35,14 +35,27 @@
     "node": ">=22"
   },
   "keywords": [
-    "agent",
+    "ai",
+    "ai-agent",
+    "coding-agent",
+    "ai-coding-assistant",
+    "ai-coding-agent",
+    "agentic-coding",
     "cli",
     "terminal",
-    "coding-agent",
+    "tui",
     "llm",
     "gemini",
     "google-gemini",
-    "ai"
+    "gemini-api",
+    "ollama",
+    "mcp",
+    "model-context-protocol",
+    "code-generation",
+    "developer-tools",
+    "claude-code-alternative",
+    "codex-alternative",
+    "free"
   ],
   "author": "om dixit",
   "license": "AGPL-3.0-only",

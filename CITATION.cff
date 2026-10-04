@@ -1,0 +1,16 @@
+cff-version: 1.2.0
+message: "If you use ucode in your work, please cite it like this."
+title: "ucode: a free AI coding agent for the terminal"
+authors:
+  - family-names: Dixit
+    given-names: Om
+repository-code: "https://github.com/sppideey/ucode-agent"
+url: "https://www.npmjs.com/package/ucode-agent"
+license: AGPL-3.0-only
+version: 1.67.1
+date-released: 2026-10-04
+keywords:
+  - coding agent
+  - terminal
+  - gemini
+  - large language models

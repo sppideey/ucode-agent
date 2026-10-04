@@ -1,0 +1,28 @@
+name: Bug report
+description: Something ucode did wrong
+labels: [bug]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you asked, what ucode did, and what you expected instead.
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: How to see it again
+      placeholder: "1. ucode in an empty folder\n2. make me a tasks app\n3. ..."
+  - type: input
+    id: version
+    attributes:
+      label: Version and system
+      placeholder: "ucode 1.67.0 (ucode --version), Windows 11 / macOS 15 / Ubuntu 24.04, Node 22"
+    validations:
+      required: true
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `ucode doctor`
+      render: text
