@@ -45,7 +45,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                                                           v1.66.0
+                                             made and tested by om dixit · v1.67.0
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box
@@ -443,9 +443,8 @@ quiet mic is taken for silence, set `UCODE_MIC_QUIET` lower than 800.
 
 ### Change how it looks — and your terminal
 
-Just ask: "make ucode orange with the arc spinner", "put my name under the
-logo", "make my terminal navy with a bigger font", "make the terminal a bit
-see-through". Or use `/theme`:
+Just ask: "make ucode orange with the arc spinner", "make my terminal navy
+with a bigger font", "make the terminal a bit see-through". Or use `/theme`:
 
 ```
 /theme                   what it looks like now, and the choices
@@ -454,9 +453,10 @@ see-through". Or use `/theme`:
 /theme terminal reset    the terminal back the way it was
 ```
 
-ucode's look is saved in `~/.ucode/theme.json` — accent, spinner (`dots`,
-`line`, `arc`, `circle`, `square`, `bounce`, `pulse`, `star`) and the line
-under the logo — so it survives restarts and updates.
+ucode's look is saved in `~/.ucode/theme.json` — accent and spinner (`dots`,
+`line`, `arc`, `circle`, `square`, `bounce`, `pulse`, `star`) — so it survives
+restarts and updates. The credit under the logo, "made and tested by om
+dixit", always stays: no look changes it.
 
 The terminal is changed the way each one allows, after you say yes:
 
@@ -640,14 +640,25 @@ your edits stop taking effect.
 
 The tests need no network and no framework — `node test/run.js` runs them all.
 
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) (sign off
+with `git commit -s`).
+
 ## Licence
 
-Dual-licensed under either of, at your option:
+ucode is free software under the **GNU AGPL v3** ([LICENSE](LICENSE)) with
+three additional terms ([NOTICE](NOTICE)): every copy and every changed version
+keeps the credit "made and tested by om dixit" on screen, a changed version is
+marked as changed, and the ucode name and logo stay ucode's.
 
-- MIT — see [LICENSE](LICENSE)
-- Apache License 2.0 — see [LICENSE-APACHE](LICENSE-APACHE)
+| What | Licence |
+| --- | --- |
+| ucode's code | AGPL-3.0-only, with the terms in [NOTICE](NOTICE) |
+| `templates/` and `skills/` — what goes into the apps you build | [MIT No Attribution](templates/LICENSE) — the apps are yours, no credit needed |
+| The documentation | [CC BY 4.0](LICENSE-DOCS) |
+| Code adapted from other projects | its own — see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md) |
+| Releases up to 1.66.0 | MIT OR Apache-2.0, unchanged |
 
-Made with ❤️ by om dixit.
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md).
 
 The edit matchers, the summary template, the context-overflow and transient-error
 patterns and tool-name repair are adapted from

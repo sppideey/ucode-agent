@@ -6,10 +6,34 @@ import {
   detectTerminal, cleanRequest, applyToWindowsTerminal, colourEscapes, customizeTerminal, resetTerminal,
 } from '../../src/core/terminal.js';
 
-const { normaliseColour, saveLook, applyLook, readLook, SPINNERS } = themeModule;
+import { Screen } from '../../src/ui/screen.js';
+
+const { normaliseColour, saveLook, applyLook, readLook, SPINNERS, CREDIT } = themeModule;
 
 export default async function ({ test, section, ok, eq, throws, tmp }) {
   section('your look');
+
+  await test('the credit under the logo stays, whatever a look asks for', async () => {
+    // What a red theme once left behind: the model wrote over the credit.
+    const file = path.join(tmp, 'theme-credit.json');
+    await fs.writeFile(file, JSON.stringify({ accent: '#ff2222', byline: 'bright red theme' }));
+    try {
+      const look = saveLook({ spinner: 'arc', byline: 'mine' }, { file });
+      eq(readLook(file), { accent: '#ff2222', spinner: 'arc' }, 'an old byline in the file is dropped, a new one never saved');
+      eq(look.byline, undefined);
+      for (const cols of [120, 60]) {
+        const output = { columns: cols, rows: 30, isTTY: true, write() {}, on() {}, off() {} };
+        const input = { setRawMode() {}, resume() {}, pause() {}, setEncoding() {}, on() {} };
+        const screen = new Screen({ cwd: tmp, input, output });
+        screen.cols = cols;
+        const header = themeModule.bare(screen.headerLines().join('\n'));
+        ok(header.includes(CREDIT) && !header.includes('bright red theme'), `the credit is in the ${cols}-column header`);
+      }
+      eq(CREDIT, 'made and tested by om dixit');
+    } finally {
+      applyLook({});
+    }
+  });
 
   await test('colours are read from names, short and long hex, and rgb()', () => {
     eq(normaliseColour('Orange'), '#f97316');
@@ -23,14 +47,14 @@ export default async function ({ test, section, ok, eq, throws, tmp }) {
     const file = path.join(tmp, 'theme.json');
     const before = themeModule.blue('x');
     try {
-      const look = saveLook({ accent: 'orange', spinner: 'arc', byline: 'mine' }, { file });
+      const look = saveLook({ accent: 'orange', spinner: 'arc' }, { file });
       eq(look.accent, '#f97316');
       eq(look.spinner, 'arc');
       eq(themeModule.SPINNER, SPINNERS.arc, 'the spinner changed for every importer');
-      eq(readLook(file), { accent: 'orange', spinner: 'arc', byline: 'mine' }, 'only what was asked is saved');
+      eq(readLook(file), { accent: 'orange', spinner: 'arc' }, 'only what was asked is saved');
       ok(look.light !== '#8fbcff', 'the lighter step follows the accent');
-      saveLook({ byline: null }, { file });
-      eq(readLook(file).byline, undefined, 'null puts one value back');
+      saveLook({ spinner: null }, { file });
+      eq(readLook(file).spinner, undefined, 'null puts one value back');
       eq(saveLook({}, { reset: true, file }).accent, '#4d8dff');
     } finally {
       applyLook({});

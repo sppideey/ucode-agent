@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * screen.js — the full-screen interface.
  *
@@ -37,7 +38,7 @@ import { homedir } from 'node:os';
 import path from 'node:path';
 import chalk from 'chalk';
 import {
-  theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER, look, SELECTED, BOX,
+  theme, blue, sky, deep, dim, edge, ADDED, REMOVED, BANNER, BANNER_WIDTH, SPINNER, SELECTED, BOX, CREDIT,
   boxTop, boxBottom, boxRow, visLen, padVis, clip, wrapAnsi,
   shortenPath, asLabel, ensureColour, planLine, bare, narration, narrationMark, groupKind, groupLabel, groupTarget, runLine, planRows, tidyReply, trimAnswer,
   bannerPaint, RAIL, modeChip, ADD_CHIP, micChip, asNarrationLine } from './theme.js';
@@ -785,7 +786,7 @@ export class Screen {
     if (width < WORDMARK_NEEDS) {
       // Too narrow for the wordmark: stack it rather than wrap it into noise.
       const rows = [
-        `  ${blue.bold('U C O D E')}  ${dim('terminal coding agent')}`,
+        `  ${blue.bold('U C O D E')}  ${dim(CREDIT)}`,
         `  ${dim('dir'.padEnd(8))}${chalk.white(clip(shortenPath(this.facts.cwd ?? this.cwd, inner - 12), inner - 12))}`,
       ];
       return [boxTop(width), ...rows.map((r) => boxRow(r, width)), boxBottom(width)];
@@ -819,7 +820,7 @@ export class Screen {
     ].filter(Boolean).slice(0, BANNER.length - 1);
 
     while (facts.length < BANNER.length - 1) facts.push(['', '']);
-    facts.push(['', look.byline]);
+    facts.push(['', CREDIT]);
 
     const rows = BANNER.map((art, i) => {
       const [label, text] = facts[i] ?? ['', ''];
@@ -1945,7 +1946,7 @@ export class Screen {
 
     // The version, in the corner, and nothing else on the screen.
     if (VERSION) {
-      const tag = dim(this.facts.update ? `v${VERSION} · v${this.facts.update} installed, starts next time` : `v${VERSION}`);
+      const tag = dim(`${CREDIT} · ${this.facts.update ? `v${VERSION} · v${this.facts.update} installed, starts next time` : `v${VERSION}`}`);
       frame[this.rows - 1] = ' '.repeat(Math.max(0, g.cols - visLen(tag) - 2)) + tag;
     }
 

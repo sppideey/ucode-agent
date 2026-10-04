@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * undo.js — what every file looked like before this turn touched it.
  *

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * version.js — the version, read from package.json rather than typed twice.
  *

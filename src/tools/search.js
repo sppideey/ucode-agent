@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * search.js — finding things: what is in a directory, which files match a
  * name pattern, and which lines match a regular expression.

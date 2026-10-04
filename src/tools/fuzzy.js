@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * fuzzy.js — finding the text an edit meant when it is not in the file as written.
  *

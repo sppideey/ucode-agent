@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * symbols.js — a map of what this codebase declares, so "where is the tip
  * calculated" is one lookup rather than five greps.

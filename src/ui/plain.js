@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * plain.js — the interface for when there is no terminal to draw on.
  *
@@ -14,7 +15,7 @@ import chalk from 'chalk';
 import {
   theme, blue, sky, dim, boxTop, boxBottom, boxRow,
   BANNER, BANNER_WIDTH, SPINNER, clip, shortenPath, asLabel, padVis, visLen, planLine, bannerPaint, modeChip, narrationMark, groupKind,
-  tidyReply, trimAnswer, look,
+  tidyReply, trimAnswer, CREDIT,
 } from './theme.js';
 import { formatDuration, doneLine } from './activity.js';
 import { renderer, render } from './markdown.js';
@@ -101,7 +102,7 @@ export class Plain {
       ['keys', '/help'],
       ['', ''],
       ['', ''],
-      ['', look.byline],
+      ['', CREDIT],
     ];
 
     // There is no input box to hang the status off here, so it goes on the
@@ -116,7 +117,7 @@ export class Plain {
           return `  ${bannerPaint(i)(art)}   ${right}`;
         })
       : [
-          `  ${blue.bold('U C O D E')}  ${dim('terminal coding agent')}`,
+          `  ${blue.bold('U C O D E')}  ${dim(CREDIT)}`,
           ...facts
             .filter(([label]) => label)
             .map(([label, value]) => `  ${dim(label.padEnd(9))}${chalk.white(clip(value, width - 16))}`),

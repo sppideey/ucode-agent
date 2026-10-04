@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * loop.js — the agent itself.
  *
@@ -67,7 +68,8 @@ import { Snapshots } from './snapshot.js';
 import { loadSettings, addAllow, isTrusted, trust, runHook } from './settings.js';
 import { McpHub, readServers, USER_MCP, projectMcpFile } from './mcp.js';
 import { loadCommands, expandCommand } from './commands.js';
-import { SPINNERS, saveLook, look, normaliseColour } from '../ui/theme.js';
+import { SPINNERS, saveLook, look, normaliseColour, CREDIT } from '../ui/theme.js';
+import { VERSION } from './version.js';
 import { customizeTerminal, resetTerminal, detectTerminal, TERMINAL_NAMES } from './terminal.js';
 
 /**
@@ -576,14 +578,15 @@ const LOOKUP_TOOLS = new Set(['find_symbol', 'outline', 'rename_symbol', 'type_o
  * then do the two tools below go out: "make it purple" about an app must not
  * repaint ucode instead.
  */
-const WANTS_LOOK = /\b(?:ucode|terminal|yourself|your (?:own )?(?:colou?rs?|look|theme|style|banner|spinner|font|byline)|this (?:terminal|window))\b/i;
+const WANTS_LOOK = /\b(?:ucode|terminal|yourself|your (?:own )?(?:colou?rs?|look|theme|style|banner|spinner|font)|this (?:terminal|window))\b/i;
 
 const lookTool = {
   name: 'change_look',
   description:
     'Change how ucode itself looks in the terminal - only when the user asks about ucode, not about an app. ' +
-    'Sets the accent colour (borders, wordmark, chips; a lighter and a deeper step are worked out from it), ' +
-    'the spinner, and the line under the logo. Saved, so it stays after a restart. reset: true goes back to ucode\'s own blue.',
+    'Sets the accent colour (borders, wordmark, chips; a lighter and a deeper step are worked out from it) ' +
+    'and the spinner. Saved, so it stays after a restart. reset: true goes back to ucode\'s own blue. ' +
+    'The credit under the logo ("made and tested by om dixit") is fixed: say so if asked to change it.',
   parameters: {
     type: 'object',
     properties: {
@@ -591,7 +594,6 @@ const lookTool = {
       light: { type: 'string', description: 'Optional: the lighter step (labels, the top of the wordmark).' },
       deep: { type: 'string', description: 'Optional: the deeper step (the bottom of the wordmark).' },
       spinner: { type: 'string', enum: Object.keys(SPINNERS), description: 'The spinner shape.' },
-      byline: { type: 'string', description: 'The short line beside the logo, up to 40 characters.' },
       reset: { type: 'boolean', description: 'Go back to the default look.' },
     },
   },
@@ -2527,16 +2529,16 @@ export class Agent {
     return out;
   }
 
-  /** change_look: ucode's own colours, spinner and byline, saved and shown at once. */
+  /** change_look: ucode's own colours and spinner, saved and shown at once. */
   changeLook(args) {
     const changes = {};
-    for (const key of ['accent', 'light', 'deep', 'spinner', 'byline']) {
+    for (const key of ['accent', 'light', 'deep', 'spinner']) {
       if (args[key] !== undefined) changes[key] = args[key];
     }
     if (!args.reset && !Object.keys(changes).length) {
       throw new ToolFailure({
         kind: 'bad_args', attempted: 'changing how ucode looks',
-        failed: 'Nothing to change was given.', fix: 'Pass accent, spinner or byline - or reset: true.',
+        failed: 'Nothing to change was given.', fix: 'Pass accent or spinner - or reset: true. The credit under the logo cannot change.',
       });
     }
     for (const key of ['accent', 'light', 'deep']) {
@@ -2551,7 +2553,7 @@ export class Agent {
     this.showHeader({ clear: false });
     this.ui.render?.();
     return {
-      content: `ucode now looks like this: accent ${now.accent}, spinner ${now.spinner}, byline "${now.byline}". It is saved and already on screen.`,
+      content: `ucode now looks like this: accent ${now.accent}, spinner ${now.spinner}. It is saved and already on screen.`,
       summary: `accent ${now.accent} · ${now.spinner}`,
     };
   }
@@ -3550,7 +3552,6 @@ export class Agent {
       await this.show('Theme', [
         `  ${blue('accent')}   ${look.accent}   ${dim('light')} ${look.light}   ${dim('deep')} ${look.deep}`,
         `  ${blue('spinner')}  ${look.spinner}  ${dim(`(${Object.keys(SPINNERS).join(', ')})`)}`,
-        `  ${blue('byline')}   ${look.byline}`,
         `  ${blue('terminal')} ${TERMINAL_NAMES[detectTerminal()]}`,
         '',
         dim('  /theme orange · /theme reset · /theme terminal reset · or just ask: "make ucode green and my terminal navy"'),
@@ -3707,6 +3708,9 @@ ${out.content}` });
     out.push(dim('  /models, /session and /sessions do the same as /model and /resume.'));
     out.push(dim('  ctrl+b swaps plan and build · + file (or ctrl+o) adds a picture or file · esc stops a running turn · ctrl+d quits'));
     out.push(dim('  ctrl+t (or the mic button) listens: speak, then enter to send, ctrl+t to check it first, esc to cancel'));
+    out.push('');
+    // The licence's "Appropriate Legal Notices": who made it, the licence, no warranty.
+    out.push(dim(`  ucode ${VERSION} · ${CREDIT} · free software under the AGPL-3.0, with no warranty — see LICENSE and NOTICE`));
     return this.show('Commands', out);
   }
 

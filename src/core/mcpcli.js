@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * mcpcli.js — `ucode mcp add | list | remove`, the way to connect a server
  * without editing JSON by hand. Servers go in ~/.ucode/mcp.json (every

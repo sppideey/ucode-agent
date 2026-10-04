@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * doctor.js — `ucode doctor` and /doctor: is everything ucode needs working?
  *

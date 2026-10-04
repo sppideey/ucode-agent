@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * attach.js — the "+ file" button: choosing reference files and turning them
  * into something the model can use.

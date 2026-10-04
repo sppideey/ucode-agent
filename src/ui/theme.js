@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * theme.js — colour, boxes, and the string maths that keeps a terminal frame
  * from tearing.
@@ -884,12 +885,11 @@ function withinRoom(text, room = ANSWER_ROOM) {
 
 /**
  * ucode's look is the user's to change, by asking: "make yourself orange",
- * "a calmer spinner", "put my name under the logo". It is a small file of
- * choices rather than an edit to this one, so it survives every update and can
- * never break ucode - a value that does not parse is simply ignored.
+ * "a calmer spinner". It is a small file of choices rather than an edit to
+ * this one, so it survives every update and can never break ucode - a value
+ * that does not parse is simply ignored.
  *
- *   { "accent": "#ff8c2b", "light": "#ffb454", "deep": "#c2410c",
- *     "spinner": "dots", "byline": "made by me" }
+ *   { "accent": "#ff8c2b", "light": "#ffb454", "deep": "#c2410c", "spinner": "dots" }
  *
  * Only accent is needed; light and deep are worked out from it.
  */
@@ -907,8 +907,16 @@ export const SPINNERS = {
 };
 
 export const DEFAULT_LOOK = Object.freeze({
-  accent: '#4d8dff', light: '#8fbcff', deep: '#2f6fe0', spinner: 'dots', byline: 'made with ❤ by om dixit',
+  accent: '#4d8dff', light: '#8fbcff', deep: '#2f6fe0', spinner: 'dots',
 });
+
+/**
+ * The author's credit under the logo. Not part of the look: asked for a red
+ * theme, the model once wrote "bright red theme" over it. It is also the
+ * attribution the licence's additional terms require every copy to keep (see
+ * NOTICE), so nothing a user or a model asks for can change it.
+ */
+export const CREDIT = 'made and tested by om dixit';
 
 const NAMED = {
   red: '#ef4444', orange: '#f97316', amber: '#f59e0b', gold: '#eab308', yellow: '#facc15', lime: '#84cc16',
@@ -960,9 +968,8 @@ export function applyLook(wanted = {}) {
   const light = normaliseColour(wanted.light) ?? (own ? mixHex(accent, '#ffffff', 0.45) : DEFAULT_LOOK.light);
   const deepHex = normaliseColour(wanted.deep) ?? (own ? mixHex(accent, '#000000', 0.25) : DEFAULT_LOOK.deep);
   const spinner = SPINNERS[wanted.spinner] ? wanted.spinner : DEFAULT_LOOK.spinner;
-  const byline = typeof wanted.byline === 'string' ? wanted.byline.replace(/[\x00-\x1f]/g, '').slice(0, 40) : DEFAULT_LOOK.byline;
 
-  look = { accent, light, deep: deepHex, spinner, byline };
+  look = { accent, light, deep: deepHex, spinner };
   blue = chalk.hex(accent);
   sky = chalk.hex(light);
   deep = chalk.hex(deepHex);
@@ -985,7 +992,8 @@ export function applyLook(wanted = {}) {
  * set to null goes back to its default, and { reset: true } starts over.
  */
 export function saveLook(changes = {}, { reset = false, file = LOOK_FILE } = {}) {
-  const merged = reset ? {} : { ...readLook(file) };
+  // Only what the look still has: an old "byline" in the file goes on the next save.
+  const merged = reset ? {} : Object.fromEntries(Object.entries(readLook(file)).filter(([key]) => key in DEFAULT_LOOK));
   for (const [key, value] of Object.entries(changes)) {
     if (!(key in DEFAULT_LOOK)) continue;
     if (value === null || value === '') delete merged[key];

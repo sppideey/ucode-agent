@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: AGPL-3.0-only - ucode, made and tested by om dixit. Additional terms: see NOTICE.
 /**
  * terminal.js — changing the terminal ucode runs in, when the user asks:
  * "make my terminal dark green", "bigger font", "a bit see-through".
