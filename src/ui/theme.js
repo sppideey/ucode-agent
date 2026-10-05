@@ -10,9 +10,6 @@
  */
 
 import chalk from 'chalk';
-import { readFileSync, writeFileSync, mkdirSync, renameSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
 
 // One hue, three weights. Anything that needs a fourth is asking for emphasis
 // it has not earned. The hue is the user's to change ("make ucode orange"):
@@ -885,15 +882,14 @@ function withinRoom(text, room = ANSWER_ROOM) {
 
 /**
  * ucode's look is the user's to change, by asking: "make yourself orange",
- * "a calmer spinner". It is a small file of choices rather than an edit to
- * this one, so it survives every update and can never break ucode - a value
- * that does not parse is simply ignored.
+ * "a calmer spinner". It lasts until ucode closes: the next launch is ucode's
+ * own blue again, so a look tried once never becomes the look for good. A
+ * value that does not parse is simply ignored.
  *
- *   { "accent": "#ff8c2b", "light": "#ffb454", "deep": "#c2410c", "spinner": "dots" }
+ *   { accent: '#ff8c2b', light: '#ffb454', deep: '#c2410c', spinner: 'dots' }
  *
  * Only accent is needed; light and deep are worked out from it.
  */
-export const LOOK_FILE = process.env.UCODE_LOOK_FILE || path.join(os.homedir(), '.ucode', 'theme.json');
 
 export const SPINNERS = {
   dots: ['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'],
@@ -948,15 +944,8 @@ const rgbHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2
 /** Part of the way from one colour to another: t = 0 is a, 1 is b. */
 export const mixHex = (a, b, t) => rgbHex(hexRGB(a).map((v, i) => v + (hexRGB(b)[i] - v) * t));
 
-/** The look in the file, or nothing. Never throws. */
-export function readLook(file = LOOK_FILE) {
-  try {
-    const data = JSON.parse(readFileSync(file, 'utf8'));
-    return data && typeof data === 'object' && !Array.isArray(data) ? data : {};
-  } catch {
-    return {};
-  }
-}
+/** What has been asked for this session, before defaults fill it out. */
+let chosen = {};
 
 /** The current look, filled out: what applyLook settled on. */
 export let look = { ...DEFAULT_LOOK };
@@ -988,12 +977,12 @@ export function applyLook(wanted = {}) {
 }
 
 /**
- * Change the look and keep it: `changes` are merged into what is saved, a key
- * set to null goes back to its default, and { reset: true } starts over.
+ * Change the look for this session: `changes` are merged into what was asked
+ * for so far, a key set to null goes back to its default, and { reset: true }
+ * starts over. Nothing is written down - the next launch starts blue.
  */
-export function saveLook(changes = {}, { reset = false, file = LOOK_FILE } = {}) {
-  // Only what the look still has: an old "byline" in the file goes on the next save.
-  const merged = reset ? {} : Object.fromEntries(Object.entries(readLook(file)).filter(([key]) => key in DEFAULT_LOOK));
+export function setLook(changes = {}, { reset = false } = {}) {
+  const merged = reset ? {} : { ...chosen };
   for (const [key, value] of Object.entries(changes)) {
     if (!(key in DEFAULT_LOOK)) continue;
     if (value === null || value === '') delete merged[key];
@@ -1002,11 +991,6 @@ export function saveLook(changes = {}, { reset = false, file = LOOK_FILE } = {})
   // An accent alone gets its own light and dark steps, not the old ones.
   if ('accent' in changes && !('light' in changes)) delete merged.light;
   if ('accent' in changes && !('deep' in changes)) delete merged.deep;
-  mkdirSync(path.dirname(file), { recursive: true });
-  const temp = `${file}.${process.pid}.tmp`;
-  writeFileSync(temp, `${JSON.stringify(merged, null, 2)}\n`);
-  renameSync(temp, file);
+  chosen = merged;
   return applyLook(merged);
 }
-
-applyLook(readLook());

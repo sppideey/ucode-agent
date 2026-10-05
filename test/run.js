@@ -1419,7 +1419,11 @@ section('models');
 
 await test('the Google models are offered, each named and noted', () => {
   const ids = Object.keys(MODELS);
-  eq(ids, ['gemini-3.5-flash-lite', 'gemini-3.5-flash', 'gemini-3.1-flash-lite']);
+  eq(ids, [
+    'gemini-3.5-flash-lite', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemini-3.5-flash',
+    'gemini-3.1-flash-lite', 'gemini-3-flash-preview', 'gemma-4-31b-it', 'gemini-3.1-pro-preview', 'gemini-pro-latest',
+  ]);
+  eq(ids.filter((id) => MODELS[id].paid), ['gemini-3.1-pro-preview', 'gemini-pro-latest'], 'Pro is marked paid');
   for (const id of ids) ok(MODELS[id].name && MODELS[id].note, `${id} needs a name and a note`);
 });
 

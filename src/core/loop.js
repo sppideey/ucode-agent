@@ -28,7 +28,7 @@ import { beginTurn, undoTurn, changedCount } from './undo.js';
 import { spawn } from 'node:child_process';
 
 import {
-  ask, model, setModel, modelName, modelList, contextLimit, rateLimits,
+  ask, model, setModel, modelName, modelList, discoverModels, contextLimit, rateLimits,
   estimateConversation, MODELS, DEFAULT_MODEL, PROVIDER, fallbackFor, backupFor, transcribe,
   requestCount, customProvider,
 } from './provider.js';
@@ -68,7 +68,7 @@ import { Snapshots } from './snapshot.js';
 import { loadSettings, addAllow, isTrusted, trust, runHook } from './settings.js';
 import { McpHub, readServers, USER_MCP, projectMcpFile } from './mcp.js';
 import { loadCommands, expandCommand } from './commands.js';
-import { SPINNERS, saveLook, look, normaliseColour, CREDIT } from '../ui/theme.js';
+import { SPINNERS, setLook, look, normaliseColour, CREDIT } from '../ui/theme.js';
 import { VERSION } from './version.js';
 import { customizeTerminal, resetTerminal, detectTerminal, TERMINAL_NAMES } from './terminal.js';
 
@@ -578,14 +578,16 @@ const LOOKUP_TOOLS = new Set(['find_symbol', 'outline', 'rename_symbol', 'type_o
  * then do the two tools below go out: "make it purple" about an app must not
  * repaint ucode instead.
  */
-const WANTS_LOOK = /\b(?:ucode|terminal|yourself|your (?:own )?(?:colou?rs?|look|theme|style|banner|spinner|font)|this (?:terminal|window))\b/i;
+// "ur theme" and "how u look" too: "chnage ur theme to silver" got "I do not
+// have a theme to change", because the tool was never offered.
+export const WANTS_LOOK = /\b(?:ucode|terminal|yourself|urself|(?:your|ur|yr) (?:own )?(?:colou?rs?|look|theme|style|banner|spinner|font|accent)|how (?:you|u) look|this (?:terminal|window))\b/i;
 
 const lookTool = {
   name: 'change_look',
   description:
     'Change how ucode itself looks in the terminal - only when the user asks about ucode, not about an app. ' +
     'Sets the accent colour (borders, wordmark, chips; a lighter and a deeper step are worked out from it) ' +
-    'and the spinner. Saved, so it stays after a restart. reset: true goes back to ucode\'s own blue. ' +
+    'and the spinner. It lasts until ucode is closed; the next launch is ucode\'s own blue again. reset: true goes back now. ' +
     'The credit under the logo ("made and tested by om dixit") is fixed: say so if asked to change it.',
   parameters: {
     type: 'object',
@@ -665,6 +667,12 @@ function systemPrompt({ cwd, skills, mode, check, map, memory, lessons }) {
     ] : []),
     '',
     '## How to work',
+    '',
+    'YOU HAVE A LOOK OF YOUR OWN. You are ucode, a program in a terminal, with a colour',
+    'and a spinner the user can change. "Change your theme to silver" or "how you look"',
+    'is about you, not an app: use change_look (and change_terminal for the terminal',
+    'window) when they are offered; if not, tell them to type /theme silver. Never say',
+    'you have no theme or no interface.',
     '',
     'BUILD ONLY WHEN ASKED. Make or change an app only when the message asks for one.',
     'A greeting, a question, a single word, or anything unclear gets a short plain',
@@ -2549,11 +2557,11 @@ export class Agent {
         });
       }
     }
-    const now = saveLook(changes, { reset: Boolean(args.reset) });
+    const now = setLook(changes, { reset: Boolean(args.reset) });
     this.showHeader({ clear: false });
     this.ui.render?.();
     return {
-      content: `ucode now looks like this: accent ${now.accent}, spinner ${now.spinner}. It is saved and already on screen.`,
+      content: `ucode now looks like this: accent ${now.accent}, spinner ${now.spinner}. It is on screen now and lasts until ucode is closed.`,
       summary: `accent ${now.accent} · ${now.spinner}`,
     };
   }
@@ -3559,7 +3567,7 @@ export class Agent {
       return;
     }
     if (/^reset$/i.test(said)) {
-      saveLook({}, { reset: true });
+      setLook({}, { reset: true });
       this.showHeader({ clear: false });
       this.ui.note('ucode is back to its own blue');
       return;
@@ -3570,9 +3578,9 @@ export class Agent {
       return;
     }
     if (/^\S+$/.test(said) && normaliseColour(said)) {
-      saveLook({ accent: said });
+      setLook({ accent: said });
       this.showHeader({ clear: false });
-      this.ui.note(`ucode is ${look.accent} now — saved for next time too`);
+      this.ui.note(`ucode is ${look.accent} now — until you close it`);
       return;
     }
     this.lookTurn = true;
@@ -3724,9 +3732,17 @@ ${out.content}` });
   }
 
   /** The six models, and this session's spend. */
+  /** What switching model says - and, for a paid one, what Google will want first. */
+  switchNote() {
+    return MODELS[model()]?.paid
+      ? `now using ${modelName()} — a paid model: Google refuses it unless billing is on for your key (/model to switch back)`
+      : `now using ${modelName()}`;
+  }
+
   async cmdModel(arg) {
     if (arg) {
       try {
+        await discoverModels();
         setModel(arg);
         this.preferred = model();
       } catch (err) {
@@ -3734,19 +3750,22 @@ ${out.content}` });
         return;
       }
       this.session.model = model();
-      this.ui.note(`now using ${modelName()}`);
+      this.ui.note(this.switchNote());
       this.showHeader({ clear: false });
       return;
     }
 
+    // Anything newer Google has released since this version was written.
+    await discoverModels();
     const all = modelList();
     const width = Math.max(...all.map((m) => m.name.length));
+    const paidTag = (m) => (m.paid ? theme.warn('PAID ') : '');
 
     if (this.ui.pick) {
       const items = all.map((m) => ({
         label:
           `${m.active ? blue('●') : dim('○')} ${m.star ? blue('★') : ' '} ` +
-          `${m.name.padEnd(width)}  ${dim(`${formatTokens(m.context)} · ${m.note}`)}`,
+          `${m.name.padEnd(width)}  ${paidTag(m)}${dim(`${formatTokens(m.context)} · ${m.note}`)}`,
       }));
 
       const chosen = await this.ui.pick(items, {
@@ -3759,7 +3778,7 @@ ${out.content}` });
       setModel(all[chosen].id);
       this.preferred = model();
       this.session.model = model();
-      this.ui.note(`now using ${modelName()}`);
+      this.ui.note(this.switchNote());
       this.showHeader({ clear: false });
       return;
     }
@@ -3768,7 +3787,7 @@ ${out.content}` });
     for (const m of all) {
       this.ui.write(
         `  ${m.active ? blue('●') : dim('○')} ${m.star ? blue('★') : ' '} ` +
-        `${(m.active ? blue : dim)(m.name.padEnd(width))}  ${dim(`${formatTokens(m.context)} · ${m.note}`)}`
+        `${(m.active ? blue : dim)(m.name.padEnd(width))}  ${paidTag(m)}${dim(`${formatTokens(m.context)} · ${m.note}`)}`
       );
       this.ui.write(`      ${dim(m.id)}`);
     }

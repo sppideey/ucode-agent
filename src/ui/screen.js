@@ -59,6 +59,9 @@ export function isLabel(text) {
   return t.length > 0 && t.length <= MAX_LABEL && !t.includes('\n');
 }
 
+/** A slash command that is not echoed into the conversation: all but /deploy. */
+export const isQuietCommand = (text) => /^\/\S/.test(String(text).trim()) && !/^\/deploy\b/i.test(String(text).trim());
+
 export const COMMANDS = [
   '/help', '/model', '/models', '/session', '/sessions', '/resume',
   '/new', '/remember', '/skills', '/clear', '/search', '/copy', '/exit',
@@ -383,7 +386,12 @@ export class Screen {
 
   write(text = '') { this.push(text); }
   blank() { this.push(''); }
-  note(text) { this.push(dim(`  ${text}`)); }
+  note(text) {
+    // On the start screen a note would end it ("now using …" after /model):
+    // it shows in the status row for a moment instead.
+    if (this.welcoming()) { this.flash(text); return; }
+    this.push(dim(`  ${text}`));
+  }
 
   clearScreen() {
     this.lines = [];
@@ -1689,7 +1697,12 @@ export class Screen {
           this.history.unshift(text);
           // Answers to a y/N or a numbered pick are not messages, so they are
           // not echoed: the prompt reports its own outcome.
-          if (!this.pendingPrompt) {
+          // Nor are commands: they answer in a popup or a line of their own,
+          // and an echoed "/stats" was chat that said nothing - and it ended
+          // the start screen. /deploy stays, because it starts real work.
+          if (isQuietCommand(text)) {
+            if (this.busy()) this.flash(`${text.trim()} runs when this turn ends`);
+          } else if (!this.pendingPrompt) {
             this.userMessage(text);
             for (const f of this.attachments) this.push(dim(`  + ${path.basename(f)}`));
           }

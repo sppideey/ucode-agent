@@ -56,6 +56,22 @@ export const MODELS = {
     star: true,
     note: 'the default — fast, reliable with tools, 500 free requests a day',
   },
+  // Each free one below was tried with a tool call on a free key (2026-10-05).
+  'gemini-3.8-flash': {
+    name: 'Gemini 3.8 Flash',
+    context: 1_000_000,
+    note: 'the newest Flash — smarter, free with a smaller daily limit',
+  },
+  'gemini-3.7-flash': {
+    name: 'Gemini 3.7 Flash',
+    context: 1_000_000,
+    note: 'free with a smaller daily limit, often busy at peak hours',
+  },
+  'gemini-3.6-flash': {
+    name: 'Gemini 3.6 Flash',
+    context: 1_000_000,
+    note: 'free with a smaller daily limit',
+  },
   'gemini-3.5-flash': {
     name: 'Gemini 3.5 Flash',
     context: 1_000_000,
@@ -66,7 +82,80 @@ export const MODELS = {
     context: 1_000_000,
     note: 'older and lighter, 500 free requests a day',
   },
+  'gemini-3-flash-preview': {
+    name: 'Gemini 3 Flash Preview',
+    context: 1_000_000,
+    note: 'older preview, free, slow to answer',
+  },
+  'gemma-4-31b-it': {
+    name: 'Gemma 4 31B',
+    context: 262_144,
+    thinks: false,   // a thinking level is refused outright: "not supported for this model"
+    note: 'Google\'s open model, free, no thinking levels',
+  },
+  // Not tried: Pro needs billing turned on for the key.
+  'gemini-3.1-pro-preview': {
+    name: 'Gemini 3.1 Pro Preview',
+    context: 1_000_000,
+    paid: true,
+    note: 'the strongest — needs billing on your Google key',
+  },
+  'gemini-pro-latest': {
+    name: 'Gemini Pro (latest)',
+    context: 1_000_000,
+    paid: true,
+    note: 'Google\'s newest Pro — needs billing on your Google key',
+  },
 };
+
+/** Model versions as numbers, by kind, so a newer one can be told from an old one. */
+const versionOf = (id) => {
+  const m = /^gemini-(\d+(?:\.\d+)?)-(flash-lite|flash|pro)\b/.exec(id);
+  return m ? { version: Number(m[1]), kind: m[2] } : null;
+};
+
+let discovered = false;
+
+/**
+ * Models Google has released since this list was written - a 3.9 Flash, say -
+ * added to it, so /model offers them without a new ucode. Only newer versions
+ * of a kind already here: older ones Google retires ("no longer available to
+ * new users"). Asked once a session; any failure just leaves the list as it is.
+ */
+export async function discoverModels({ timeoutMs = 4000, fetchImpl = fetch, again = false } = {}) {
+  if ((discovered && !again) || customProvider() || !providerKey()) return [];
+  discovered = true;
+  const newest = {};
+  for (const id of Object.keys(MODELS)) {
+    const v = versionOf(id);
+    if (v) newest[v.kind] = Math.max(newest[v.kind] ?? 0, v.version);
+  }
+  try {
+    const res = await fetchImpl(`${BASE_URL.replace(/\/openai$/, '')}/models?pageSize=1000`, {
+      headers: { 'x-goog-api-key': providerKey() },
+      signal: AbortSignal.timeout(timeoutMs),
+    });
+    if (!res.ok) return [];
+    const added = [];
+    for (const m of (await res.json()).models ?? []) {
+      const id = String(m.name ?? '').replace(/^models\//, '');
+      const v = versionOf(id);
+      if (MODELS[id] || !v || !/^gemini-[\d.]+-(?:flash-lite|flash|pro)(?:-preview)?$/.test(id)) continue;
+      if (!(m.supportedGenerationMethods ?? []).includes('generateContent') || v.version <= (newest[v.kind] ?? 0)) continue;
+      const paid = v.kind === 'pro';
+      MODELS[id] = {
+        name: String(m.displayName || id).slice(0, 40),
+        context: Number(m.inputTokenLimit) || 1_000_000,
+        paid,
+        note: paid ? 'new — needs billing on your Google key' : 'new from Google, free tier — not yet tried with ucode',
+      };
+      added.push(id);
+    }
+    return added;
+  } catch {
+    return [];
+  }
+}
 
 /** The model a session starts on. */
 export const DEFAULT_MODEL = 'gemini-3.5-flash-lite';
@@ -779,7 +868,10 @@ export async function ask(messages, tools = [], opts = {}) {
   if (opts.temperature !== undefined) request.temperature = opts.temperature;
   if (opts.maxOutputTokens) request.max_tokens = opts.maxOutputTokens;
   if (opts.reasoning) request.reasoning = opts.reasoning;
-  if (opts.effort && thinkingOn()) request.reasoning_effort = opts.effort;
+  // A model that refuses thinking levels never gets one, and never turns them
+  // off for the others (see effortRejected below).
+  const effortWanted = Boolean(opts.effort) && thinkingOn() && MODELS[id]?.thinks !== false;
+  if (effortWanted) request.reasoning_effort = opts.effort;
 
   // A side call (the design review) passes fewer: it is better skipped than
   // waited on through a string of rate-limit pauses.
@@ -808,7 +900,7 @@ export async function ask(messages, tools = [], opts = {}) {
         reply = normalize(data, id, request.tools?.map((t) => t.function.name));
       }
       stalls = 0;
-      if (request.reasoning_effort === undefined && opts.effort && thinkingOn()) effortRejected = true;
+      if (request.reasoning_effort === undefined && effortWanted) effortRejected = true;
       return reply;
     } catch (err) {
       noteLimits(err?.headers);

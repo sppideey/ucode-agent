@@ -1,8 +1,9 @@
 // Popups over the input box: the command list on "/", questions, panels and pickers.
 import chalk from 'chalk';
-import { Screen } from '../../src/ui/screen.js';
+import { Screen, isQuietCommand } from '../../src/ui/screen.js';
 import { bare, visLen } from '../../src/ui/theme.js';
-import { Agent } from '../../src/core/loop.js';
+import { Agent, WANTS_LOOK } from '../../src/core/loop.js';
+import { MODELS, DEFAULT_MODEL, discoverModels } from '../../src/core/provider.js';
 
 const ESC = '\x1b';
 
@@ -198,6 +199,52 @@ export default async function ({ test, section, ok, eq }) {
     screen.onKey('d');
     ok(shown(screen).some((r) => r.includes('✗ one')), 'marked, though it is also the highlighted row');
     screen.onKey(ESC);
+  });
+
+  await test('a command is not echoed into the chat, and the start screen stays; /deploy is echoed', async () => {
+    const screen = fake();
+    screen.listCommands = () => [{ name: '/stats', what: '' }, { name: '/deploy', what: '' }];
+    let sent = screen.nextLine();
+    type(screen, '/stats');
+    screen.onKey('\r');
+    eq(await sent, '/stats', 'it still runs');
+    screen.note('now using Gemini 3.8 Flash');
+    ok(screen.welcoming(), 'nothing was added to the chat, so the start screen stays');
+    eq(screen.flashText, 'now using Gemini 3.8 Flash', 'a note shows in the status row instead');
+    sent = screen.nextLine();
+    type(screen, '/deploy');
+    screen.onKey('\r');
+    await sent;
+    ok(!screen.welcoming() && bare(screen.lines.join('\n')).includes('/deploy'), '/deploy starts real work, so it shows');
+    ok(isQuietCommand('/model') && !isQuietCommand('/deploy all') && !isQuietCommand('make it /blue'));
+  });
+
+  await test('asking about ucode\'s own look, in any spelling, offers the look tools', () => {
+    for (const said of ['chnage ur theme to silver', 'change how u look to silver', 'change your colours to red', 'make ucode green']) {
+      ok(WANTS_LOOK.test(said), said);
+    }
+    ok(!WANTS_LOOK.test('make the app purple'), 'an app\'s look is not ucode\'s');
+  });
+
+  await test('the latest Gemini models are listed, Flash-Lite stays the default, Pro is marked paid', async () => {
+    eq(DEFAULT_MODEL, 'gemini-3.5-flash-lite');
+    for (const id of ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemma-4-31b-it']) ok(MODELS[id] && !MODELS[id].paid, id);
+    ok(MODELS['gemini-3.1-pro-preview'].paid && MODELS['gemini-pro-latest'].paid, 'Pro is paid');
+    eq(MODELS['gemma-4-31b-it'].thinks, false, 'Gemma refuses thinking levels, so it is never sent one');
+    const was = process.env.GEMINI_API_KEY;
+    process.env.GEMINI_API_KEY = was || 'test-key';
+    try {
+      const listed = ['gemini-3.9-flash', 'gemini-4-pro-preview', 'gemini-2.5-flash', 'gemini-3.9-flash-tts', 'gemini-3.8-flash']
+        .map((name) => ({ name: `models/${name}`, displayName: name, supportedGenerationMethods: ['generateContent'] }));
+      const added = await discoverModels({ again: true, fetchImpl: async () => ({ ok: true, json: async () => ({ models: listed }) }) });
+      eq(added.sort(), ['gemini-3.9-flash', 'gemini-4-pro-preview'], 'only newer chat models: not retired ones, not voice ones');
+      ok(!MODELS['gemini-3.9-flash'].paid && MODELS['gemini-4-pro-preview'].paid);
+      eq(await discoverModels({ again: true, fetchImpl: async () => { throw new Error('offline'); } }), [], 'offline changes nothing');
+    } finally {
+      delete MODELS['gemini-3.9-flash'];
+      delete MODELS['gemini-4-pro-preview'];
+      if (was === undefined) delete process.env.GEMINI_API_KEY; else process.env.GEMINI_API_KEY = was;
+    }
   });
 
   await test('information goes to a panel when there is one, and to plain lines when not', async () => {

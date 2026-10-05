@@ -1,6 +1,6 @@
 {
   "name": "ucode-agent",
-  "version": "1.67.1",
+  "version": "1.68.0",
   "description": "Free, open-source AI coding agent for your terminal: builds whole apps in about a minute on Google Gemini's free tier, edits real code, checks and fixes its own work.",
   "type": "module",
   "main": "ucode.js",
