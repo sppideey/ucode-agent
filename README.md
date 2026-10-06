@@ -68,7 +68,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                             made and tested by om dixit · v1.68.0
+                                             made and tested by om dixit · v1.68.1
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box
@@ -135,13 +135,13 @@ One key, every current Gemini model. Flash-Lite is the default; `/model` (or
 | Model | Free? | For |
 | --- | --- | --- |
 | **Gemini 3.5 Flash-Lite** ★ | free | the default — fast, reliable with tools, 500 free requests a day |
-| Gemini 3.8 Flash | free | the newest Flash — smarter, with a smaller daily limit |
-| Gemini 3.7 Flash | free | smaller daily limit, often busy at peak hours |
-| Gemini 3.6 Flash | free | smaller daily limit |
+| Gemini 3.8 Flash | free | the newest Flash — smarter, about 20 free requests a day |
+| Gemini 3.7 Flash | free | about 20 free requests a day, often busy at peak hours |
+| Gemini 3.6 Flash | free | about 20 free requests a day |
 | Gemini 3.5 Flash | free | smarter, but only about 20 free requests a day |
 | Gemini 3.1 Flash-Lite | free | older and lighter, 500 free requests a day |
 | Gemini 3 Flash Preview | free | older preview, slow to answer |
-| Gemma 4 31B | free | Google's open model, no thinking levels |
+| Gemma 4 31B | free | Google's open model — slow (about 30s a step) and sometimes errors |
 | Gemini 3.1 Pro Preview | **paid** | the strongest — needs billing turned on for your key |
 | Gemini Pro (latest) | **paid** | Google's newest Pro — needs billing turned on for your key |
 
@@ -149,8 +149,17 @@ When Google releases a newer one (a 3.9 Flash, say), `/model` finds it on its
 own and lists it — marked new, and paid if it is a Pro. `ucode -m gemini-3.8-flash`
 starts on a model.
 
+Free limits are per model, and they start again at midnight in California
+(12:30 PM in India). When one model has used its free requests for the day,
+ucode says so — with when it comes back — and offers to carry on with
+Flash-Lite, which has its own 500; `/model` marks it USED UP until then. A
+Pro model on a key without billing is said to be not free, rather than retried.
+A per-minute limit is waited out exactly as long as Google says, and the next
+requests are spaced to fit it.
+
 When Google is overloaded and Flash-Lite stops answering, ucode carries on with
-3.5 Flash by itself and goes back to Flash-Lite a few minutes later.
+3.5 Flash by itself and goes back to Flash-Lite a few minutes later; the newer
+Flash models and Gemma carry on with Flash-Lite the same way.
 
 ## What it does
 

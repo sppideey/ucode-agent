@@ -1508,6 +1508,7 @@ await test('a retry on the same model does not claim to have switched', async ()
   const before = model();
   const fallback = process.env.UCODE_FALLBACK;
   delete process.env.UCODE_FALLBACK;
+  process.env.UCODE_BACKUP = '0'; // no backup either: the same model is asked again
   try {
     setModel('gemini-3.5-flash');
     const agent = new Agent({ cwd: process.cwd() });
@@ -1523,6 +1524,7 @@ await test('a retry on the same model does not claim to have switched', async ()
     ok(Date.now() - started < 15_000, 'a timeout should not sit out the rate-limit minute');
   } finally {
     if (fallback !== undefined) process.env.UCODE_FALLBACK = fallback;
+    delete process.env.UCODE_BACKUP;
     setModel(before);
   }
 });
@@ -1706,7 +1708,8 @@ await test('an overloaded Flash-Lite hands the build to Flash, and only for over
   const { Agent } = await import('../src/core/loop.js');
   eq(backupFor('gemini-3.5-flash-lite'), 'gemini-3.5-flash');
   eq(backupFor('gemini-3.1-flash-lite'), 'gemini-3.5-flash');
-  eq(backupFor('gemini-3.5-flash'), null, 'Flash has nowhere to go');
+  eq(backupFor('gemini-3.5-flash'), null, 'Flash has nowhere to go: the two would hand a build back and forth');
+  eq(backupFor('gemini-3.8-flash'), 'gemini-3.5-flash-lite', 'a newer Flash carries on, for now, on the default');
   const was = model();
   const agent = new Agent({ cwd: sandbox });
   const notes = [];
@@ -1916,12 +1919,23 @@ await test('a rate limit carries how long to wait', () => {
   ok(!f.detail.daily);
 });
 
+/** Run with another OpenAI-compatible server configured instead of Google. */
+const onOtherServer = (fn) => {
+  const was = process.env.UCODE_BASE_URL;
+  process.env.UCODE_BASE_URL = 'https://openrouter.ai/api/v1';
+  try { return fn(); } finally {
+    if (was === undefined) delete process.env.UCODE_BASE_URL; else process.env.UCODE_BASE_URL = was;
+  }
+};
+
 await test('a daily cap is not something to wait out', () => {
   const err = Object.assign(new Error('Rate limit exceeded: requests per day'), { status: 429 });
-  const f = explain(err, DEFAULT_MODEL);
-  eq(f.kind, 'rate_limit');
-  ok(f.detail.daily);
-  ok(!f.fix.includes('/model'), 'one cap covers every free model, so switching is no advice');
+  const other = onOtherServer(() => explain(err, DEFAULT_MODEL));
+  eq(other.kind, 'rate_limit');
+  ok(other.detail.daily);
+  ok(!other.fix.includes('/model'), 'where one cap covers every model, switching is no advice');
+  const google = explain(err, 'gemini-3.8-flash');
+  ok(google.detail.daily && google.fix.includes('/model'), 'on Google each model has its own, so switching is the advice');
 });
 
 await test('retry-after-ms is honoured exactly, and an HTTP date works too', () => {
@@ -1951,16 +1965,18 @@ await test('a passing upstream fault on a 400 is retried, not reported as a bad 
   eq(explain(Object.assign(new Error('400 invalid schema for tool'), { status: 400 }), DEFAULT_MODEL).kind, 'bad_request');
 });
 
-await test('a 404 on a known model is a busy provider, so it retries', () => {
+await test('a 404 on a known model is a busy provider elsewhere, and final on Google', () => {
   const err = Object.assign(new Error('not found'), { status: 404 });
-  eq(explain(err, DEFAULT_MODEL).kind, 'server');
+  eq(onOtherServer(() => explain(err, DEFAULT_MODEL)).kind, 'server');
+  eq(explain(err, DEFAULT_MODEL).kind, 'bad_model');
 });
 
 await test('a bad key says exactly what to check', () => {
   const err = Object.assign(new Error('invalid api key'), { status: 401 });
   const f = explain(err, DEFAULT_MODEL);
   eq(f.kind, 'invalid_api_key');
-  ok(f.fix.includes('UCODE_API_KEY'), `fix was: ${f.fix}`);
+  ok(f.fix.includes('GEMINI_API_KEY') && f.fix.includes('ucode login'), `fix was: ${f.fix}`);
+  ok(onOtherServer(() => explain(err, DEFAULT_MODEL)).fix.includes('UCODE_API_KEY'), 'another server has its own key');
 });
 
 await test('an abort is not reported as a failure of the model', () => {
@@ -1977,7 +1993,7 @@ await test('the daily free cap is recognised, with its reset time, and not waite
       metadata: { headers: { 'X-RateLimit-Limit': '1000', 'X-RateLimit-Reset': String(reset) }, limit_source: 'openrouter_free_tier_daily' },
     },
   });
-  const f = explain(err, DEFAULT_MODEL);
+  const f = onOtherServer(() => explain(err, DEFAULT_MODEL));
   eq(f.kind, 'rate_limit');
   ok(f.detail.daily, 'a daily cap');
   eq(f.detail.resetAt, reset);

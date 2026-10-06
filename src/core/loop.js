@@ -1598,6 +1598,7 @@ export class Agent {
     let continuations = 0;
     let askedToVerify = false;
     let squeezed = false;
+    let limitAsked = false;
     let askedToSpeak = false;
     let fixRounds = 0;
     this.failovers = 0;
@@ -1708,6 +1709,26 @@ export class Agent {
           await this.maybeFold({ force: true });
           if (this.working.length < before) {
             this.ui.note('the conversation had grown too large — folded it and carried on');
+            continue;
+          }
+        }
+
+        // Out of free requests for today, or never free on this key: waiting
+        // cannot help, but the default has an allowance of its own. Asked, not
+        // done: which model runs is the user's call.
+        if ((err.detail?.perModel || err.detail?.notFree) && model() !== DEFAULT_MODEL && !limitAsked && !this.abort.signal.aborted) {
+          limitAsked = true;
+          const yes = await Promise.resolve(this.ui.confirm({
+            action: `${err.failed} Carry on with ${modelName(DEFAULT_MODEL)}?`,
+            detail: `${modelName(DEFAULT_MODEL)} has its own free allowance of about 500 requests a day.`,
+            risk: 'model',
+          })).catch(() => false);
+          if (yes) {
+            setModel(DEFAULT_MODEL);
+            this.preferred = DEFAULT_MODEL;
+            this.session.model = DEFAULT_MODEL;
+            this.ui.note(`now using ${modelName()} — /model to go back`);
+            if (this.full) this.showHeader({ clear: false });
             continue;
           }
         }
@@ -3503,7 +3524,7 @@ export class Agent {
         const reply = await ask([
           { role: 'system', content: 'Write a git commit message for this diff: a subject line under 70 characters in the imperative, then a blank line and up to three short lines on why. Reply with the message only.' },
           { role: 'user', content: diff.slice(0, 30_000) },
-        ], [], { effort: 'low' });
+        ], [], { effort: 'low', model: DEFAULT_MODEL }); // a commit message is not worth a Flash's 20 a day
         text = reply.text.replace(/^```\w*\n?|```$/g, '').trim();
       } finally {
         this.ui.stopSpinner();
@@ -3759,7 +3780,9 @@ ${out.content}` });
     await discoverModels();
     const all = modelList();
     const width = Math.max(...all.map((m) => m.name.length));
-    const paidTag = (m) => (m.paid ? theme.warn('PAID ') : '');
+    const paidTag = (m) =>
+      (m.paid ? theme.warn('PAID ') : '') +
+      (m.spentUntil ? theme.warn(`USED UP until ${new Date(m.spentUntil).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} `) : '');
 
     if (this.ui.pick) {
       const items = all.map((m) => ({

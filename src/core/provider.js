@@ -60,17 +60,17 @@ export const MODELS = {
   'gemini-3.8-flash': {
     name: 'Gemini 3.8 Flash',
     context: 1_000_000,
-    note: 'the newest Flash — smarter, free with a smaller daily limit',
+    note: 'the newest Flash — smarter, about 20 free requests a day, busy at peak hours',
   },
   'gemini-3.7-flash': {
     name: 'Gemini 3.7 Flash',
     context: 1_000_000,
-    note: 'free with a smaller daily limit, often busy at peak hours',
+    note: 'about 20 free requests a day, often busy at peak hours',
   },
   'gemini-3.6-flash': {
     name: 'Gemini 3.6 Flash',
     context: 1_000_000,
-    note: 'free with a smaller daily limit',
+    note: 'about 20 free requests a day',
   },
   'gemini-3.5-flash': {
     name: 'Gemini 3.5 Flash',
@@ -91,7 +91,7 @@ export const MODELS = {
     name: 'Gemma 4 31B',
     context: 262_144,
     thinks: false,   // a thinking level is refused outright: "not supported for this model"
-    note: 'Google\'s open model, free, no thinking levels',
+    note: 'Google\'s open model, free — slow (about 30s a step) and sometimes errors',
   },
   // Not tried: Pro needs billing turned on for the key.
   'gemini-3.1-pro-preview': {
@@ -200,8 +200,16 @@ export function fallbackFor(id, tried = new Set()) {
  * at peak hours while Flash keeps answering, and a build that waits on them
  * can wait for hours. UCODE_BACKUP=0 turns it off.
  */
-export const backupFor = (id) =>
-  /flash-lite/.test(id) && process.env.UCODE_BACKUP !== '0' ? 'gemini-3.5-flash' : null;
+export const backupFor = (id) => {
+  if (process.env.UCODE_BACKUP === '0' || customProvider()) return null;
+  if (/flash-lite/.test(id)) return 'gemini-3.5-flash';
+  // The newer Flash models are busy at peak hours too ("high demand", 503),
+  // and so is Gemma: they carry on, for now, on the default. Not 3.5 Flash:
+  // it is the default's own backup, and the two would hand a build back and
+  // forth until it gave up when both are busy.
+  const theDefaultsBackup = 'gemini-3.5-flash';
+  return MODELS[id] && id !== DEFAULT_MODEL && id !== theDefaultsBackup ? DEFAULT_MODEL : null;
+};
 
 /** Seconds to wait on successive rate limits that come with no retry-after. */
 const RATE_LIMIT_BACKOFF = [5, 10, 20];
@@ -276,6 +284,8 @@ export function rpmFor(id) {
   const set = process.env.UCODE_RPM;
   if (set !== undefined && set !== '') return Math.max(0, Number(set) || 0);
   if (customProvider()) return 0;
+  // A model that has said how many it takes is held one under that.
+  if (learnedRpm.has(id)) return learnedRpm.get(id);
   return /flash-lite/.test(id) ? 14 : 9;
 }
 
@@ -336,10 +346,13 @@ export function modelName(id = current) {
 
 /** Every model, in list order, annotated with whether it is the active one. */
 export function modelList() {
+  const now = Date.now();
   return Object.entries(MODELS).map(([id, info]) => ({
     id,
     ...info,
     active: id === current,
+    // Used up today, as Google said this session: shown before it is picked again.
+    spentUntil: (spentUntil.get(id) ?? 0) > now ? spentUntil.get(id) : null,
   }));
 }
 
@@ -555,16 +568,60 @@ function wireMessages(messages) {
 // ---------------------------------------------------------------------------
 
 function bodyOf(err) {
-  if (err?.error) return { error: err.error };
+  // Google wraps its error in a list - [{ "error": { ... } }] - so a lookup
+  // for error.message found nothing, and every Google error was read from the
+  // raw text instead: a used-up daily limit came out as "busy just now".
+  const first = (b) => (Array.isArray(b) ? b[0] : b);
+  if (err?.error) {
+    const e = first(err.error);
+    return { error: e?.error ?? e };
+  }
   const raw = String(err?.message ?? '');
-  const start = raw.indexOf('{');
+  const start = raw.search(/[[{]/);
   if (start === -1) return null;
   try {
-    return JSON.parse(raw.slice(start));
+    return first(JSON.parse(raw.slice(start)));
   } catch {
     return null;
   }
 }
+
+/** Google's own account of a 429: which quota, its size, and how long to wait. */
+function googleQuota(body, detail) {
+  const details = Array.isArray(body?.error?.details) ? body.error.details : [];
+  const violation = details.find((d) => /QuotaFailure/.test(d?.['@type'] ?? ''))?.violations?.[0] ?? {};
+  const value = violation.quotaValue ?? /limit: (\d+)/.exec(detail)?.[1];
+  return {
+    id: String(violation.quotaId ?? ''),
+    limit: value === undefined ? null : Number(value),
+    retry: details.find((d) => /RetryInfo/.test(d?.['@type'] ?? ''))?.retryDelay ?? /retry in ([\d.]+s)/i.exec(detail)?.[1] ?? null,
+  };
+}
+
+/**
+ * When Google's free daily limits start again: midnight in California,
+ * shown in the user's own time ("12:30 PM" in India).
+ */
+export function dailyReset(now = new Date()) {
+  const zone = 'America/Los_Angeles';
+  const day = Object.fromEntries(new Intl.DateTimeFormat('en-US', { timeZone: zone, year: 'numeric', month: 'numeric', day: 'numeric' })
+    .formatToParts(now).map((p) => [p.type, Number(p.value)]));
+  const hourThere = (at) => Number(new Intl.DateTimeFormat('en-US', { timeZone: zone, hour: 'numeric', hourCycle: 'h23' }).format(at));
+  // Tomorrow's midnight there is 07:00 UTC in summer time and 08:00 in winter.
+  // Each is checked against California's own clock on that day, so a night
+  // the clocks change on gives the right hour too.
+  for (const utcHour of [7, 8]) {
+    const at = new Date(Date.UTC(day.year, day.month - 1, day.day + 1, utcHour));
+    if (hourThere(at) === 0) return at;
+  }
+  return new Date(Date.UTC(day.year, day.month - 1, day.day + 1, 8));
+}
+
+/** Requests a minute a model allows, learned from Google's own 429s. */
+const learnedRpm = new Map();
+
+/** Models whose free requests for today are gone, and when they come back. */
+const spentUntil = new Map();
 
 /**
  * How providers say the conversation no longer fits, from opencode's list
@@ -629,14 +686,17 @@ export function explain(err, id) {
     });
   }
 
-  if (status === 401 || status === 403 || /invalid[_ ]api[_ ]key/i.test(raw)) {
+  // Google says a bad key with a 400 - "Please pass a valid API key" - which
+  // was read as a malformed request: the conversation was folded to make it
+  // smaller, and then it failed anyway.
+  if (status === 401 || status === 403 || /invalid[_ ]api[_ ]key|api key not valid|pass a valid api key|API_KEY_INVALID/i.test(`${detail} ${raw}`)) {
     return new Failure({
       kind: 'invalid_api_key',
       attempted,
-      failed: `The API key was rejected (HTTP ${status ?? 401}).`,
-      fix:
-        'Check UCODE_API_KEY in ~/.ucode/.env for a typo or trailing space, and ' +
-        'confirm the key is still active in your account.',
+      failed: `Google rejected the API key (HTTP ${status ?? 401}).`,
+      fix: customProvider()
+        ? 'Check UCODE_API_KEY in ~/.ucode/.env for a typo or trailing space.'
+        : `Check GEMINI_API_KEY in ${ENV_FILE} for a typo or a trailing space, or save a fresh key: ucode login YOUR_KEY (free at aistudio.google.com/apikey).`,
       cause: err,
     });
   }
@@ -652,6 +712,25 @@ export function explain(err, id) {
   }
 
   if (status === 429 || /rate[_ ]limit/i.test(raw)) {
+    const quota = googleQuota(body, detail);
+    const google = !customProvider();
+
+    // Limit 0: this key gets none of this model for free - a Pro model with
+    // billing off. Waiting never helps; it used to be retried all day.
+    if (google && quota.limit === 0) {
+      return new Failure({
+        kind: 'not_free',
+        attempted,
+        failed: `${modelName(id)} is not free on your key - Google allows it 0 free requests.`,
+        fix: `Turn on billing for the key in Google AI Studio to use it, or /model to a free one - ${modelName(DEFAULT_MODEL)} has about 500 a day.`,
+        detail: { notFree: true },
+        cause: err,
+      });
+    }
+
+    // A per-minute quota is learned, so the next requests are spaced to fit.
+    if (google && /PerMinute/i.test(quota.id) && quota.limit > 0) learnedRpm.set(id, Math.max(1, quota.limit - 1));
+
     // `??` cannot be used to chain through Number(): Number(undefined) is NaN,
     // which is neither null nor undefined, so it would swallow every fallback
     // after it and the wait would silently never be found.
@@ -667,37 +746,65 @@ export function explain(err, id) {
       (Number.isFinite(asNumber) && asNumber > 0 ? asNumber : null) ??
       (asDate > 0 ? asDate : null) ??
       seconds(/try again in ([\dhms.]+)/i.exec(detail)?.[1]) ??
+      seconds(quota.retry) ??
       null;
-    // The daily cap reads "free-models-per-day-high-balance", with hyphens, and
-    // names its source in the metadata. It is one cap across every free model,
-    // so it is reported at once rather than waited on model after model.
+    // Google names the quota it hit - "GenerateRequestsPerDayPerProjectPerModel"
+    // - with no space or hyphen in "PerDay", and says "retry in 39s" even then:
+    // read as a per-minute limit, it was waited on and retried all day.
+    // OpenRouter's reads "free-models-per-day-high-balance".
     const meta = body?.error?.metadata ?? {};
-    const daily = /per[- ]day|RPD|TPD|daily/i.test(`${detail} ${meta.limit_source ?? ''}`);
+    const daily = /per[- ]?day|RPD|TPD|daily/i.test(`${detail} ${quota.id} ${meta.limit_source ?? ''}`);
     const resetMs = Number(meta.headers?.['X-RateLimit-Reset'] ?? err?.headers?.get?.('x-ratelimit-reset'));
-    const resetAt = daily && Number.isFinite(resetMs) && resetMs > Date.now() ? new Date(resetMs) : null;
-    const cap = Number(meta.headers?.['X-RateLimit-Limit']) || null;
+    const resetAt = !daily ? null
+      : Number.isFinite(resetMs) && resetMs > Date.now() ? new Date(resetMs)
+        : google ? dailyReset() : null;
+    const cap = Number(meta.headers?.['X-RateLimit-Limit']) || quota.limit || null;
     const wait = Number.isFinite(retryAfter) && retryAfter
       ? (retryAfter >= 60 ? `${Math.ceil(retryAfter / 60)} min` : `${Math.ceil(retryAfter)}s`)
       : null;
+    const at = resetAt ? `at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'once a day';
+    if (daily && google && resetAt) spentUntil.set(id, resetAt.getTime());
+
+    // Google's daily limits are per model: Flash-Lite still has its own 500
+    // when a Flash has used its 20.
+    const failed = daily && google
+      ? `${modelName(id)}'s free requests for today${cap ? ` (${cap})` : ''} are used up.`
+      : daily
+        ? `This key's free daily limit${cap ? ` of ${cap} requests` : ''} is used up. It covers every free model, so switching will not help.`
+        : /PerMinute/i.test(quota.id) && quota.limit
+          ? `${modelName(id)} takes ${quota.limit} requests a minute on the free tier${wait ? ` — clear in ${wait}` : ''}.`
+          : `Too many requests for ${modelName(id)} just now${wait ? ` — clear in ${wait}` : ''}.`;
+    const fix = daily && google
+      ? `Each model has its own daily allowance: /model to switch${id === DEFAULT_MODEL ? '' : ` — ${modelName(DEFAULT_MODEL)} has about 500 a day`}. ${modelName(id)} starts again ${at}.`
+      : daily
+        ? `It resets ${at}. Nothing to do until then — the key is fine.`
+        : 'ucode waits these out on its own, and spaces its requests to fit. /model moves to another one.';
 
     return new Failure({
       kind: 'rate_limit',
       attempted,
-      failed: daily
-        ? `This key's free daily limit${cap ? ` of ${cap} requests` : ''} is used up. It covers every free model, so switching will not help.`
-        : `Too many requests for ${modelName(id)} just now${wait ? ` — clear in ${wait}` : ''}.`,
-      fix: daily
-        ? `It resets ${resetAt ? `at ${resetAt.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : 'once a day'}. ` +
-          'Nothing to do until then — the key is fine.'
-        : 'ucode waits these out on its own, usually for a few seconds. /model moves to another one.',
-      detail: { retryAfter, daily, resetAt: resetAt?.getTime() ?? null },
+      failed,
+      fix,
+      detail: { retryAfter, daily, perModel: daily && google, resetAt: resetAt?.getTime() ?? null },
       cause: err,
     });
   }
 
-  // A 404 on a model in this list is almost never a bad name. It is OpenRouter
-  // having no upstream free to serve it at that instant, and it clears by
-  // itself — so it is retried rather than reported as a missing model.
+  // Google's 404 is final: the model was retired ("no longer available to new
+  // users") or never existed. It used to be retried as OpenRouter's passing
+  // "no provider free right now".
+  if (!customProvider() && (status === 404 || /no longer available|is not found for API version/i.test(detail))) {
+    return new Failure({
+      kind: 'bad_model',
+      attempted,
+      failed: `${modelName(id)} is not available to this key: ${String(detail).split(/(?<=\.)\s/)[0]}`,
+      fix: `/model to pick another one${id === DEFAULT_MODEL ? '' : ` — ${modelName(DEFAULT_MODEL)} is the default`}.`,
+      detail: { status },
+      cause: err,
+    });
+  }
+
+  // On another server, a 404 on a listed model is usually a passing gap.
   if (status === 404 || /does not exist|not found|decommissioned/i.test(raw)) {
     if (MODELS[id]) {
       return new Failure({
@@ -971,6 +1078,49 @@ export async function ask(messages, tools = [], opts = {}) {
   throw problem;
 }
 
+/**
+ * Gemma writes its thinking into the reply itself, between <thought> tags,
+ * and it was shown as part of the answer. Split out as it streams - a tag can
+ * arrive in pieces - so thinking goes where thinking goes. flush() hands back
+ * whatever was held at the end.
+ */
+export function thoughtFilter() {
+  let inside = false;
+  let held = '';
+  const split = (chunk) => {
+    let rest = held + chunk;
+    held = '';
+    let text = '';
+    let thought = '';
+    while (rest) {
+      const tag = inside ? '</thought>' : '<thought>';
+      const at = rest.indexOf(tag);
+      if (at >= 0) {
+        if (inside) thought += rest.slice(0, at); else text += rest.slice(0, at);
+        rest = rest.slice(at + tag.length);
+        inside = !inside;
+        continue;
+      }
+      // Hold back an ending that could be the start of the tag.
+      let keep = 0;
+      for (let k = Math.min(tag.length - 1, rest.length); k > 0; k--) {
+        if (tag.startsWith(rest.slice(-k))) { keep = k; break; }
+      }
+      const body = rest.slice(0, rest.length - keep);
+      if (inside) thought += body; else text += body;
+      held = rest.slice(rest.length - keep);
+      rest = '';
+    }
+    return { text, thought };
+  };
+  split.flush = () => {
+    const out = inside ? { text: '', thought: held } : { text: held, thought: '' };
+    held = '';
+    return out;
+  };
+  return split;
+}
+
 /** Collect a streamed reply, handing deltas out as they land. */
 async function streamed(request, opts, id) {
   // A watchdog of its own, so a frozen stream can be ended without it looking
@@ -1001,6 +1151,7 @@ async function streamed(request, opts, id) {
   let reasoning = '';
   let finishReason = 'stop';
   let usage = null;
+  const split = thoughtFilter();
   const partial = new Map();
   const handed = new Set();
   let highest = -1;
@@ -1036,8 +1187,15 @@ async function streamed(request, opts, id) {
       }
 
       if (delta.content) {
-        text += delta.content;
-        opts.onText(delta.content);
+        const { text: said, thought } = split(delta.content);
+        if (thought) {
+          reasoning += thought;
+          opts.onThinking?.(thought);
+        }
+        if (said) {
+          text += said;
+          opts.onText(said);
+        }
       }
 
       // A tool call's name and arguments arrive across several chunks, keyed by
@@ -1082,6 +1240,16 @@ async function streamed(request, opts, id) {
   // Carrying on from there would run a half-written tool call: JSON repair
   // closes a cut-off file write, and the truncated file lands on disk.
   if (stalled && !opts.signal?.aborted) throw frozen();
+  // What was held back in case it began a tag is drawn too, not only kept.
+  const tail = split.flush();
+  if (tail.text) {
+    text += tail.text;
+    opts.onText(tail.text);
+  }
+  if (tail.thought) {
+    reasoning += tail.thought;
+    opts.onThinking?.(tail.thought);
+  }
 
   const toolCalls = [];
   for (const [index, slot] of partial) {
@@ -1332,7 +1500,10 @@ function normalize(data, id, names) {
 
   const u = data?.usage ?? {};
   const finishReason = choice?.finish_reason ?? 'stop';
-  const text = (message.content ?? '').trim();
+  const split = thoughtFilter();
+  const parts = [split(message.content ?? ''), split.flush()];
+  const text = parts.map((p) => p.text).join('').trim();
+  const thought = parts.map((p) => p.thought).join('');
 
   if (!text && toolCalls.length === 0 && finishReason === 'length') {
     throw new Failure({
@@ -1346,7 +1517,7 @@ function normalize(data, id, names) {
 
   return {
     text,
-    reasoning: (message.reasoning ?? '').trim(),
+    reasoning: `${message.reasoning ?? ''}${thought}`.trim(),
     toolCalls,
     usage: {
       promptTokens: u.prompt_tokens ?? 0,

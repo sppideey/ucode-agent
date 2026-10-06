@@ -26,7 +26,7 @@ const COMMANDS = [
 ];
 
 /** The tag on an approval prompt. */
-export const badge = (risk) => ({ command: ' shell ', mcp: ' tool ', trust: ' project ' })[risk] ?? ' outside project ';
+export const badge = (risk) => ({ command: ' shell ', mcp: ' tool ', trust: ' project ', model: ' model ' })[risk] ?? ' outside project ';
 
 export class Plain {
   constructor({ cwd, input = process.stdin, output = process.stdout } = {}) {
