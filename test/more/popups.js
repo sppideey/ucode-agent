@@ -226,6 +226,20 @@ export default async function ({ test, section, ok, eq }) {
     ok(!WANTS_LOOK.test('make the app purple'), 'an app\'s look is not ucode\'s');
   });
 
+  await test('a task that only mentions ucode or the terminal is not about ucode\'s look', () => {
+    for (const said of ['make my terminal black', 'change ucode\'s colour to teal', 'make yourself orange', 'how ucode looks is too dark']) {
+      ok(WANTS_LOOK.test(said), said);
+    }
+    for (const said of [
+      'Create hello.js that prints \'hi from ucode\', then run it.',
+      'add a terminal-style login page',
+      'write a script that runs in the terminal',
+      'make a CLI that greets yourself',
+    ]) {
+      ok(!WANTS_LOOK.test(said), said);
+    }
+  });
+
   await test('the latest Gemini models are listed, Flash-Lite stays the default, Pro is marked paid', async () => {
     eq(DEFAULT_MODEL, 'gemini-3.5-flash-lite');
     for (const id of ['gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.6-flash', 'gemma-4-31b-it']) ok(MODELS[id] && !MODELS[id].paid, id);

@@ -68,7 +68,7 @@ corner:
          add a dark mode toggle that remembers the choice
 
 
-                                             made and tested by om dixit · v1.68.1
+                                             made and tested by om dixit · v1.68.2
 ```
 
 A light crosses the wordmark once as it opens, and the three lines under the box

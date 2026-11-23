@@ -580,7 +580,17 @@ const LOOKUP_TOOLS = new Set(['find_symbol', 'outline', 'rename_symbol', 'type_o
  */
 // "ur theme" and "how u look" too: "chnage ur theme to silver" got "I do not
 // have a theme to change", because the tool was never offered.
-export const WANTS_LOOK = /\b(?:ucode|terminal|yourself|urself|(?:your|ur|yr) (?:own )?(?:colou?rs?|look|theme|style|banner|spinner|font|accent)|how (?:you|u) look|this (?:terminal|window))\b/i;
+// But a bare "ucode" or "terminal" is not enough: "print 'hi from ucode'" and
+// "a terminal-style login page" repainted ucode silver mid-build. The name
+// counts only with a change verb before it or a look word after it.
+const SELF = String.raw`(?:ucode|(?:the|my|this|your|ur) terminal|this window|yourself|urself)`;
+const LOOK_WORD = String.raw`(?:colou?rs?|look|theme|style|banner|spinner|font|accent|background)`;
+export const WANTS_LOOK = new RegExp(String.raw`\b(?:` +
+  String.raw`(?:make|change|turn|paint|recolou?r|set|switch) ${SELF}|` +
+  String.raw`${SELF}(?:'s)? (?:own )?${LOOK_WORD}|` +
+  String.raw`(?:your|ur|yr) (?:own )?${LOOK_WORD}|` +
+  String.raw`how (?:you|u|ucode) looks?` +
+  String.raw`)\b`, 'i');
 
 const lookTool = {
   name: 'change_look',
